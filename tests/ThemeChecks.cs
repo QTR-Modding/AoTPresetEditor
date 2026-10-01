@@ -30,13 +30,10 @@ internal static class ThemeChecks
             primary.SetResourceReference(FrameworkElement.StyleProperty, "PrimaryButton");
             var buttonWindow = new Window { Content = primary };
             var windows = new Window[] { main, picker, editor, groups, yamlWindow, buttonWindow };
-            var grid = (DataGrid)main.FindName("FormGrid");
-            grid.ItemsSource = Forms;
+            var grid = Field<DataGrid>(picker, "results");
             grid.SelectedIndex = 0;
-            var text = (TextBox)main.FindName("Search");
-            var combo = (ComboBox)main.FindName("Types");
-            combo.ItemsSource = new[] { "All types" };
-            combo.SelectedIndex = 0;
+            var text = Field<TextBox>(picker, "search");
+            var combo = Field<ComboBox>(picker, "types");
             var dark = CheckTheme(app, EditorTheme.Dark, windows, [text, yaml, combo, grid]);
             var light = CheckTheme(app, EditorTheme.Light, windows, [text, yaml, combo, grid]);
             if (!SystemParameters.HighContrast)

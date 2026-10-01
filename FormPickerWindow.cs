@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -14,6 +15,7 @@ public sealed class FormPickerWindow : Window
     private static readonly TimeSpan SearchDelay = TimeSpan.FromMilliseconds(180);
     private readonly IReadOnlyList<FormRow> forms;
     private readonly bool multiple;
+    private readonly bool browseOnly;
     private readonly TextBox search = new();
     private readonly ComboBox types = new();
     private readonly ComboBox plugins = new();
@@ -29,14 +31,16 @@ public sealed class FormPickerWindow : Window
     public IReadOnlyList<FormRow> SelectedForms { get; private set; } = [];
 
     public FormPickerWindow(IReadOnlyList<FormRow> forms, IReadOnlyCollection<string>? allowedTypes = null, bool multiple = false,
-        FormSelection? selection = null)
+        FormSelection? selection = null, bool browseOnly = false)
     {
         this.forms = allowedTypes is { Count: > 0 } || selection is not null
             ? forms.Where(form => (allowedTypes is not { Count: > 0 } || allowedTypes.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
                 (selection?.Matches(form) ?? true)).ToArray()
             : forms;
         this.multiple = multiple;
-        Title = multiple ? "Choose forms" : "Choose a form";
+        this.browseOnly = browseOnly;
+        Title = browseOnly ? "Form browser" : multiple ? "Choose forms" : "Choose a form";
+        if (browseOnly) choose.Content = "Copy identifier";
         Width = 1120; Height = 700; MinWidth = 800; MinHeight = 460;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(StyleProperty, typeof(Window));
@@ -53,7 +57,7 @@ public sealed class FormPickerWindow : Window
         searchTimer.Tick += (_, _) => { searchTimer.Stop(); FilterForms(); };
         results.SelectionChanged += Results_SelectionChanged;
         results.MouseDoubleClick += Results_DoubleClick;
-        choose.Click += (_, _) => ChooseForms();
+        choose.Click += (_, _) => ActivateSelection();
         Closed += (_, _) => searchTimer.Stop();
         Loaded += (_, _) => search.Focus();
         FilterForms();
@@ -92,7 +96,7 @@ public sealed class FormPickerWindow : Window
             clear.Click += (_, _) => { selected.Clear(); results.UnselectAll(); UpdateSelection(); };
             buttons.Children.Add(clear);
         }
-        buttons.Children.Add(new Button { Content = "Cancel", IsCancel = true });
+        buttons.Children.Add(new Button { Content = browseOnly ? "Close" : "Cancel", IsCancel = true });
         buttons.Children.Add(choose);
         Grid.SetColumn(buttons, 1); footer.Children.Add(buttons);
         Grid.SetRow(footer, 3); layout.Children.Add(footer);
@@ -196,12 +200,18 @@ public sealed class FormPickerWindow : Window
     private void Results_DoubleClick(object sender, MouseButtonEventArgs args)
     {
         if (args.OriginalSource is DependencyObject source && ItemsControl.ContainerFromElement(results, source) is DataGridRow)
-            ChooseForms();
+            ActivateSelection();
     }
 
-    private void ChooseForms()
+    private void ActivateSelection()
     {
         if (selected.Count == 0) return;
+        if (browseOnly)
+        {
+            try { Clipboard.SetText(selected.First().Identifier); }
+            catch (ExternalException) { count.Text = "The clipboard is busy. Try Copy identifier again."; }
+            return;
+        }
         SelectedForms = forms.Where(selected.Contains).ToArray();
         DialogResult = true;
     }

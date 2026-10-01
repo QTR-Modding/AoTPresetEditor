@@ -26,7 +26,7 @@ The editor starts in Dark mode. **Appearance** offers Dark, Light, or Follow Win
 
 ## Edit a preset
 
-1. Open **Presets**, choose **New preset**, and select an item type and Default, Custom, or Addon. You can also open an installed preset from the list.
+1. The editor opens on **Presets**. Choose **New preset**, and select an item type and Default, Custom, or Addon. You can also open an installed preset from the list.
 2. Choose **Add rule**, **Add shared settings**, or **Add template** and give the block a name. Shared settings provide reusable values. Templates provide reusable settings with parameters that vary between uses.
 3. Open a named block to edit its fields. **Set** adds a value, **Edit** changes it, and **Clear** leaves it unset. **Choose form** searches your profile's forms, limited to the types accepted by that field. Item selectors also respect the preset's category where AoT requires it.
 4. Within a template, **Use parameter** gives a field a parameter name. When using that template, the editor provides a field for each parameter. **Shared settings and overrides** combines reusable settings with fields set on the current block.
@@ -47,7 +47,7 @@ Groups are lists of literal form identifiers. AoT accepts them in addon **Applie
 
 ## Browse forms and installed presets
 
-1. **Forms:** search by name, EditorID, local ID, or plugin. Filter by record type or plugin. Selecting a form shows an AoT identifier such as `0x65C99~Skyrim.esm`, which **Copy identifier** copies. The winning plugin supplies the displayed values; the identifier refers to the plugin that defined the form.
+1. **Tools > Form browser:** search by name, EditorID, local ID, or plugin. Filter by record type or plugin. Selecting a form shows an AoT identifier such as `0x65C99~Skyrim.esm`, which **Copy identifier** copies. The winning plugin supplies the displayed values; the identifier refers to the plugin that defined the form.
 2. **Presets:** filter by type (FOOD, BOOK, etc.) and kind (Default, Custom, Addon), then select an installed `.yml` file. Its named blocks appear in the overview. Expansion uses CLibUtilsQTR 2.6.0.
 3. **Load order:** inspect the enabled plugins the browser read, in load order.
 

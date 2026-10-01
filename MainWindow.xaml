@@ -7,6 +7,9 @@
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <DockPanel Margin="0,0,0,18">
    <Button DockPanel.Dock="Right" Content="Appearance..." Click="Appearance_Click" VerticalAlignment="Center"/>
+   <Menu x:Name="ToolsMenu" DockPanel.Dock="Right" VerticalAlignment="Center" Visibility="Collapsed">
+    <MenuItem Header="Tools"><MenuItem Header="Form browser..." Click="FormBrowser_Click"/></MenuItem>
+   </Menu>
    <StackPanel><TextBlock Text="AoT Preset Editor" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Create presets from named rules, shared settings, and templates" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,4,0,0"/></StackPanel>
   </DockPanel>
   <DockPanel Grid.Row="1" Margin="0,0,0,16">
@@ -15,27 +18,6 @@
    <TextBox x:Name="DataPath" IsReadOnly="True" AutomationProperties.Name="Skyrim Data folder" ToolTip="Launch through MO2 to read the selected profile's files."/>
   </DockPanel>
   <TabControl Grid.Row="2">
-   <TabItem Header="Forms">
-    <Grid Margin="16">
-     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/><ColumnDefinition Width="270"/></Grid.ColumnDefinitions>
-      <StackPanel Margin="0,0,12,0"><TextBlock Text="Search name, EditorID, ID, or plugin" Margin="0,0,0,5"/><TextBox x:Name="Search" TextChanged="Filter_Changed" AutomationProperties.Name="Search forms"/></StackPanel>
-      <StackPanel Grid.Column="1" Margin="0,0,12,0"><TextBlock Text="Record type" Margin="0,0,0,5"/><ComboBox x:Name="Types" SelectionChanged="Filter_Changed" AutomationProperties.Name="Record type"/></StackPanel>
-      <StackPanel Grid.Column="2"><TextBlock Text="Origin or winning plugin" Margin="0,0,0,5"/><ComboBox x:Name="Plugins" SelectionChanged="Filter_Changed" AutomationProperties.Name="Plugin filter"/></StackPanel>
-     </Grid>
-     <TextBlock x:Name="ResultCount" Grid.Row="1" Margin="0,12,0,8" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
-     <DataGrid x:Name="FormGrid" Grid.Row="2" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{DynamicResource DividerStrokeColorDefaultBrush}" RowHeight="30" EnableRowVirtualization="True" SelectionMode="Single" SelectionChanged="Form_Selected">
-      <DataGrid.Columns>
-       <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*"/>
-       <DataGridTextColumn Header="EditorID" Binding="{Binding EditorId}" Width="2*"/>
-       <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="110"/>
-       <DataGridTextColumn Header="Defined in" Binding="{Binding Plugin}" Width="*"/>
-       <DataGridTextColumn Header="Winning plugin" Binding="{Binding Winner}" Width="*"/>
-      </DataGrid.Columns>
-     </DataGrid>
-     <DockPanel Grid.Row="3" Margin="0,12,0,0"><Button DockPanel.Dock="Right" Content="Copy identifier" Click="Copy_Click"/><TextBox x:Name="FormDetail" IsReadOnly="True" FontFamily="Consolas" AutomationProperties.Name="AoT form identifier"/></DockPanel>
-    </Grid>
-   </TabItem>
    <TabItem Header="Presets">
     <Grid Margin="16">
      <Grid.ColumnDefinitions><ColumnDefinition Width="270" MinWidth="180"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
