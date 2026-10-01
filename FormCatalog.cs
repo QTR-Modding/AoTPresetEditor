@@ -12,7 +12,26 @@ using Mutagen.Bethesda.Skyrim;
 
 namespace AoTPresetEditor;
 
-public sealed record FormRow(string Name, string EditorId, string Type, string Plugin, string Winner, string Identifier);
+[Flags]
+public enum ItemCategories
+{
+    None = 0,
+    FOOD = 1 << 0, INGR = 1 << 1, MEDC = 1 << 2, POSN = 1 << 3, ARMO = 1 << 4,
+    WEAP = 1 << 5, SCRL = 1 << 6, BOOK = 1 << 7, SLGM = 1 << 8, MISC = 1 << 9
+}
+
+public sealed record FormRow(string Name, string EditorId, string Type, string Plugin, string Winner, string Identifier,
+    ItemCategories Categories = ItemCategories.None, bool IsTrigger = false);
+
+public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, string? Category = null, bool TriggerOnly = false)
+{
+    private readonly ItemCategories category = Enum.TryParse<ItemCategories>(Category, true, out var value) ? value : ItemCategories.None;
+
+    public bool Matches(FormRow form) =>
+        (Types is null || Types.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
+        (string.IsNullOrEmpty(Category) || (form.Categories & category) != 0) &&
+        (!TriggerOnly || form.IsTrigger);
+}
 
 public sealed record CatalogResult(IReadOnlyList<FormRow> Forms, IReadOnlyList<string> Plugins, string PluginsPath);
 
@@ -73,7 +92,44 @@ public static class FormCatalog
             };
             string origin = record.FormKey.ModKey.FileName.String;
             forms[record.FormKey] = new FormRow(name, record.EditorID ?? "", record.Registration.Name, origin, winner,
-                $"0x{record.FormKey.ID:X}~{origin}");
+                $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), IsTrigger(record));
         }
     }
+
+    private static ItemCategories GetCategories(IMajorRecordGetter record)
+    {
+        // AoT's category checks are independent: a food ingredient belongs to FOOD and INGR.
+        if (record is IIngestibleGetter ingestible)
+        {
+            var categories = ItemCategories.None;
+            if (ingestible.Flags.HasFlag(Ingestible.Flag.FoodItem) && !ingestible.Flags.HasFlag(Ingestible.Flag.Poison))
+                categories |= ItemCategories.FOOD;
+            if (ingestible.Flags.HasFlag(Ingestible.Flag.Medicine)) categories |= ItemCategories.MEDC;
+            if (ingestible.Flags.HasFlag(Ingestible.Flag.Poison)) categories |= ItemCategories.POSN;
+            return categories;
+        }
+        return record switch
+        {
+            IIngredientGetter ingredient => ItemCategories.INGR |
+                (ingredient.Flags.HasFlag(Ingredient.Flag.FoodItem) ? ItemCategories.FOOD : ItemCategories.None),
+            IArmorGetter => ItemCategories.ARMO,
+            IWeaponGetter => ItemCategories.WEAP,
+            IScrollGetter => ItemCategories.SCRL,
+            IBookGetter => ItemCategories.BOOK,
+            ISoulGemGetter => ItemCategories.SLGM,
+            IMiscItemGetter => ItemCategories.MISC,
+            _ => ItemCategories.None
+        };
+    }
+
+    // TESBoundObject subclasses represented by Mutagen, plus AoT's location and perk triggers.
+    private static bool IsTrigger(IMajorRecordGetter record) => record is
+        IAcousticSpaceGetter or IActivatorGetter or IAddonNodeGetter or IAlchemicalApparatusGetter or
+        IAmmunitionGetter or IArmorGetter or IArtObjectGetter or IBookGetter or IContainerGetter or
+        IDoorGetter or IDualCastDataGetter or IExplosionGetter or IFloraGetter or IFurnitureGetter or
+        IGrassGetter or IHazardGetter or IIdleMarkerGetter or IIngestibleGetter or IIngredientGetter or
+        IKeyGetter or ILeveledItemGetter or ILeveledNpcGetter or ILeveledSpellGetter or ILightGetter or
+        IMiscItemGetter or IMoveableStaticGetter or INpcGetter or IObjectEffectGetter or IProjectileGetter or
+        IScrollGetter or ISoulGemGetter or ISoundMarkerGetter or ISpellGetter or IStaticGetter or
+        ITalkingActivatorGetter or ITextureSetGetter or ITreeGetter or IWeaponGetter or ILocationGetter or IPerkGetter;
 }

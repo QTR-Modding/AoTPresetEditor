@@ -52,6 +52,7 @@ public partial class MainWindow : Window
         ReloadButton.IsEnabled = BrowseButton.IsEnabled = false;
 
         forms = []; presets = [];
+        Workspace.SetCatalog([], []);
         FormGrid.ItemsSource = null; PresetList.ItemsSource = null; LoadOrderList.ItemsSource = null;
         FormDetail.Clear();
         Types.ItemsSource = Plugins.ItemsSource = null;
@@ -63,11 +64,12 @@ public partial class MainWindow : Window
             if (!File.Exists(Path.Combine(data, "Skyrim.esm")))
                 throw new DirectoryNotFoundException("Select the Data folder containing Skyrim.esm.");
             presets = await Task.Run(() => PresetCatalog.Discover(data));
+            var groups = await Task.Run(() => FormGroupCatalog.Load(data));
             UpdatePresetFilters();
             var progress = new Progress<string>(text => Status.Text = text);
             var result = await Task.Run(() => FormCatalog.Load(data, progress));
             forms = result.Forms;
-            Workspace.SetForms(forms);
+            Workspace.SetCatalog(forms, groups);
             Types.ItemsSource = new[] { "All types" }.Concat(forms.Select(f => f.Type).Distinct().Order());
             Plugins.ItemsSource = new[] { "All plugins" }.Concat(result.Plugins);
             Types.SelectedIndex = Plugins.SelectedIndex = 0;

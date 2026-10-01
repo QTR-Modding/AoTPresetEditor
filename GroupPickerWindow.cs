@@ -1,0 +1,224 @@
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
+
+namespace AoTPresetEditor;
+
+public sealed class GroupPickerWindow : Window
+{
+    private readonly List<FormGroupDefinition> groups;
+    private readonly IReadOnlyList<FormRow> forms;
+    private readonly FormSelection? constraint;
+    private readonly List<FormGroupDefinition> created = [];
+    private readonly ListBox groupList = new() { DisplayMemberPath = nameof(FormGroupDefinition.Name) };
+    private readonly TextBox search = new();
+    private readonly TextBlock description = EditorControls.Text("");
+    private readonly TextBlock source = EditorControls.Text("");
+    private readonly DataGrid members = CreateMemberGrid();
+    private readonly Button choose;
+
+    public FormGroupDefinition? SelectedGroup { get; private set; }
+    public IReadOnlyList<FormGroupDefinition> CreatedGroups { get; private set; } = [];
+
+    public GroupPickerWindow(IReadOnlyList<FormGroupDefinition> groups, IReadOnlyList<FormRow> forms, FormSelection? constraint = null)
+    {
+        this.groups = [.. groups];
+        this.forms = forms;
+        this.constraint = constraint;
+        Title = "Choose a form group"; Width = 1080; Height = 660; MinWidth = 780; MinHeight = 450;
+        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        SetResourceReference(StyleProperty, typeof(Window));
+        var layout = new DockPanel { Margin = new Thickness(22) };
+        var heading = new StackPanel();
+        heading.Children.Add(EditorControls.Text("Form groups", true));
+        heading.Children.Add(EditorControls.Text("Choose an existing group, or create a reusable list of forms."));
+        DockPanel.SetDock(heading, Dock.Top); layout.Children.Add(heading);
+        var footer = new StackPanel();
+        choose = EditorControls.Button("Choose group", Choose); choose.IsDefault = true; choose.Visibility = Visibility.Collapsed;
+        choose.SetResourceReference(StyleProperty, "PrimaryButton");
+        EditorControls.Footer(footer, EditorControls.Button("New group...", NewGroup), choose,
+            EditorControls.Button("Cancel", () => DialogResult = false));
+        DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer);
+        var columns = new Grid();
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(260) });
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var left = new DockPanel { Margin = new Thickness(0, 0, 18, 0) };
+        search.Margin = new Thickness(0, 0, 0, 10); search.ToolTip = "Search group names";
+        DockPanel.SetDock(search, Dock.Top); left.Children.Add(search); left.Children.Add(groupList);
+        columns.Children.Add(left);
+        var right = new DockPanel();
+        var details = new StackPanel(); details.Children.Add(description); source.Foreground = EditorControls.Muted; details.Children.Add(source);
+        DockPanel.SetDock(details, Dock.Top); right.Children.Add(details); right.Children.Add(members);
+        Grid.SetColumn(right, 1); columns.Children.Add(right); layout.Children.Add(columns); Content = layout;
+        search.TextChanged += (_, _) => Filter();
+        groupList.SelectionChanged += (_, _) => ShowGroup();
+        groupList.MouseDoubleClick += (_, args) =>
+        {
+            if (args.OriginalSource is DependencyObject target && ItemsControl.ContainerFromElement(groupList, target) is ListBoxItem) Choose();
+        };
+        Filter();
+    }
+
+    private void Filter()
+    {
+        var selected = groupList.SelectedItem;
+        groupList.ItemsSource = groups.Where(group => group.Name.Contains(search.Text.Trim(), StringComparison.OrdinalIgnoreCase))
+            .OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        groupList.SelectedItem = selected;
+        ShowGroup();
+    }
+
+    private void ShowGroup()
+    {
+        if (groupList.SelectedItem is not FormGroupDefinition group)
+        {
+            choose.Visibility = Visibility.Collapsed; description.Text = "Select a group to see its members."; source.Text = ""; members.ItemsSource = null; return;
+        }
+        choose.Visibility = Visibility.Visible;
+        var rows = MemberRows(group.Members, forms, constraint);
+        members.ItemsSource = rows;
+        var resolved = rows.Count(row => row.Form is not null);
+        var applicable = rows.Count(row => row.Applicable);
+        description.Text = constraint is null
+            ? $"{group.Members.Count} members; {resolved} matched in the loaded catalog."
+            : $"{group.Members.Count} members; {applicable} known members applicable to this field.";
+        if (resolved != rows.Count) description.Text += " Unmatched identifiers are preserved.";
+        source.Text = group.SourcePath ?? "New group - saved with this preset.";
+    }
+
+    private void NewGroup()
+    {
+        var editor = new GroupEditorWindow(groups, forms, constraint) { Owner = this };
+        if (editor.ShowDialog() != true || editor.Group is not { } group) return;
+        groups.Add(group); created.Add(group); search.Text = ""; Filter(); groupList.SelectedItem = group;
+    }
+
+    private void Choose()
+    {
+        if (groupList.SelectedItem is not FormGroupDefinition group) return;
+        SelectedGroup = group; CreatedGroups = created.ToArray(); DialogResult = true;
+    }
+
+    internal sealed record MemberRow(string Identifier, FormRow? Form, bool Applicable)
+    {
+        public string Name => Form?.Name is { Length: > 0 } name ? name : Form?.EditorId ?? "";
+        public string Type => Form?.Type ?? "";
+        public string Plugin => Form?.Plugin ?? "";
+    }
+
+    internal static IReadOnlyList<MemberRow> MemberRows(IReadOnlyList<string> identifiers, IReadOnlyList<FormRow> forms, FormSelection? constraint)
+    {
+        var requested = identifiers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var matched = new Dictionary<string, FormRow>(StringComparer.OrdinalIgnoreCase);
+        foreach (var form in forms)
+        {
+            if (requested.Contains(form.Identifier)) matched.TryAdd(form.Identifier, form);
+            if (form.EditorId.Length != 0 && requested.Contains(form.EditorId)) matched.TryAdd(form.EditorId, form);
+        }
+        return identifiers.Select(identifier =>
+        {
+            var form = matched.GetValueOrDefault(identifier);
+            return new MemberRow(identifier, form, form is not null && (constraint?.Matches(form) ?? true));
+        }).ToArray();
+    }
+
+    internal static DataGrid CreateMemberGrid()
+    {
+        var grid = new DataGrid
+        {
+            IsReadOnly = true, AutoGenerateColumns = false, CanUserAddRows = false, CanUserDeleteRows = false,
+            SelectionMode = DataGridSelectionMode.Extended, SelectionUnit = DataGridSelectionUnit.FullRow,
+            EnableRowVirtualization = true, HeadersVisibility = DataGridHeadersVisibility.Column
+        };
+        foreach (var (title, property, width) in new[]
+        {
+            ("Name", nameof(MemberRow.Name), 180d), ("Identifier", nameof(MemberRow.Identifier), 240d),
+            ("Type", nameof(MemberRow.Type), 105d), ("Plugin", nameof(MemberRow.Plugin), 170d)
+        }) grid.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(property), Width = width });
+        return grid;
+    }
+}
+
+public sealed class GroupEditorWindow : Window
+{
+    private readonly IReadOnlyList<FormGroupDefinition> existing;
+    private readonly IReadOnlyList<FormRow> forms;
+    private readonly FormSelection? constraint;
+    private readonly List<string> identifiers = [];
+    private readonly TextBox name = new();
+    private readonly DataGrid members = GroupPickerWindow.CreateMemberGrid();
+    private readonly TextBlock status = EditorControls.Text("");
+    private readonly TextBlock nameStatus = EditorControls.Text("");
+
+    public FormGroupDefinition? Group { get; private set; }
+
+    public GroupEditorWindow(IReadOnlyList<FormGroupDefinition> existing, IReadOnlyList<FormRow> forms, FormSelection? constraint = null)
+    {
+        this.existing = existing; this.forms = forms; this.constraint = constraint;
+        Title = "New form group"; Width = 980; Height = 650; MinWidth = 760; MinHeight = 460;
+        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        SetResourceReference(StyleProperty, typeof(Window));
+        var layout = new DockPanel { Margin = new Thickness(22) };
+        var header = new StackPanel();
+        header.Children.Add(EditorControls.Text("New form group", true));
+        header.Children.Add(EditorControls.Text("Group name")); header.Children.Add(name);
+        nameStatus.Margin = new Thickness(0, 6, 0, 12); nameStatus.Foreground = EditorControls.Muted; header.Children.Add(nameStatus);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+        actions.Children.Add(EditorControls.Button("Add forms...", AddForms));
+        var remove = EditorControls.Button("Remove selected", RemoveSelected); remove.Visibility = Visibility.Collapsed;
+        members.SelectionChanged += (_, _) => remove.Visibility = members.SelectedItems.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        actions.Children.Add(remove); header.Children.Add(actions);
+        DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
+        var footer = new StackPanel(); footer.Children.Add(status);
+        footer.Children.Add(EditorControls.Text("Use Save to mod in the preset overview to save this group."));
+        EditorControls.Footer(footer, EditorControls.Button("Create group", Create), EditorControls.Button("Cancel", () => DialogResult = false));
+        DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer); layout.Children.Add(members); Content = layout;
+        name.TextChanged += (_, _) => CheckName();
+        Refresh(); CheckName();
+    }
+
+    private void AddForms()
+    {
+        var picker = new FormPickerWindow(forms, multiple: true, selection: constraint) { Owner = this };
+        if (picker.ShowDialog() != true) return;
+        foreach (var form in picker.SelectedForms)
+            if (!identifiers.Contains(form.Identifier, StringComparer.OrdinalIgnoreCase)) identifiers.Add(form.Identifier);
+        Refresh();
+    }
+
+    private void RemoveSelected()
+    {
+        foreach (var selected in members.SelectedItems.Cast<GroupPickerWindow.MemberRow>().ToArray()) identifiers.Remove(selected.Identifier);
+        Refresh();
+    }
+
+    private void Refresh()
+    {
+        members.ItemsSource = GroupPickerWindow.MemberRows(identifiers, forms, constraint);
+        status.Text = $"{identifiers.Count} members";
+    }
+
+    private string? NameError()
+    {
+        var groupName = name.Text.Trim();
+        if (FormGroupCatalog.ValidateName(groupName) is { } error) return error;
+        return existing.Any(group => group.Name.Equals(groupName, StringComparison.OrdinalIgnoreCase))
+            ? "A group with this name already exists. Choose a different name." : null;
+    }
+
+    private void CheckName()
+    {
+        nameStatus.Text = NameError() ?? (forms.Any(form => form.EditorId.Equals(name.Text.Trim(), StringComparison.OrdinalIgnoreCase))
+            ? "This name also identifies a form. AoT will use the group first in fields that accept groups."
+            : "Use this name wherever a preset field accepts form groups.");
+    }
+
+    private void Create()
+    {
+        if (NameError() is { } error) { nameStatus.Text = error; return; }
+        var group = new FormGroupDefinition(name.Text.Trim(), identifiers.ToArray());
+        var errors = FormGroupCatalog.Validate(group);
+        if (errors.Count != 0) { status.Text = string.Join(Environment.NewLine, errors); return; }
+        Group = group; DialogResult = true;
+    }
+}

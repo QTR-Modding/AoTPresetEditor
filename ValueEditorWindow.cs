@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using YamlDotNet.Core;
 
 namespace AoTPresetEditor;
@@ -9,11 +10,13 @@ public sealed class ValueEditorWindow : Window
 {
     private PresetDocument document;
     private readonly IReadOnlyList<FormRow> forms;
+    private readonly IReadOnlyList<FormGroupDefinition> groups;
     private readonly bool parametersAllowed;
     private readonly string context;
     private readonly PresetField? field;
     private readonly StackPanel content = new();
     private readonly TextBlock problems = EditorControls.Text("");
+    private readonly Expander validationDetails = new() { Header = "Validation details", Margin = new Thickness(0, 10, 0, 0) };
     private readonly TextBox? name;
     private readonly IReadOnlyList<string> initialIssues;
     private Action capture = () => { };
@@ -23,16 +26,19 @@ public sealed class ValueEditorWindow : Window
 
     public ValueEditorWindow(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed = false, PresetField? field = null, string? blockName = null,
-        IReadOnlyList<string>? issues = null)
+        IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null)
     {
         this.document = document.Clone();
         this.forms = forms;
+        this.groups = groups ?? [];
         this.context = context;
         this.parametersAllowed = parametersAllowed;
         this.field = field;
         initialIssues = issues ?? [];
         Value = value.Clone();
-        Title = title; Width = 830; Height = 750; MinWidth = 620; MinHeight = 450;
+        SetResourceReference(StyleProperty, typeof(Window));
+        Title = blockName is null ? title : blockName + " - " + title;
+        Width = 780; Height = 700; MinWidth = 620; MinHeight = 450;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var layout = new DockPanel { Margin = new Thickness(22) };
         var header = new StackPanel();
@@ -46,8 +52,11 @@ public sealed class ValueEditorWindow : Window
         if (field is not null) header.Children.Add(EditorControls.Text(field.Help));
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
         var footer = new StackPanel();
-        footer.Children.Add(new ScrollViewer { Content = problems, MaxHeight = 150, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        EditorControls.Footer(footer, EditorControls.Button("Apply", Apply), EditorControls.Button("Cancel", () => DialogResult = false));
+        validationDetails.Content = new ScrollViewer { Content = problems, MaxHeight = 110, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        footer.Children.Add(validationDetails);
+        var apply = EditorControls.Button("Apply", Apply);
+        apply.SetResourceReference(StyleProperty, "PrimaryButton");
+        EditorControls.Footer(footer, apply, EditorControls.Button("Cancel", () => DialogResult = false));
         DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer);
         layout.Children.Add(new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         Content = layout;
@@ -57,7 +66,14 @@ public sealed class ValueEditorWindow : Window
     private void Apply()
     {
         capture();
-        if (name is not null && BlockName.Length == 0) { problems.Text = "Give this block a name."; return; }
+        if (name is not null && BlockName.Length == 0)
+        {
+            problems.Text = "Give this block a name.";
+            validationDetails.Visibility = Visibility.Visible;
+            validationDetails.IsExpanded = true;
+            name.Focus();
+            return;
+        }
         DialogResult = true;
     }
 
@@ -66,13 +82,16 @@ public sealed class ValueEditorWindow : Window
         capture = () => { };
         content.Children.Clear();
         problems.Text = initialIssues.Count > 0
-            ? "Issues when opened (checked again on Apply):" + Environment.NewLine + string.Join(Environment.NewLine, initialIssues)
-            : "Incomplete settings can be applied. The preset overview will show what still needs attention.";
+            ? "Last preset check:" + Environment.NewLine + string.Join(Environment.NewLine, initialIssues) +
+                Environment.NewLine + "Apply to check your changes in the overview."
+            : "";
+        validationDetails.Visibility = initialIssues.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         problems.Foreground = EditorControls.Muted;
         var modes = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 14) };
-        modes.Children.Add(EditorControls.Button("Use shared settings or template...", ChooseReference));
+        if (document.Blocks.Any(block => block.Kind is BlockKind.Shared or BlockKind.Template))
+            modes.Children.Add(EditorControls.Button("Use shared settings or template...", ChooseReference));
         if (parametersAllowed) modes.Children.Add(EditorControls.Button("Use parameter...", ChooseParameter));
-        content.Children.Add(modes);
+        if (modes.Children.Count > 0) content.Children.Add(modes);
         if (parametersAllowed && name is not null)
         {
             var parameters = TemplateCall.FindParameters(Value, document);
@@ -110,23 +129,36 @@ public sealed class ValueEditorWindow : Window
     private void AddReferenceActions(PresetBlock? source)
     {
         if (source is not null)
-            content.Children.Add(EditorControls.Button("Edit definition...", () =>
-            {
-                var view = new ValueEditorWindow(document, forms, source.Value, source.Context, source.Name,
-                    source.Kind == BlockKind.Template) { Owner = this };
-                if (view.ShowDialog() == true)
-                {
-                    document = view.Document;
-                    document.Blocks.First(block => block.Id == source.Id).Value = view.Value;
-                    Render();
-                }
-            }));
+            content.Children.Add(EditorControls.Button("Edit definition...", () => EditDefinition(source)));
         content.Children.Add(EditorControls.Button("Replace with own settings...", () =>
         {
             if (MessageBox.Show(this, "Replace this reference with independent settings?", Title,
                 MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
             SetValue(NewValue(context, field));
         }));
+    }
+
+    private void EditDefinition(PresetBlock source)
+    {
+        var view = new ValueEditorWindow(document, forms, source.Value, source.Context, source.Name,
+            source.Kind == BlockKind.Template,
+            source.Kind == BlockKind.Shared && source.Value.Kind != ValueKind.Mapping ? field : null,
+            groups: groups) { Owner = this };
+        if (view.ShowDialog() != true) return;
+        var updated = view.Document;
+        var previous = updated.Clone();
+        updated.Blocks.First(block => block.Id == source.Id).Value = view.Value;
+        try
+        {
+            updated.RebindTemplateCalls(previous);
+            AdoptDocument(updated);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Cannot apply definition changes", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+        Render();
     }
 
     private void RenderCall(PresetBlock template, List<PresetValue> args)
@@ -139,15 +171,7 @@ public sealed class ValueEditorWindow : Window
             var index = i;
             while (args.Count <= index) args.Add(PresetValue.UnsetArgument());
             var row = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
-            var edit = EditorControls.Button("Edit...", () =>
-            {
-                var editor = new ValueEditorWindow(document, forms, args[index], "Value", parameters[index], parametersAllowed) { Owner = this };
-                if (editor.ShowDialog() != true) return;
-                document = editor.Document;
-                args[index] = editor.Value;
-                Value.Text = TemplateCall.Format(template.Key, args);
-                Render();
-            });
+            var edit = EditorControls.Button("Edit...", () => EditArgument(template, parameters[index], args[index]));
             DockPanel.SetDock(edit, Dock.Right); row.Children.Add(edit);
             row.Children.Add(EditorControls.Text(parameters[i] + ": " + Summary(args[i], document)));
             content.Children.Add(row);
@@ -157,23 +181,29 @@ public sealed class ValueEditorWindow : Window
         AddReferenceActions(template);
     }
 
+    private void EditArgument(PresetBlock template, string parameter, PresetValue argument)
+    {
+        var argumentField = PresetSchema.GetParameterField(template, parameter, document);
+        if (argument.IsUnsetArgument && argumentField?.Kind == FieldKind.ObjectList)
+            argument = NewValue(argumentField.ChildContext, argumentField);
+        var editor = new ValueEditorWindow(document, forms, argument, argumentField?.ChildContext ?? "Value",
+            parameter, parametersAllowed, argumentField, groups: groups) { Owner = this };
+        if (editor.ShowDialog() != true) return;
+        AdoptDocument(editor.Document);
+        var updatedTemplate = document.Blocks.First(block => block.Id == template.Id);
+        var currentParameters = TemplateCall.FindParameters(updatedTemplate.Value, document);
+        var currentIndex = currentParameters.ToList().IndexOf(parameter);
+        if (currentIndex >= 0 && TemplateCall.TryParse(Value.Text, out _, out var currentArguments))
+        {
+            while (currentArguments.Count < currentParameters.Count) currentArguments.Add(PresetValue.UnsetArgument());
+            currentArguments[currentIndex] = editor.Value;
+            Value.Text = TemplateCall.Format(template.Key, currentArguments);
+        }
+        Render();
+    }
+
     private void RenderMap()
     {
-        var inherited = Value.Get("<<");
-        var reuse = new DockPanel { Margin = new Thickness(0, 0, 0, 16) };
-        var edit = EditorControls.Button(inherited is null ? "Add..." : "Edit...", () =>
-        {
-            var editor = new ValueEditorWindow(document, forms, inherited ?? PresetValue.List(), "Inheritance", "Inherited settings", parametersAllowed) { Owner = this };
-            if (editor.ShowDialog() == true) { document = editor.Document; Value.Set("<<", editor.Value); Render(); }
-        });
-        DockPanel.SetDock(edit, Dock.Right); reuse.Children.Add(edit);
-        if (inherited is not null)
-        {
-            var clear = EditorControls.Button("Remove", () => { Value.Remove("<<"); Render(); });
-            DockPanel.SetDock(clear, Dock.Right); reuse.Children.Add(clear);
-        }
-        reuse.Children.Add(EditorControls.Text("Inherited settings" + (inherited is null ? " (none)" : ": " + Summary(inherited, document))));
-        content.Children.Add(reuse);
         var descriptors = PresetSchema.GetFields(context, document.Kind);
         foreach (var descriptor in descriptors) RenderField(descriptor);
         foreach (var key in Value.Fields.Keys.Where(key => key != "<<" && !descriptors.Any(item => item.Key == key)).ToArray())
@@ -184,39 +214,62 @@ public sealed class ValueEditorWindow : Window
         }
         if (descriptors.Count == 0)
             content.Children.Add(EditorControls.Button("Add setting...", AddSetting));
+        var inherited = Value.Get("<<");
+        if (inherited is null && !document.Blocks.Any(block => block.Kind is BlockKind.Shared or BlockKind.Template)) return;
+        var reuse = new DockPanel { Margin = new Thickness(0, 0, 0, 16) };
+        var edit = EditorControls.Button(inherited is null ? "Add..." : "Edit...", () =>
+        {
+            var editor = new ValueEditorWindow(document, forms, inherited ?? PresetValue.List(), "Inheritance", "Inherited settings", parametersAllowed, groups: groups) { Owner = this };
+            if (editor.ShowDialog() == true) { AdoptDocument(editor.Document); Value.Set("<<", editor.Value); Render(); }
+        });
+        DockPanel.SetDock(edit, Dock.Right); reuse.Children.Add(edit);
+        if (inherited is not null)
+        {
+            var clear = EditorControls.Button("Remove", () => { Value.Remove("<<"); Render(); });
+            DockPanel.SetDock(clear, Dock.Right); reuse.Children.Add(clear);
+        }
+        reuse.Children.Add(EditorControls.Text("Inherited settings" + (inherited is null ? " (none)" : ": " + Summary(inherited, document))));
+        content.Children.Add(new Expander { Header = "Shared settings and overrides", IsExpanded = inherited is not null,
+            Content = reuse, Margin = new Thickness(0, 10, 0, 0) });
     }
 
     private void RenderField(PresetField descriptor)
     {
         var value = Value.Get(descriptor.Key);
-        var box = new StackPanel { Margin = new Thickness(0, 0, 0, 16) };
+        var box = new StackPanel();
         var row = new DockPanel();
-        var enabled = new CheckBox { Content = descriptor.Label, IsChecked = value is not null, VerticalAlignment = VerticalAlignment.Center,
-            FontWeight = FontWeights.SemiBold, ToolTip = descriptor.Help };
-        enabled.Click += (_, _) =>
+        var label = EditorControls.Text(descriptor.Label);
+        label.FontWeight = FontWeights.SemiBold;
+        label.ToolTip = descriptor.Help;
+        label.Margin = new Thickness(0, 0, 0, 2);
+        var edit = EditorControls.Button(value is null ? "Set..." : "Edit...", () =>
         {
-            if (enabled.IsChecked == true) Value.Set(descriptor.Key, NewValue(descriptor.ChildContext, descriptor));
-            else Value.Remove(descriptor.Key);
-            Render();
-        };
-        var edit = EditorControls.Button("Edit...", () =>
-        {
-            var current = Value.Get(descriptor.Key);
-            if (current is null) return;
+            var current = Value.Get(descriptor.Key) ?? NewValue(descriptor.ChildContext, descriptor);
             var editor = new ValueEditorWindow(document, forms, current, descriptor.ChildContext, descriptor.Label,
-                parametersAllowed, descriptor) { Owner = this };
+                parametersAllowed, descriptor, groups: groups) { Owner = this };
             if (editor.ShowDialog() != true) return;
-            document = editor.Document;
+            AdoptDocument(editor.Document);
             Value.Set(descriptor.Key, editor.Value);
             Render();
         });
-        edit.IsEnabled = value is not null;
-        DockPanel.SetDock(edit, Dock.Right); row.Children.Add(edit); row.Children.Add(enabled);
-        box.Children.Add(row);
-        var detail = EditorControls.Text(value is null ? (descriptor.Required ? "Not set - required" : "Not set") : Summary(value, document));
-        detail.Foreground = EditorControls.Muted; detail.Margin = new Thickness(24, 3, 0, 0);
+        edit.VerticalAlignment = VerticalAlignment.Center;
+        DockPanel.SetDock(edit, Dock.Right); row.Children.Add(edit);
+        if (value is not null)
+        {
+            var clear = EditorControls.Button("Clear", () => { Value.Remove(descriptor.Key); Render(); });
+            clear.VerticalAlignment = VerticalAlignment.Center;
+            DockPanel.SetDock(clear, Dock.Right); row.Children.Add(clear);
+        }
+        box.Children.Add(label);
+        var inherited = Value.Get("<<") is not null;
+        var detail = EditorControls.Text(value is null ? (inherited ? "Not set here" : descriptor.Required ? "Required" : "Optional") : Summary(value, document));
+        detail.FontSize = 12;
+        detail.Foreground = value is null && descriptor.Required && !inherited ? Brushes.DarkOrange : EditorControls.Muted;
+        detail.Margin = new Thickness(0);
         box.Children.Add(detail);
-        content.Children.Add(box);
+        row.Children.Add(box);
+        content.Children.Add(new Border { Child = row, Background = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(224, 229, 237)),
+            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(5), Padding = new Thickness(12, 9, 10, 9), Margin = new Thickness(0, 0, 6, 7) });
     }
 
     private void RenderList()
@@ -228,30 +281,46 @@ public sealed class ValueEditorWindow : Window
         if (field?.Kind == FieldKind.FormList)
             actions.Children.Add(EditorControls.Button("Choose forms...", () =>
             {
-                var picker = new FormPickerWindow(forms, field.FormTypes, true) { Owner = this };
+                var picker = new FormPickerWindow(forms, multiple: true, selection: FormSelection()) { Owner = this };
                 if (picker.ShowDialog() != true) return;
                 foreach (var form in picker.SelectedForms)
                     if (!Value.Items.Any(item => item.Kind == ValueKind.Scalar && item.Text == form.Identifier))
                         Value.Items.Add(PresetValue.Scalar(form.Identifier));
                 Render();
             }));
+        if (field?.AllowsGroups == true)
+            actions.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group =>
+            {
+                if (!Value.Items.Any(item => item.Kind == ValueKind.Scalar && item.Text == group.Name))
+                    Value.Items.Add(PresetValue.Scalar(group.Name));
+                Render();
+            })));
         actions.Children.Add(EditorControls.Button("Add...", () =>
         {
             var item = NewListItem();
             var child = ChildEditor(item, "New " + ItemLabel());
-            if (child.ShowDialog() == true) { document = child.Document; Value.Items.Add(child.Value); Render(); }
+            if (child.ShowDialog() == true) { AdoptDocument(child.Document); Value.Items.Add(child.Value); Render(); }
         }));
         void EditSelected()
         {
             var index = list.SelectedIndex;
             if (index < 0) return;
             var child = ChildEditor(Value.Items[index], ItemLabel() + " " + (index + 1));
-            if (child.ShowDialog() == true) { document = child.Document; Value.Items[index] = child.Value; Render(); }
+            if (child.ShowDialog() == true) { AdoptDocument(child.Document); Value.Items[index] = child.Value; Render(); }
         }
-        actions.Children.Add(EditorControls.Button("Edit...", EditSelected));
-        actions.Children.Add(EditorControls.Button("Remove", () => { if (list.SelectedIndex >= 0) { Value.Items.RemoveAt(list.SelectedIndex); Render(); } }));
-        actions.Children.Add(EditorControls.Button("Move up", () => MoveItem(-1)));
-        actions.Children.Add(EditorControls.Button("Move down", () => MoveItem(1)));
+        var edit = EditorControls.Button("Edit...", EditSelected);
+        var remove = EditorControls.Button("Remove", () => { if (list.SelectedIndex >= 0) { Value.Items.RemoveAt(list.SelectedIndex); Render(); } });
+        var up = EditorControls.Button("Move up", () => MoveItem(-1));
+        var down = EditorControls.Button("Move down", () => MoveItem(1));
+        actions.Children.Add(edit); actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
+        void ShowAvailableActions()
+        {
+            edit.Visibility = remove.Visibility = list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
+            up.Visibility = list.SelectedIndex > 0 ? Visibility.Visible : Visibility.Collapsed;
+            down.Visibility = list.SelectedIndex >= 0 && list.SelectedIndex < Value.Items.Count - 1 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        list.SelectionChanged += (_, _) => ShowAvailableActions();
+        ShowAvailableActions();
         list.MouseDoubleClick += (_, _) => EditSelected();
         void MoveItem(int direction)
         {
@@ -292,7 +361,7 @@ public sealed class ValueEditorWindow : Window
     }
     private ValueEditorWindow ChildEditor(PresetValue item, string title) => new(document, forms, item, ItemContext(), title,
         parametersAllowed, field?.Kind switch { FieldKind.FormList => field with { Kind = FieldKind.Form },
-            FieldKind.IntegerList => field with { Kind = FieldKind.Integer }, _ => null }) { Owner = this };
+            FieldKind.IntegerList => field with { Kind = FieldKind.Integer }, _ => null }, groups: groups) { Owner = this };
 
     private void RenderScalar()
     {
@@ -318,10 +387,12 @@ public sealed class ValueEditorWindow : Window
         {
             content.Children.Add(EditorControls.Button("Choose form...", () =>
             {
-                var picker = new FormPickerWindow(forms, field?.FormTypes, false) { Owner = this };
+                var picker = new FormPickerWindow(forms, selection: FormSelection()) { Owner = this };
                 if (picker.ShowDialog() == true && picker.SelectedForms.FirstOrDefault() is { } form) entry.Text = form.Identifier;
             }));
         }
+        if (field?.AllowsGroups == true)
+            content.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group => entry.Text = group.Name)));
         if (field?.Kind is FieldKind.FormList or FieldKind.IntegerList || field is null)
         {
             content.Children.Add(EditorControls.Button("Use a list of values...", () =>
@@ -346,6 +417,25 @@ public sealed class ValueEditorWindow : Window
         }
     }
 
+    private FormSelection FormSelection() => new(field?.FormTypes,
+        field?.MatchPresetCategory == true ? document.Category : null, field?.TriggerOnly == true);
+
+    private void AdoptDocument(PresetDocument updated)
+    {
+        updated.RebindValue(Value, document);
+        document = updated;
+    }
+
+    private void ChooseGroup(Action<FormGroupDefinition> use)
+    {
+        var available = document.PendingGroups.Concat(groups)
+            .DistinctBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        var picker = new GroupPickerWindow(available, forms, FormSelection()) { Owner = this };
+        if (picker.ShowDialog() != true || picker.SelectedGroup is not { } selected) return;
+        document.PendingGroups.AddRange(picker.CreatedGroups);
+        use(selected);
+    }
+
     private void ChooseReference()
     {
         capture();
@@ -356,7 +446,7 @@ public sealed class ValueEditorWindow : Window
         var choices = new ListBox { ItemsSource = available, DisplayMemberPath = nameof(PresetBlock.Name), MinHeight = 170, MaxHeight = 240 };
         panel.Children.Add(choices);
         if (available.Length == 0) panel.Children.Add(EditorControls.Text("Create shared settings or a template from the preset overview first."));
-        EditorControls.Footer(panel, EditorControls.Button("Use", () =>
+        var use = EditorControls.Button("Use", () =>
         {
             if (choices.SelectedItem is not PresetBlock chosen) return;
             if (chosen.Kind == BlockKind.Shared)
@@ -374,7 +464,10 @@ public sealed class ValueEditorWindow : Window
                 SetValue(PresetValue.Scalar(TemplateCall.Format(chosen.Key, args)));
             }
             dialog.DialogResult = true;
-        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false));
+        });
+        use.Visibility = Visibility.Collapsed;
+        choices.SelectionChanged += (_, _) => use.Visibility = choices.SelectedItem is not null ? Visibility.Visible : Visibility.Collapsed;
+        EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false));
         dialog.Content = panel;
         dialog.ShowDialog();
     }

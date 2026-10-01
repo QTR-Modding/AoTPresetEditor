@@ -21,17 +21,20 @@ public sealed class FormPickerWindow : Window
     private readonly TextBlock count = new();
     private readonly TextBlock selection = new() { TextWrapping = TextWrapping.Wrap };
     private readonly DataGrid results = new();
-    private readonly Button choose = new() { Content = "Choose", IsDefault = true, IsEnabled = false };
+    private readonly Button choose = new() { Content = "Choose", IsDefault = true, Visibility = Visibility.Collapsed };
+    private readonly Button clear = new() { Content = "Clear selection", Visibility = Visibility.Collapsed };
     private readonly HashSet<FormRow> selected = [];
     private readonly DispatcherTimer searchTimer = new() { Interval = SearchDelay };
     private bool replacingResults;
 
     public IReadOnlyList<FormRow> SelectedForms { get; private set; } = [];
 
-    public FormPickerWindow(IReadOnlyList<FormRow> forms, IReadOnlyCollection<string>? allowedTypes = null, bool multiple = false)
+    public FormPickerWindow(IReadOnlyList<FormRow> forms, IReadOnlyCollection<string>? allowedTypes = null, bool multiple = false,
+        FormSelection? selection = null)
     {
-        this.forms = allowedTypes is { Count: > 0 }
-            ? forms.Where(form => allowedTypes.Contains(form.Type, StringComparer.OrdinalIgnoreCase)).ToArray()
+        this.forms = allowedTypes is { Count: > 0 } || selection is not null
+            ? forms.Where(form => (allowedTypes is not { Count: > 0 } || allowedTypes.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
+                (selection?.Matches(form) ?? true)).ToArray()
             : forms;
         this.multiple = multiple;
         Title = multiple ? "Choose forms" : "Choose a form";
@@ -88,7 +91,6 @@ public sealed class FormPickerWindow : Window
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Bottom };
         if (multiple)
         {
-            var clear = new Button { Content = "Clear selection" };
             clear.Click += (_, _) => { selected.Clear(); results.UnselectAll(); UpdateSelection(); };
             buttons.Children.Add(clear);
         }
@@ -187,6 +189,7 @@ public sealed class FormPickerWindow : Window
     private void UpdateSelection()
     {
         choose.IsEnabled = selected.Count > 0;
+        choose.Visibility = clear.Visibility = selected.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         selection.Text = multiple
             ? $"{selected.Count:N0} selected. Ctrl/Shift selects multiple forms; selections stay when filtering."
             : selected.FirstOrDefault()?.Identifier ?? "Choose a form from the list.";

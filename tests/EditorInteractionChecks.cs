@@ -16,6 +16,8 @@ internal static class EditorInteractionChecks
     {
         PickerFiltering();
         ParametersAndArguments();
+        NestedTemplateEditing();
+        TypedChildControls();
         ListEditing();
         DraftIsolation();
         OverviewActions();
@@ -73,6 +75,105 @@ internal static class EditorInteractionChecks
             "Opening a call with missing arguments must preserve its warning.");
         Require(call.Value.Text == "sound(2)", "Opening a call must not silently add arguments.");
         call.Close();
+    }
+
+    private static void NestedTemplateEditing()
+    {
+        var original = PresetDocument.Parse("""
+            templates:
+              transforms:
+              - FormEditorID: Fire
+                finalFormEditorID: $cooked
+                duration: 1
+              - FormEditorID: Frost
+                finalFormEditorID: $frozen
+                duration: 1
+            formsLists:
+            - forms: FoodBeef
+              transformers: transforms(FoodCookedBeef, FoodBeefF)
+            """, "FOOD", PresetKind.Addon);
+        var rule = original.Blocks.Single(block => block.Kind == BlockKind.Rule);
+        var descriptor = PresetSchema.GetFields("AddonRule", PresetKind.Addon).Single(field => field.Key == "transformers");
+        var outer = new ValueEditorWindow(original, Forms, rule.Value, "AddonRule", "Rule");
+        var call = new ValueEditorWindow(outer.Document, Forms, outer.Value.Get("transformers")!, descriptor.ChildContext,
+            descriptor.Label, field: descriptor);
+        var template = call.Document.Blocks.Single(block => block.Kind == BlockKind.Template);
+        var definition = new ValueEditorWindow(call.Document, Forms, template.Value, template.Context, template.Name, true);
+        var controls = Field<StackPanel>(definition, "content");
+        controls.Children.OfType<ListBox>().Single().SelectedIndex = 0;
+        Click(controls.Children.OfType<WrapPanel>().Single().Children.OfType<Button>().Single(button => Equals(button.Content, "Move down")));
+
+        var changed = definition.Document;
+        var previous = changed.Clone();
+        changed.Blocks.Single(block => block.Id == template.Id).Value = definition.Value;
+        changed.RebindTemplateCalls(previous);
+        Invoke(call, "AdoptDocument", changed);
+        Invoke(call, "Render");
+        Require(TemplateCall.TryParse(call.Value.Text, out var callName, out var arguments) &&
+            arguments.Select(value => value.Text).SequenceEqual(["FoodBeefF", "FoodCookedBeef"]),
+            "Returning from a reordered definition must bind the open call to the new parameter order immediately.");
+        Require(Field<StackPanel>(call, "content").Children.OfType<DockPanel>()
+            .SelectMany(row => row.Children.OfType<TextBlock>()).Any(text => text.Text == "frozen: FoodBeefF"),
+            "The open call must display each argument beside its actual parameter after a nested definition edit.");
+
+        var argumentField = PresetSchema.GetParameterField(changed.Blocks.Single(block => block.Id == template.Id), "frozen", changed)!;
+        var argument = new ValueEditorWindow(call.Document, Forms, arguments[0], argumentField.ChildContext, "frozen", field: argumentField);
+        Field<StackPanel>(argument, "content").Children.OfType<TextBox>().Single().Text = "FoodChickenF";
+        Field<Action>(argument, "capture")();
+        Invoke(call, "AdoptDocument", argument.Document);
+        Require(TemplateCall.TryParse(call.Value.Text, out callName, out arguments), "The edited call must remain readable.");
+        arguments[0] = argument.Value;
+        call.Value.Text = TemplateCall.Format(callName, arguments);
+        Invoke(outer, "AdoptDocument", call.Document);
+        outer.Value.Set("transformers", call.Value);
+
+        var applied = outer.Document;
+        previous = applied.Clone();
+        applied.Blocks.Single(block => block.Id == rule.Id).Value = outer.Value;
+        applied.RebindTemplateCalls(previous);
+        var savedCall = applied.Blocks.Single(block => block.Id == rule.Id).Value.Get("transformers")!;
+        Require(TemplateCall.TryParse(savedCall.Text, out _, out arguments) &&
+            arguments.Select(value => value.Text).SequenceEqual(["FoodChickenF", "FoodCookedBeef"]),
+            "Applying the containing rule must preserve the edited frozen result without rebinding it a second time.");
+        Require(original.Blocks.Single(block => block.Id == rule.Id).Value.Get("transformers")!.Text ==
+            "transforms(FoodCookedBeef, FoodBeefF)", "Nested edits must not mutate the original preset before it is applied.");
+        argument.Close(); definition.Close(); call.Close(); outer.Close();
+    }
+
+    private static void TypedChildControls()
+    {
+        var document = PresetDocument.Parse("""
+            sharedSound: &sharedSound IceCrack
+            templates:
+              progress:
+                owners: FoodBeef
+                stages: $steps
+                finalFormEditorID: FoodBeef
+            ownerLists: []
+            """, "FOOD", PresetKind.Custom);
+        var template = document.Blocks.Single(block => block.Kind == BlockKind.Template);
+        var stageField = PresetSchema.GetParameterField(template, "steps", document)!;
+        Require(stageField.Kind == FieldKind.ObjectList, "A stage-list parameter must retain its structured field type.");
+        var argument = ValueEditorWindow.NewValue(stageField.ChildContext, stageField);
+        var list = new ValueEditorWindow(document, Forms, argument, stageField.ChildContext, "steps", field: stageField);
+        Require(Field<StackPanel>(list, "content").Children.OfType<ListBox>().Any(),
+            "An initialized structured argument must open with entry controls.");
+        var stage = (PresetValue)Invoke(list, "NewListItem")!;
+        Require(stage.Kind == ValueKind.Mapping && stage.Get("no")?.Text == "0" && stage.Get("name") is not null,
+            "Adding a stage argument must create stage fields rather than a scalar value.");
+        list.Close();
+
+        var soundField = PresetSchema.GetFields("Transformer", PresetKind.Custom).Single(field => field.Key == "sound");
+        var shared = document.Blocks.Single(block => block.Kind == BlockKind.Shared);
+        var definition = new ValueEditorWindow(document, Forms, shared.Value, shared.Context, shared.Name, field: soundField);
+        var constraint = (FormSelection)Invoke(definition, "FormSelection")!;
+        var sound = new FormRow("Crack", "IceCrack", "SoundDescriptor", "Sounds.esp", "Sounds.esp", "0x800~Sounds.esp");
+        Require(constraint.Matches(sound) && !constraint.Matches(Forms[2]),
+            "A scalar definition opened from a sound field must restrict its form picker to sound descriptors.");
+        Field<Action>(definition, "capture")();
+        Require(definition.Value.Text == "IceCrack" && definition.Value.Anchor == "sharedSound",
+            "Opening a typed shared scalar must preserve its existing value and shared anchor.");
+        definition.Close();
     }
 
     private static void ListEditing()
@@ -134,24 +235,25 @@ internal static class EditorInteractionChecks
     {
         var workspace = new PresetWorkspace();
         var actions = Field<StackPanel>(workspace, "addActions");
-        Require(!actions.IsEnabled, "An empty workspace must not offer block editing.");
+        Require(actions.Visibility == Visibility.Collapsed, "An empty workspace must hide block editing actions.");
         var document = PresetDocument.Create("FOOD", PresetKind.Default);
         SetField(workspace, "document", document);
         Invoke(workspace, "UpdateActions");
-        Require(((Button)actions.Children[0]).IsEnabled, "An empty default preset must allow its first rule.");
+        Require(actions.Visibility == Visibility.Visible && ((Button)actions.Children[0]).Visibility == Visibility.Visible,
+            "An empty default preset must show the action for its first rule.");
         document.Add(BlockKind.Rule, "Default", "DefaultRule");
         Invoke(workspace, "UpdateActions");
-        Require(!((Button)actions.Children[0]).IsEnabled, "A default preset must not offer a second rule.");
+        Require(((Button)actions.Children[0]).Visibility == Visibility.Collapsed, "A default preset must hide the unavailable second-rule action.");
         document = PresetDocument.Create("FOOD", PresetKind.Addon);
         document.Blocks.Add(new PresetBlock { Kind = BlockKind.Rule, Key = "formsLists", Value = PresetValue.Alias("sharedRules") });
         SetField(workspace, "document", document);
         Invoke(workspace, "UpdateActions");
-        Require(!((Button)actions.Children[0]).IsEnabled, "A preset with a shared rule list must not offer a crashing Add rule action.");
+        Require(((Button)actions.Children[0]).Visibility == Visibility.Collapsed, "A preset with a shared rule list must hide the unavailable Add rule action.");
     }
 
     private static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;
     private static void SetField(object owner, string name, object value) => owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(owner, value);
-    private static object? Invoke(object owner, string name) => owner.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(owner, null);
+    private static object? Invoke(object owner, string name, params object?[] arguments) => owner.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!.Invoke(owner, arguments);
     private static void Search(object window, string text) { Field<TextBox>(window, "search").Text = text; Invoke(window, "FilterForms"); }
     private static void Click(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }

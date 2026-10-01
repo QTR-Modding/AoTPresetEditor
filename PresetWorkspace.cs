@@ -24,15 +24,15 @@ public sealed class PresetWorkspace : UserControl
     private readonly TextBlock location = EditorControls.Text("");
     private readonly ListBox blocks = new() { BorderThickness = new Thickness(0), Margin = new Thickness(0, 14, 0, 14) };
     private readonly StackPanel addActions = new() { Orientation = Orientation.Horizontal };
+    private readonly StackPanel blockActions = new();
     private readonly Button save;
     private readonly Button yaml;
-    private readonly Button edit;
-    private readonly Button remove;
     private readonly Button up;
     private readonly Button down;
     private PresetDocument? document;
     private PresetValidationResult? validation;
     private IReadOnlyList<FormRow> forms = [];
+    private IReadOnlyList<FormGroupDefinition> groups = [];
     private string filename = "New preset";
     private string? exportRoot;
     private string? openedPath;
@@ -57,24 +57,27 @@ public sealed class PresetWorkspace : UserControl
         addActions.Children.Add(EditorControls.Button("Add template", () => Add(BlockKind.Template)));
         header.Children.Add(addActions);
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
-        var footer = new StackPanel();
         var actions = new WrapPanel();
-        edit = EditorControls.Button("Open block...", Edit);
-        remove = EditorControls.Button("Delete block", Remove);
+        var edit = EditorControls.Button("Open block...", Edit);
+        var remove = EditorControls.Button("Delete block", Remove);
         up = EditorControls.Button("Move up", () => Move(-1));
         down = EditorControls.Button("Move down", () => Move(1));
         actions.Children.Add(edit); actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
-        footer.Children.Add(actions);
+        blockActions.Children.Add(actions);
         var help = EditorControls.Text("Open a block to edit its fields. Rule order controls priority; shared settings and templates keep their own definitions.");
-        help.Margin = new Thickness(0, 14, 0, 0); help.Foreground = EditorControls.Muted; footer.Children.Add(help);
-        DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer);
+        help.Margin = new Thickness(0, 14, 0, 0); help.Foreground = EditorControls.Muted; blockActions.Children.Add(help);
+        DockPanel.SetDock(blockActions, Dock.Bottom); layout.Children.Add(blockActions);
         blocks.SelectionChanged += (_, _) => UpdateActions();
         blocks.MouseDoubleClick += (_, _) => Edit();
         layout.Children.Add(blocks); Content = layout;
         UpdateActions();
     }
 
-    public void SetForms(IReadOnlyList<FormRow> catalog) => forms = catalog;
+    public void SetCatalog(IReadOnlyList<FormRow> catalog, IReadOnlyList<FormGroupDefinition> formGroups)
+    {
+        forms = catalog;
+        groups = formGroups;
+    }
 
     public bool CanLeave() => !dirty || MessageBox.Show(Host, "Discard unsaved changes to this preset?", "Unsaved preset",
         MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK;
@@ -183,12 +186,13 @@ public sealed class PresetWorkspace : UserControl
         if (block.Kind == BlockKind.Shared && block.Value.Anchor.Length == 0) block.Value.Anchor = block.Key;
         var editor = new ValueEditorWindow(draft, forms, block.Value, block.Context, KindLabel(block.Kind),
             block.Kind == BlockKind.Template, blockName: block.Name,
-            issues: validation?.Errors.GetValueOrDefault(block.Id)) { Owner = Host };
+            issues: validation?.Errors.GetValueOrDefault(block.Id), groups: groups) { Owner = Host };
         if (editor.ShowDialog() != true) return;
         var updated = editor.Document;
+        var previous = updated.Clone();
         block = updated.Blocks.First(entry => entry.Id == id);
         block.Name = editor.BlockName; block.Value = editor.Value;
-        try { updated.RebindTemplateCalls(document); }
+        try { updated.RebindTemplateCalls(previous); }
         catch (Exception error)
         {
             MessageBox.Show(Host, error.Message, "Cannot apply template changes", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -234,7 +238,8 @@ public sealed class PresetWorkspace : UserControl
             state.Text = document.Category + " / " + document.Kind + (result.IsValid ? " - \u2713 Preset structure valid" : $" - \u2717 {errorCount} issues to resolve");
             if (result.FileErrors.Count > 0) state.Text += Environment.NewLine + string.Join(Environment.NewLine, result.FileErrors);
             state.ToolTip = "Checks AoT fields, YAML templates and shared settings. Trigger behavior and form availability still depend on the installed game configuration.";
-            RenderBlocks(selection); UpdateActions();
+            var selectedNow = (blocks.SelectedItem as ListBoxItem)?.Tag as string;
+            RenderBlocks(selectedNow); UpdateActions();
         }
         catch (OperationCanceledException) { }
         finally { if (ReferenceEquals(checking, request)) checking = null; }
@@ -261,12 +266,16 @@ public sealed class PresetWorkspace : UserControl
 
     private void UpdateActions()
     {
-        addActions.IsEnabled = document is not null;
-        ((Button)addActions.Children[0]).IsEnabled = document is not null &&
+        addActions.Visibility = location.Visibility = document is not null ? Visibility.Visible : Visibility.Collapsed;
+        var canAddRule = document is not null &&
             !document.Blocks.Any(block => block.Kind == BlockKind.Rule && block.Key is "ownerLists" or "formsLists") &&
             (document.Kind != PresetKind.Default || !document.Blocks.Any(block => block.Kind == BlockKind.Rule));
-        save.IsEnabled = yaml.IsEnabled = validation?.IsValid == true;
-        edit.IsEnabled = remove.IsEnabled = up.IsEnabled = down.IsEnabled = blocks.SelectedItem is not null;
+        ((Button)addActions.Children[0]).Visibility = canAddRule ? Visibility.Visible : Visibility.Collapsed;
+        save.Visibility = yaml.Visibility = validation?.IsValid == true ? Visibility.Visible : Visibility.Collapsed;
+        var selectedIndex = blocks.SelectedIndex;
+        blockActions.Visibility = selectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
+        up.Visibility = selectedIndex > 0 ? Visibility.Visible : Visibility.Collapsed;
+        down.Visibility = selectedIndex >= 0 && selectedIndex < blocks.Items.Count - 1 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ShowYaml()
@@ -304,11 +313,7 @@ public sealed class PresetWorkspace : UserControl
             {
                 if (MessageBox.Show(Host, "Replace this preset?" + Environment.NewLine + path, "Save preset", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
             }
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var bytes = new UTF8Encoding(false).GetBytes(validation.Source);
-            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            try { File.WriteAllBytes(temporary, bytes); File.Move(temporary, path, true); }
-            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+            PresetExport.Save(path, validation.Source, document.PendingGroups, picker.FolderName);
             exportRoot = picker.FolderName; dirty = false;
             // The selected destination may be the same file through MO2's virtual Data path.
             openedPath = path; openedHash = Hash(Encoding.UTF8.GetBytes(validation.Source));

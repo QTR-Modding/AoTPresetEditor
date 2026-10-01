@@ -62,6 +62,7 @@ public sealed class PresetDocument
     public string Category { get; set; } = "FOOD";
     public PresetKind Kind { get; set; } = PresetKind.Custom;
     public List<PresetBlock> Blocks { get; } = [];
+    public List<FormGroupDefinition> PendingGroups { get; } = [];
     public List<string> Comments { get; } = [];
     public List<string> TrailingComments { get; } = [];
     private List<string> ruleComments = [];
@@ -293,6 +294,7 @@ public sealed class PresetDocument
     {
         var clone = Create(Category, Kind);
         clone.Blocks.AddRange(Blocks.Select(block => block.Clone()));
+        clone.PendingGroups.AddRange(PendingGroups.Select(group => group with { Members = group.Members.ToArray() }));
         clone.Comments.AddRange(Comments);
         clone.TrailingComments.AddRange(TrailingComments);
         clone.ruleComments = [.. ruleComments];
@@ -309,36 +311,39 @@ public sealed class PresetDocument
         for (var pass = 0; pass <= templateCount; pass++)
         {
             var current = TemplateSignatures(this);
-            var changes = current.Where(entry => signatures.TryGetValue(entry.Key, out var before) &&
-                !entry.Value.SequenceEqual(before)).ToDictionary(entry => entry.Key, entry => (Before: signatures[entry.Key], After: entry.Value));
-            if (changes.Count == 0) return;
-            foreach (var block in Blocks) Rewrite(block.Value);
+            if (!current.Any(entry => signatures.TryGetValue(entry.Key, out var before) && !entry.Value.SequenceEqual(before))) return;
+            foreach (var block in Blocks) RebindCalls(block.Value, signatures, current);
             signatures = current;
-
-            bool Rewrite(PresetValue value)
-            {
-                var changed = false;
-                if (value.Kind == ValueKind.Scalar && value.Tag != "tag:yaml.org,2002:str" &&
-                    TemplateCall.TryParse(value.Text, out var name, out var arguments) && current.ContainsKey(name))
-                {
-                    foreach (var argument in arguments) changed |= Rewrite(argument);
-                    if (changes.TryGetValue(name, out var signature) && arguments.Count == signature.Before.Count)
-                    {
-                        var values = signature.Before.Select((parameter, index) => (parameter, arguments[index]))
-                            .ToDictionary(pair => pair.parameter, pair => pair.Item2, StringComparer.Ordinal);
-                        arguments = signature.After.Select(parameter => values.GetValueOrDefault(parameter) ?? PresetValue.UnsetArgument()).ToList();
-                        changed = true;
-                    }
-                    if (changed) value.Text = TemplateCall.Format(name, arguments);
-                }
-                else
-                {
-                    foreach (var child in value.Fields.Values.Concat(value.Items)) changed |= Rewrite(child);
-                }
-                return changed;
-            }
         }
         throw new InvalidDataException("Template parameters could not settle. Check for recursive template calls.");
+    }
+
+    public void RebindValue(PresetValue value, PresetDocument previous) =>
+        RebindCalls(value, TemplateSignatures(previous), TemplateSignatures(this));
+
+    private static bool RebindCalls(PresetValue value,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> previous,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> current)
+    {
+        var changed = false;
+        if (value.Kind == ValueKind.Scalar && value.Tag != "tag:yaml.org,2002:str" &&
+            TemplateCall.TryParse(value.Text, out var name, out var arguments) && current.TryGetValue(name, out var after))
+        {
+            foreach (var argument in arguments) changed |= RebindCalls(argument, previous, current);
+            if (previous.TryGetValue(name, out var before) && !after.SequenceEqual(before) && arguments.Count == before.Count)
+            {
+                var values = before.Select((parameter, index) => (parameter, arguments[index]))
+                    .ToDictionary(pair => pair.parameter, pair => pair.Item2, StringComparer.Ordinal);
+                arguments = after.Select(parameter => values.GetValueOrDefault(parameter) ?? PresetValue.UnsetArgument()).ToList();
+                changed = true;
+            }
+            if (changed) value.Text = TemplateCall.Format(name, arguments);
+        }
+        else
+        {
+            foreach (var child in value.Fields.Values.Concat(value.Items)) changed |= RebindCalls(child, previous, current);
+        }
+        return changed;
     }
 
     private static Dictionary<string, IReadOnlyList<string>> TemplateSignatures(PresetDocument document) =>

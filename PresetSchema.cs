@@ -5,7 +5,8 @@ namespace AoTPresetEditor;
 public enum FieldKind { Text, Form, FormList, Number, Integer, IntegerList, Boolean, Color, ObjectList }
 
 public sealed record PresetField(string Key, string Label, FieldKind Kind, string Help,
-    bool Required = false, string ChildContext = "", string[]? FormTypes = null, string? DefaultText = null);
+    bool Required = false, string ChildContext = "", string[]? FormTypes = null, string? DefaultText = null,
+    bool AllowsGroups = false, bool MatchPresetCategory = false, bool TriggerOnly = false);
 
 public static class PresetSchema
 {
@@ -20,14 +21,14 @@ public static class PresetSchema
     private static readonly PresetField[] TriggerFields =
     [
         new("allowed_stages", "Allowed stages", FieldKind.IntegerList, "Stage numbers this trigger affects. Unset or empty means all stages; 0 selects the initial stage."),
-        new("containers", "Inventory filter", FieldKind.FormList, "Inventory owner's base forms where this trigger can apply. Unset or empty allows all inventories. World items ignore this filter.")
+        new("containers", "Inventory filter", FieldKind.FormList, "Inventory owner's base forms where this trigger can apply. Unset or empty allows all inventories. World items ignore this filter.", AllowsGroups: true)
     ];
     private static readonly PresetField[] StageFields =
     [
         new("no", "Stage number", FieldKind.Integer, "Start at 0 and increase by one for each stage.", true, DefaultText: "0"),
         new("name", "Stage name", FieldKind.Text, "Added to the item name for generated FOOD or MISC stages. An empty name leaves the item name unchanged.", true, DefaultText: ""),
         new("duration", "Duration (game hours)", FieldKind.Number, "How long this stage lasts. Use a positive number or .inf for an infinite stage.", true, DefaultText: "1"),
-        new("FormEditorID", "Stage item", FieldKind.Form, "Stage 0 always uses the source item. Later FOOD or MISC stages may leave this unset to generate a derivative. Other item types need a replacement item.", FormTypes: ItemTypes),
+        new("FormEditorID", "Stage item", FieldKind.Form, "Stage 0 always uses the source item. Later FOOD or MISC stages may leave this unset to generate a derivative. Other item types need a replacement item.", FormTypes: ItemTypes, MatchPresetCategory: true),
         new("value", "Value override", FieldKind.Integer, "Value of a generated stage item. Unset or a negative number keeps its original value. Zero is a valid override."),
         new("weight", "Weight override", FieldKind.Number, "Weight of a generated stage item. Unset or a negative number keeps its original weight. Zero is a valid override."),
         new("crafting_allowed", "Allow crafting", FieldKind.Boolean, "Allows this stage item to stand in for its source item in crafting menus. Defaults to false.", DefaultText: "false"),
@@ -36,14 +37,14 @@ public static class PresetSchema
     ];
     private static readonly PresetField[] ModulatorFields =
     [
-        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. A form group can supply several triggers.", true),
+        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. A form group can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
         new("magnitude", "Time multiplier", FieldKind.Number, "1 is normal speed, 0 pauses progression, and negative values reverse it. This does not change transformer duration.", true, DefaultText: "1"),
         .. TriggerFields,
         .. VisualFields
     ];
     private static readonly PresetField[] TransformerFields =
     [
-        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. A form group can supply several triggers.", true),
+        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. A form group can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
         new("finalFormEditorID", "Result item", FieldKind.Form, "The item produced when the transformation finishes.", true, FormTypes: ItemTypes),
         new("duration", "Duration (game hours)", FieldKind.Number, "Positive time needed to finish this transformation while its trigger applies.", true, DefaultText: "0.05"),
         .. TriggerFields,
@@ -59,18 +60,18 @@ public static class PresetSchema
     [
         new("stages", "Stages", FieldKind.ObjectList, "The sequence of stages, beginning with stage 0.", true, "stage"),
         new("finalFormEditorID", "Final result item", FieldKind.Form, "Item produced after the last stage. Required even if an infinite stage prevents reaching it.", true, FormTypes: ItemTypes),
-        new("containers", "Evolution filter", FieldKind.FormList, "Inventory owner's base forms where evolution is allowed. For a world item, this checks the item's own base form. Unset or empty is unrestricted."),
+        new("containers", "Evolution filter", FieldKind.FormList, "Inventory owner's base forms where evolution is allowed. For a world item, this checks the item's own base form. Unset or empty is unrestricted.", AllowsGroups: true),
         new("timeModulators", "Time modulators", FieldKind.ObjectList, "Changes stage progression while a trigger applies. The first matching modulator wins when no transformer matches.", ChildContext: "modulator"),
         new("transformers", "Transformers", FieldKind.ObjectList, "Triggered transformations, in priority order. The first matching transformer wins.", ChildContext: "transformer")
     ];
     private static readonly PresetField[] CustomFields =
     [
-        new("owners", "Applies to", FieldKind.FormList, "Items selected by form identifier or words in their names. A scalar or a list is accepted.", true, FormTypes: ItemTypes),
+        new("owners", "Applies to", FieldKind.FormList, "Items selected by form identifier or words in their names. A scalar or a list is accepted.", true, FormTypes: ItemTypes, MatchPresetCategory: true),
         .. RuleFields
     ];
     private static readonly PresetField[] AddonFields =
     [
-        new("forms", "Applies to", FieldKind.FormList, "Items selected by form identifiers or form groups. A scalar or a list is accepted.", true, FormTypes: ItemTypes),
+        new("forms", "Applies to", FieldKind.FormList, "Items selected by form identifiers or form groups. A scalar or a list is accepted.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true),
         .. RuleFields.Where(field => field.Key is not ("stages" or "finalFormEditorID"))
     ];
 
@@ -107,6 +108,116 @@ public static class PresetSchema
         return "rule";
     }
 
+    public static PresetField? GetParameterField(PresetBlock template, string parameter, PresetDocument document) =>
+        GetParameterField(template, parameter, document, []);
+
+    private static PresetField? GetParameterField(PresetBlock template, string parameter, PresetDocument document,
+        HashSet<(string, string)> activeTemplates)
+    {
+        var key = (template.Id, parameter);
+        if (!activeTemplates.Add(key)) return null;
+        try
+        {
+            var uses = new List<PresetField?>();
+            FindParameterUses(template.Value, template.Context, null, parameter, document, uses, activeTemplates, []);
+            return CombineParameterFields(parameter, uses);
+        }
+        finally { activeTemplates.Remove(key); }
+    }
+
+    private static void FindParameterUses(PresetValue value, string context, PresetField? field, string parameter,
+        PresetDocument document, List<PresetField?> uses, HashSet<(string, string)> activeTemplates, HashSet<PresetValue> activeValues)
+    {
+        if (!activeValues.Add(value)) return;
+        try
+        {
+            if (value.Kind == ValueKind.Alias)
+            {
+                var source = document.Blocks.SelectMany(block => PresetDocument.Descendants(block.Value))
+                    .FirstOrDefault(node => node.Anchor == value.Text);
+                if (source is not null)
+                {
+                    var sourceContext = NormalizeContext(context) is "value" or "values" or "" ? InferContext("", source) : context;
+                    FindParameterUses(source, sourceContext, field, parameter, document, uses, activeTemplates, activeValues);
+                }
+            }
+            else if (value.Kind == ValueKind.Scalar)
+            {
+                if (value.Text == "$" + parameter) uses.Add(field);
+                else if (value.Tag != "tag:yaml.org,2002:str" && TemplateCall.TryParse(value.Text, out var name, out var arguments))
+                {
+                    var called = document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name);
+                    if (called is null) return;
+                    var parameters = TemplateCall.FindParameters(called.Value, document);
+                    for (var index = 0; index < arguments.Count; index++)
+                    {
+                        var argumentField = index < parameters.Count ? GetParameterField(called, parameters[index], document, activeTemplates) : null;
+                        FindParameterUses(arguments[index], argumentField?.ChildContext ?? "value", argumentField,
+                            parameter, document, uses, activeTemplates, activeValues);
+                    }
+                }
+            }
+            else if (value.Kind == ValueKind.Sequence)
+            {
+                var childContext = NormalizeContext(context) switch
+                {
+                    "stages" => "stage", "modulators" => "modulator", "transformers" => "transformer",
+                    "effects" => "effect", "rules" => "rule", _ => field?.ChildContext ?? context
+                };
+                var childField = field?.Kind switch
+                {
+                    FieldKind.FormList => field with { Kind = FieldKind.Form },
+                    FieldKind.IntegerList => field with { Kind = FieldKind.Integer },
+                    FieldKind.ObjectList => null,
+                    _ => field
+                };
+                foreach (var child in value.Items)
+                    FindParameterUses(child, childContext, childField, parameter, document, uses, activeTemplates, activeValues);
+            }
+            else
+            {
+                var fields = GetFields(context, document.Kind);
+                if (fields.Count == 0) fields = GetFields(InferContext("", value), document.Kind);
+                foreach (var (name, child) in value.Fields)
+                {
+                    if (name == "<<") FindParameterUses(child, context, field, parameter, document, uses, activeTemplates, activeValues);
+                    else
+                    {
+                        var childField = fields.FirstOrDefault(candidate => candidate.Key == name)
+                            ?? VisualFields.FirstOrDefault(candidate => candidate.Key == name);
+                        FindParameterUses(child, childField?.ChildContext ?? InferContext(name, child), childField,
+                            parameter, document, uses, activeTemplates, activeValues);
+                    }
+                }
+            }
+        }
+        finally { activeValues.Remove(value); }
+    }
+
+    private static PresetField? CombineParameterFields(string parameter, IReadOnlyList<PresetField?> uses)
+    {
+        var known = uses.OfType<PresetField>().ToArray();
+        if (known.Length == 0) return null;
+        var constrained = known.Where(field => field.Kind != FieldKind.Text).ToArray();
+        if (constrained.Length == 0) constrained = known;
+        var first = constrained[0];
+        var kind = first.Kind;
+        if (constrained.All(field => field.Kind is FieldKind.Form or FieldKind.FormList))
+            kind = constrained.Any(field => field.Kind == FieldKind.Form) ? FieldKind.Form : FieldKind.FormList;
+        else if (constrained.All(field => field.Kind is FieldKind.Integer or FieldKind.Number))
+            kind = constrained.Any(field => field.Kind == FieldKind.Integer) ? FieldKind.Integer : FieldKind.Number;
+        else if (constrained.Any(field => field.Kind != kind)) return null;
+        string[]? types = null;
+        foreach (var field in constrained.Where(field => field.FormTypes is not null))
+            types = types is null ? field.FormTypes : types.Intersect(field.FormTypes!, StringComparer.OrdinalIgnoreCase).ToArray();
+        return first with
+        {
+            Key = parameter, Label = parameter, Kind = kind, FormTypes = types,
+            AllowsGroups = uses.All(field => field is { AllowsGroups: true }),
+            MatchPresetCategory = known.Any(field => field.MatchPresetCategory),
+            TriggerOnly = known.Any(field => field.TriggerOnly)
+        };
+    }
     public static IReadOnlyList<string> Validate(PresetValue value, string context, string category, bool partial = false) =>
         Validate(value, context, category, ContextKind(context, PresetKind.Custom), partial);
 
@@ -308,6 +419,3 @@ public static class PresetSchema
         "magiceffect" => "effect", "magiceffects" => "effects", _ => context.ToLowerInvariant()
     };
 }
-
-
-
