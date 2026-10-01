@@ -14,4 +14,5 @@ if ($LASTEXITCODE) { throw 'Native YAML helper build failed.' }
 if ($LASTEXITCODE) { throw 'Desktop app publish failed.' }
 Copy-Item -LiteralPath (Join-Path $build 'AoTYaml.exe') -Destination $dist
 Copy-Item -LiteralPath (Join-Path $build 'licenses') -Destination $dist -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'licenses\YamlDotNet.txt') -Destination (Join-Path $dist 'licenses')
 Write-Host "Ready: $dist\AoTPresetEditor.exe"

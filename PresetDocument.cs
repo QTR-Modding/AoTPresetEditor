@@ -1,0 +1,354 @@
+using System.IO;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using YamlDotNet.Core;
+
+namespace AoTPresetEditor;
+
+public enum ValueKind { Scalar, Mapping, Sequence, Alias }
+public enum BlockKind { Rule, Shared, Template }
+
+public sealed class PresetValue
+{
+    private const string UnsetArgumentTag = "!aot-editor-unset";
+    public bool IsUnsetArgument => Tag == UnsetArgumentTag;
+    public static PresetValue UnsetArgument() => new() { Kind = ValueKind.Scalar, Tag = UnsetArgumentTag };
+    public ValueKind Kind { get; set; }
+    public string Text { get; set; } = "";
+    public string Anchor { get; set; } = "";
+    public string Tag { get; set; } = "";
+    public ScalarStyle Style { get; set; } = ScalarStyle.Plain;
+    public bool Flow { get; set; }
+    public Dictionary<string, PresetValue> Fields { get; } = new(StringComparer.Ordinal);
+    public List<PresetValue> Items { get; } = [];
+    public List<string> Comments { get; } = [];
+    public List<string> TrailingComments { get; } = [];
+    public bool IsNull => Kind == ValueKind.Scalar && (Tag == "tag:yaml.org,2002:null" ||
+        (Style == ScalarStyle.Plain && Tag.Length == 0 && (Text.Length == 0 || Text is "~" or "null" or "Null" or "NULL")));
+
+    public static PresetValue Map() => new() { Kind = ValueKind.Mapping };
+    public static PresetValue List() => new() { Kind = ValueKind.Sequence };
+    public static PresetValue Scalar(string text) => new() { Kind = ValueKind.Scalar, Text = text };
+    public static PresetValue Alias(string name) => new() { Kind = ValueKind.Alias, Text = name };
+    public PresetValue? Get(string key) => Fields.GetValueOrDefault(key);
+    public void Set(string key, PresetValue value) => Fields[key] = value;
+    public bool Remove(string key) => Fields.Remove(key);
+    public PresetValue Clone()
+    {
+        var clone = new PresetValue { Kind = Kind, Text = Text, Anchor = Anchor, Tag = Tag, Style = Style, Flow = Flow };
+        foreach (var field in Fields) clone.Fields.Add(field.Key, field.Value.Clone());
+        clone.Items.AddRange(Items.Select(item => item.Clone()));
+        clone.Comments.AddRange(Comments);
+        clone.TrailingComments.AddRange(TrailingComments);
+        return clone;
+    }
+}
+
+public sealed class PresetBlock
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public BlockKind Kind { get; set; }
+    public string Name { get; set; } = "";
+    public string Key { get; set; } = "";
+    public string Context { get; set; } = "";
+    public PresetValue Value { get; set; } = PresetValue.Map();
+    public PresetBlock Clone() => new() { Id = Id, Kind = Kind, Name = Name, Key = Key, Context = Context, Value = Value.Clone() };
+}
+
+public sealed class PresetDocument
+{
+    private const string MetadataPrefix = "# AoT Preset Editor: ";
+    private static readonly HashSet<string> DefaultFields = ["<<", "stages", "finalFormEditorID", "containers", "timeModulators", "transformers"];
+    public string Category { get; set; } = "FOOD";
+    public PresetKind Kind { get; set; } = PresetKind.Custom;
+    public List<PresetBlock> Blocks { get; } = [];
+    public List<string> Comments { get; } = [];
+    public List<string> TrailingComments { get; } = [];
+    private List<string> ruleComments = [];
+    private List<string> templateComments = [];
+    private List<string> ruleTrailingComments = [];
+    private List<string> templateTrailingComments = [];
+
+    private sealed record BlockMetadata(string Id, string Name, string Key, string Context, BlockKind Kind);
+
+    public static PresetDocument Create(string category, PresetKind kind) => new() { Category = category, Kind = kind };
+
+    public static PresetDocument Parse(string yaml, string category, PresetKind kind)
+    {
+        var document = Create(category, kind);
+        List<BlockMetadata>? metadata = null;
+        using var lines = new StringReader(yaml);
+        var retained = new System.Text.StringBuilder();
+        while (lines.ReadLine() is { } line)
+        {
+            if (line.StartsWith(MetadataPrefix, StringComparison.Ordinal) && metadata is null)
+            {
+                try { metadata = JsonSerializer.Deserialize<List<BlockMetadata>>(line[MetadataPrefix.Length..]); }
+                catch (JsonException) { retained.AppendLine(line); }
+            }
+            else retained.AppendLine(line);
+        }
+        var root = PresetYaml.Parse(retained.ToString());
+        if (root.IsNull) root = PresetValue.Map();
+        if (root.Kind != ValueKind.Mapping) throw new InvalidDataException("The preset must contain named settings at its top level.");
+        document.Comments.AddRange(root.Comments);
+        document.TrailingComments.AddRange(root.TrailingComments);
+        PresetBlock? defaultRule = null;
+        var ruleKey = kind == PresetKind.Addon ? "formsLists" : "ownerLists";
+        foreach (var (key, value) in root.Fields)
+        {
+            if (key == "templates")
+            {
+                if (value.Kind != ValueKind.Mapping) throw new InvalidDataException("Templates must be a collection of named templates.");
+                document.templateComments = [.. value.Comments];
+                document.templateTrailingComments = [.. value.TrailingComments];
+                foreach (var (name, body) in value.Fields)
+                    document.Blocks.Add(new() { Kind = BlockKind.Template, Name = name, Key = name, Context = InferContext(body, kind), Value = body });
+            }
+            else if (kind != PresetKind.Default && key == ruleKey)
+            {
+                if (value.Kind != ValueKind.Sequence)
+                {
+                    if (value.Kind != ValueKind.Alias && !(value.Kind == ValueKind.Scalar && TemplateCall.TryParse(value.Text, out _, out _)))
+                        throw new InvalidDataException($"{ruleKey} must be a list of rules or a reference to one.");
+                    document.Blocks.Add(new() { Kind = BlockKind.Rule, Name = "Shared rules", Key = ruleKey, Context = "Rules", Value = value });
+                    continue;
+                }
+                document.ruleComments = [.. value.Comments];
+                document.ruleTrailingComments = [.. value.TrailingComments];
+                foreach (var rule in value.Items)
+                {
+                    var label = rule.Kind == ValueKind.Scalar && TemplateCall.TryParse(rule.Text, out var callName, out _)
+                        ? callName : $"Rule {document.Blocks.Count(block => block.Kind == BlockKind.Rule) + 1}";
+                    document.Blocks.Add(new() { Kind = BlockKind.Rule, Name = label, Context = RuleContext(kind), Value = rule });
+                }
+            }
+            else if (kind == PresetKind.Default && DefaultFields.Contains(key))
+            {
+                if (defaultRule is null)
+                {
+                    defaultRule = new() { Kind = BlockKind.Rule, Name = "Default rule", Context = "DefaultRule" };
+                    document.Blocks.Add(defaultRule);
+                }
+                defaultRule.Value.Set(key, value);
+            }
+            else document.Blocks.Add(new() { Kind = BlockKind.Shared, Name = key, Key = key, Context = InferContext(value, kind), Value = value });
+        }
+        if (metadata is not null)
+        {
+            var ruleNames = new Queue<BlockMetadata>(metadata.Where(item => item.Kind == BlockKind.Rule));
+            foreach (var block in document.Blocks)
+            {
+                var saved = block.Kind == BlockKind.Rule ? (ruleNames.TryDequeue(out var next) ? next : null)
+                    : metadata.FirstOrDefault(item => item.Kind == block.Kind && item.Key == block.Key);
+                if (saved is null) continue;
+                block.Id = saved.Id;
+                block.Name = saved.Name;
+                block.Context = saved.Context;
+            }
+            var order = metadata.Select((item, index) => (item.Id, index)).ToDictionary(item => item.Id, item => item.index);
+            document.Blocks.Sort((left, right) => order.GetValueOrDefault(left.Id, int.MaxValue).CompareTo(order.GetValueOrDefault(right.Id, int.MaxValue)));
+        }
+        return document;
+    }
+
+    public PresetBlock Add(BlockKind kind, string name, string context)
+    {
+        if (kind == BlockKind.Rule && Kind == PresetKind.Default && Blocks.Any(block => block.Kind == BlockKind.Rule))
+            throw new InvalidOperationException("A default preset has one rule.");
+        if (kind == BlockKind.Rule && Blocks.Any(block => block.Kind == BlockKind.Rule && block.Key is "ownerLists" or "formsLists"))
+            throw new InvalidOperationException("This preset uses a shared list for all rules. Edit that shared list to add a rule.");
+        var block = new PresetBlock { Kind = kind, Name = name, Context = context };
+        if (kind != BlockKind.Rule)
+        {
+            var stem = Regex.Replace(name, "[^a-zA-Z0-9_-]", "_");
+            if (string.IsNullOrEmpty(stem)) stem = kind == BlockKind.Shared ? "sharedSettings" : "template";
+            var key = stem;
+            var suffix = 2;
+            while (Blocks.Any(existing => existing.Key == key) || key is "templates" or "ownerLists" or "formsLists" || DefaultFields.Contains(key))
+                key = stem + suffix++;
+            block.Key = key;
+            if (kind == BlockKind.Shared) block.Value.Anchor = key;
+        }
+        Blocks.Add(block);
+        return block;
+    }
+    public bool Remove(PresetBlock block) => Blocks.Remove(block);
+
+    public string ToYaml()
+    {
+        var root = PresetValue.Map();
+        root.Comments.AddRange(Comments);
+        root.TrailingComments.AddRange(TrailingComments);
+        var templates = PresetValue.Map();
+        templates.Comments.AddRange(templateComments);
+        templates.TrailingComments.AddRange(templateTrailingComments);
+        var rules = PresetValue.List();
+        rules.Comments.AddRange(ruleComments);
+        rules.TrailingComments.AddRange(ruleTrailingComments);
+        foreach (var block in Blocks)
+        {
+            switch (block.Kind)
+            {
+                case BlockKind.Shared:
+                    AddUnique(root, block.Key, block.Value);
+                    break;
+                case BlockKind.Template:
+                    if (!root.Fields.ContainsKey("templates")) root.Set("templates", templates);
+                    AddUnique(templates, block.Key, block.Value);
+                    break;
+                case BlockKind.Rule when Kind == PresetKind.Default:
+                    if (block.Value.Kind == ValueKind.Alias || block.Value.Kind == ValueKind.Scalar && TemplateCall.TryParse(block.Value.Text, out _, out _))
+                    {
+                        AddUnique(root, "<<", block.Value);
+                        break;
+                    }
+                    if (block.Value.Kind != ValueKind.Mapping) throw new InvalidDataException("The default rule must be a settings block, shared reference, or template use.");
+                    foreach (var field in block.Value.Fields) AddUnique(root, field.Key, field.Value);
+                    break;
+                case BlockKind.Rule:
+                    var key = Kind == PresetKind.Addon ? "formsLists" : "ownerLists";
+                    if (block.Key == key)
+                    {
+                        if (Blocks.Count(item => item.Kind == BlockKind.Rule) != 1)
+                            throw new InvalidDataException("A shared rule list cannot be combined with separate rules in the same preset.");
+                        AddUnique(root, key, block.Value);
+                        break;
+                    }
+                    if (!root.Fields.ContainsKey(key)) root.Set(key, rules);
+                    rules.Items.Add(block.Value);
+                    break;
+            }
+        }
+        var names = Blocks.Select(block => new BlockMetadata(block.Id, block.Name, block.Key, block.Context, block.Kind));
+        OrderDefinitions(templates);
+        OrderDefinitions(root);
+        CheckAliases(root);
+        return MetadataPrefix + JsonSerializer.Serialize(names) + Environment.NewLine + PresetYaml.Write(root);
+    }
+    internal static IEnumerable<PresetValue> Descendants(PresetValue value)
+    {
+        yield return value;
+        foreach (var child in value.Fields.Values.Concat(value.Items))
+            foreach (var nested in Descendants(child)) yield return nested;
+    }
+
+    private static void OrderDefinitions(PresetValue mapping)
+    {
+        var entries = mapping.Fields.ToArray();
+        var owners = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var entry in entries)
+            foreach (var node in Descendants(entry.Value))
+                if (node.Anchor.Length > 0 && !owners.TryAdd(node.Anchor, entry.Key))
+                    throw new InvalidDataException($"Shared name '{node.Anchor}' is defined more than once.");
+        var ordered = new List<KeyValuePair<string, PresetValue>>();
+        var complete = new HashSet<string>(StringComparer.Ordinal);
+        var active = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in entries) Visit(entry.Key);
+        mapping.Fields.Clear();
+        foreach (var entry in ordered) mapping.Fields.Add(entry.Key, entry.Value);
+        return;
+        void Visit(string key)
+        {
+            if (complete.Contains(key)) return;
+            if (!active.Add(key)) throw new InvalidDataException($"Shared settings around '{key}' refer to each other in a circle.");
+            var entry = entries.First(item => item.Key == key);
+            foreach (var alias in Descendants(entry.Value).Where(node => node.Kind == ValueKind.Alias))
+                if (owners.TryGetValue(alias.Text, out var owner) && owner != key) Visit(owner);
+            active.Remove(key);
+            complete.Add(key);
+            ordered.Add(entry);
+        }
+    }
+
+    private static void CheckAliases(PresetValue root)
+    {
+        var defined = new HashSet<string>(StringComparer.Ordinal);
+        var active = new HashSet<string>(StringComparer.Ordinal);
+        Visit(root);
+        return;
+        void Visit(PresetValue value)
+        {
+            if (value.Kind == ValueKind.Alias)
+            {
+                if (active.Contains(value.Text)) throw new InvalidDataException($"Shared settings '{value.Text}' refer back to themselves.");
+                if (!defined.Contains(value.Text)) throw new InvalidDataException($"Shared settings '{value.Text}' are missing or used before their definition inside a block.");
+                return;
+            }
+            if (value.Anchor.Length > 0)
+            {
+                if (!defined.Add(value.Anchor)) throw new InvalidDataException($"Shared name '{value.Anchor}' is defined more than once.");
+                active.Add(value.Anchor);
+            }
+            foreach (var child in value.Fields.Values.Concat(value.Items)) Visit(child);
+            if (value.Anchor.Length > 0) active.Remove(value.Anchor);
+        }
+    }
+
+    private static void AddUnique(PresetValue map, string key, PresetValue value)
+    {
+        if (!map.Fields.TryAdd(key, value)) throw new InvalidDataException($"The name '{key}' is used more than once.");
+    }
+    public PresetDocument Clone()
+    {
+        var clone = Create(Category, Kind);
+        clone.Blocks.AddRange(Blocks.Select(block => block.Clone()));
+        clone.Comments.AddRange(Comments);
+        clone.TrailingComments.AddRange(TrailingComments);
+        clone.ruleComments = [.. ruleComments];
+        clone.templateComments = [.. templateComments];
+        clone.ruleTrailingComments = [.. ruleTrailingComments];
+        clone.templateTrailingComments = [.. templateTrailingComments];
+        return clone;
+    }
+    public void RebindTemplateCalls(PresetDocument previous)
+    {
+        var signatures = TemplateSignatures(previous);
+        var templateCount = Blocks.Count(block => block.Kind == BlockKind.Template);
+        // A changed inner call can change its enclosing template's parameter order.
+        for (var pass = 0; pass <= templateCount; pass++)
+        {
+            var current = TemplateSignatures(this);
+            var changes = current.Where(entry => signatures.TryGetValue(entry.Key, out var before) &&
+                !entry.Value.SequenceEqual(before)).ToDictionary(entry => entry.Key, entry => (Before: signatures[entry.Key], After: entry.Value));
+            if (changes.Count == 0) return;
+            foreach (var block in Blocks) Rewrite(block.Value);
+            signatures = current;
+
+            bool Rewrite(PresetValue value)
+            {
+                var changed = false;
+                if (value.Kind == ValueKind.Scalar && value.Tag != "tag:yaml.org,2002:str" &&
+                    TemplateCall.TryParse(value.Text, out var name, out var arguments) && current.ContainsKey(name))
+                {
+                    foreach (var argument in arguments) changed |= Rewrite(argument);
+                    if (changes.TryGetValue(name, out var signature) && arguments.Count == signature.Before.Count)
+                    {
+                        var values = signature.Before.Select((parameter, index) => (parameter, arguments[index]))
+                            .ToDictionary(pair => pair.parameter, pair => pair.Item2, StringComparer.Ordinal);
+                        arguments = signature.After.Select(parameter => values.GetValueOrDefault(parameter) ?? PresetValue.UnsetArgument()).ToList();
+                        changed = true;
+                    }
+                    if (changed) value.Text = TemplateCall.Format(name, arguments);
+                }
+                else
+                {
+                    foreach (var child in value.Fields.Values.Concat(value.Items)) changed |= Rewrite(child);
+                }
+                return changed;
+            }
+        }
+        throw new InvalidDataException("Template parameters could not settle. Check for recursive template calls.");
+    }
+
+    private static Dictionary<string, IReadOnlyList<string>> TemplateSignatures(PresetDocument document) =>
+        document.Blocks.Where(block => block.Kind == BlockKind.Template).ToDictionary(block => block.Key,
+            block => TemplateCall.FindParameters(block.Value, document), StringComparer.Ordinal);
+
+    public static string RuleContext(PresetKind kind) => kind switch { PresetKind.Default => "DefaultRule", PresetKind.Addon => "AddonRule", _ => "CustomRule" };
+    public static string InferContext(PresetValue value, PresetKind kind)
+    {
+        var context = PresetSchema.InferContext("", value);
+        return context == "rule" ? RuleContext(kind) : context;
+    }
+}
