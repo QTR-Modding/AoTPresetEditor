@@ -4,7 +4,42 @@ using System.Text;
 
 namespace AoTPresetEditor;
 
-public sealed record PresetFile(string FullPath, string RelativePath);
+public enum PresetKind { Default, Custom, Addon, Other }
+
+public sealed record PresetFile(string FullPath, string RelativePath)
+{
+    public string Category
+    {
+        get
+        {
+            var separator = RelativePath.IndexOf(Path.DirectorySeparatorChar);
+            return separator < 0 ? "Root" : RelativePath[..separator];
+        }
+    }
+
+    public string CategoryPath => RelativePath[(RelativePath.IndexOf(Path.DirectorySeparatorChar) + 1)..];
+
+    public PresetKind Kind
+    {
+        get
+        {
+            if (CategoryPath.Equals($"AoT_default{Category}.yml", StringComparison.OrdinalIgnoreCase))
+                return PresetKind.Default;
+            var separator = CategoryPath.IndexOf(Path.DirectorySeparatorChar);
+            if (separator < 0) return PresetKind.Other;
+            return CategoryPath[..separator].ToLowerInvariant() switch
+            {
+                "custom" => PresetKind.Custom,
+                "addon" => PresetKind.Addon,
+                _ => PresetKind.Other
+            };
+        }
+    }
+
+    public string RulePath => Kind is PresetKind.Custom or PresetKind.Addon
+        ? CategoryPath[(CategoryPath.IndexOf(Path.DirectorySeparatorChar) + 1)..]
+        : CategoryPath;
+}
 
 public static class PresetCatalog
 {

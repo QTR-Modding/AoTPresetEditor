@@ -23,7 +23,7 @@ MO2 supplies that profile's plugin list and virtual Data folder. Running outside
 ## Browse
 
 1. **Forms:** search by name, EditorID, local ID, or plugin. Filter by record type or plugin. Selecting a form shows an AoT identifier such as `0x65C99~Skyrim.esm`, which **Copy identifier** copies. The winning plugin supplies the displayed values; the identifier refers to the plugin that defined the form.
-2. **Presets:** select an installed `.yml` file to see its original text and its expanded templates and merges. Expansion uses CLibUtilsQTR 2.6.0. It does not validate AoT rules, form availability, or gameplay conditions.
+2. **Presets:** filter by type (FOOD, BOOK, etc.) and kind (Default, Custom, Addon), then select an installed `.yml` file to see its original text and its expanded templates and merges. Expansion uses CLibUtilsQTR 2.6.0. It does not validate AoT rules, form availability, or gameplay conditions.
 3. **Load order:** inspect the enabled plugins the browser read, in load order.
 
 The form browser indexes plugin records, including locations, keywords, perks, and form lists. It excludes placed references, cells, landscape, navigation meshes, and dialogue responses. Forms created while Skyrim is running are not available. Search results display up to 1,000 matches; narrow the search to see others.

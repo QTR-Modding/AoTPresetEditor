@@ -11,6 +11,8 @@ namespace AoTPresetEditor;
 public partial class MainWindow : Window
 {
     private const int DisplayLimit = 1000;
+    private const string AllPresetCategories = "All types";
+    private const string AllPresetKinds = "All kinds";
     private const int SearchDelayMilliseconds = 180;
     private readonly DispatcherTimer searchTimer = new() { Interval = TimeSpan.FromMilliseconds(SearchDelayMilliseconds) };
     private IReadOnlyList<FormRow> forms = [];
@@ -58,7 +60,7 @@ public partial class MainWindow : Window
             if (!File.Exists(Path.Combine(data, "Skyrim.esm")))
                 throw new DirectoryNotFoundException("Select the Data folder containing Skyrim.esm.");
             presets = await Task.Run(() => PresetCatalog.Discover(data));
-            FilterPresets();
+            UpdatePresetFilters();
             var progress = new Progress<string>(text => Status.Text = text);
             var result = await Task.Run(() => FormCatalog.Load(data, progress));
             forms = result.Forms;
@@ -115,14 +117,38 @@ public partial class MainWindow : Window
         catch (ExternalException) { Status.Text = "The clipboard is busy. Try Copy identifier again."; }
     }
 
-    private void PresetFilter_Changed(object sender, TextChangedEventArgs e)
+    private void PresetFilter_Changed(object sender, RoutedEventArgs e)
     {
         if (PresetList is not null) FilterPresets();
     }
 
+    private void UpdatePresetFilters()
+    {
+        var selectedCategory = PresetCategories.SelectedItem as string;
+        var selectedKind = PresetKinds.SelectedItem;
+        var categories = new[] { AllPresetCategories }
+            .Concat(presets.Select(p => p.Category).Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase)).ToArray();
+        var kinds = new object[] { AllPresetKinds }.Concat(presets.Select(p => p.Kind).Distinct().Order().Cast<object>()).ToArray();
+        PresetCategories.ItemsSource = categories;
+        PresetKinds.ItemsSource = kinds;
+        PresetCategories.SelectedItem = categories.FirstOrDefault(category =>
+            string.Equals(category, selectedCategory, StringComparison.OrdinalIgnoreCase)) ?? AllPresetCategories;
+        PresetKinds.SelectedItem = kinds.Contains(selectedKind) ? selectedKind : AllPresetKinds;
+        FilterPresets();
+    }
+
     private void FilterPresets()
     {
-        PresetList.ItemsSource = presets.Where(p => p.RelativePath.Contains(PresetSearch.Text, StringComparison.OrdinalIgnoreCase));
+        var category = PresetCategories.SelectedItem as string;
+        var allCategories = category is null or AllPresetCategories;
+        var kind = PresetKinds.SelectedItem as PresetKind?;
+        PresetList.DisplayMemberPath = allCategories ? nameof(PresetFile.RelativePath)
+            : kind is null ? nameof(PresetFile.CategoryPath) : nameof(PresetFile.RulePath);
+        PresetList.ItemsSource = presets.Where(p =>
+            (allCategories || string.Equals(p.Category, category, StringComparison.OrdinalIgnoreCase)) &&
+            (kind is null || p.Kind == kind) &&
+            p.RelativePath.Contains(PresetSearch.Text, StringComparison.OrdinalIgnoreCase));
     }
 
     private async void Preset_Selected(object sender, SelectionChangedEventArgs e)
