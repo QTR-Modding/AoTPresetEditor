@@ -17,14 +17,17 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer searchTimer = new() { Interval = TimeSpan.FromMilliseconds(SearchDelayMilliseconds) };
     private IReadOnlyList<FormRow> forms = [];
     private IReadOnlyList<PresetFile> presets = [];
-    private CancellationTokenSource? expansion;
+    private PresetFile? selectedPreset;
+    private bool selectingPreset;
     private bool loading;
 
     public MainWindow(string? dataFolder)
     {
         InitializeComponent();
         searchTimer.Tick += (_, _) => { searchTimer.Stop(); FilterForms(); };
-        Closed += (_, _) => { searchTimer.Stop(); expansion?.Cancel(); };
+        Closed += (_, _) => searchTimer.Stop();
+        Closing += (_, e) => e.Cancel = !Workspace.CanLeave();
+        Workspace.Opened += () => { PresetList.SelectedItem = null; selectedPreset = null; };
         if (dataFolder is not null)
         {
             DataPath.Text = dataFolder;
@@ -47,10 +50,10 @@ public partial class MainWindow : Window
         if (loading) return;
         loading = true;
         ReloadButton.IsEnabled = BrowseButton.IsEnabled = false;
-        expansion?.Cancel();
+
         forms = []; presets = [];
         FormGrid.ItemsSource = null; PresetList.ItemsSource = null; LoadOrderList.ItemsSource = null;
-        Original.Clear(); Expanded.Clear(); FormDetail.Clear();
+        FormDetail.Clear();
         Types.ItemsSource = Plugins.ItemsSource = null;
         ResultCount.Text = LoadOrderInfo.Text = "";
         var timer = Stopwatch.StartNew();
@@ -64,6 +67,7 @@ public partial class MainWindow : Window
             var progress = new Progress<string>(text => Status.Text = text);
             var result = await Task.Run(() => FormCatalog.Load(data, progress));
             forms = result.Forms;
+            Workspace.SetForms(forms);
             Types.ItemsSource = new[] { "All types" }.Concat(forms.Select(f => f.Type).Distinct().Order());
             Plugins.ItemsSource = new[] { "All plugins" }.Concat(result.Plugins);
             Types.SelectedIndex = Plugins.SelectedIndex = 0;
@@ -153,34 +157,13 @@ public partial class MainWindow : Window
 
     private async void Preset_Selected(object sender, SelectionChangedEventArgs e)
     {
-        expansion?.Cancel();
-        if (PresetList.SelectedItem is not PresetFile preset)
-        {
-            PresetTitle.Text = "Select a preset";
-            PresetStatus.Text = "Original text on the left; expanded templates and YAML merges on the right.";
-            Original.Clear(); Expanded.Clear();
-            return;
-        }
-        using var request = new CancellationTokenSource();
-        expansion = request;
-        PresetTitle.Text = preset.RelativePath;
-        Original.Clear(); Expanded.Clear();
-        PresetStatus.Text = "Expanding templates and YAML merges...";
+        if (selectingPreset || PresetList.SelectedItem is not PresetFile preset) return;
+        selectingPreset = true;
         try
         {
-            var source = await File.ReadAllTextAsync(preset.FullPath, request.Token);
-            request.Token.ThrowIfCancellationRequested();
-            Original.Text = source;
-            var expanded = await PresetCatalog.Expand(source, request.Token);
-            request.Token.ThrowIfCancellationRequested();
-            Expanded.Text = expanded;
-            PresetStatus.Text = "Template and merge expansion only. Form availability and gameplay conditions are not validated here.";
+            if (await Workspace.Open(preset)) { selectedPreset = preset; PresetList.SelectedItem = preset; }
+            else PresetList.SelectedItem = selectedPreset;
         }
-        catch (OperationCanceledException) { }
-        catch (Exception error)
-        {
-            if (!request.IsCancellationRequested) PresetStatus.Text = "Cannot expand this preset: " + error.Message;
-        }
-        finally { if (ReferenceEquals(expansion, request)) expansion = null; }
+        finally { selectingPreset = false; }
     }
 }
