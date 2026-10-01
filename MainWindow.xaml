@@ -2,19 +2,19 @@
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:AoTPresetEditor"
  Title="AoT Preset Editor" Width="1400" Height="900" MinWidth="1050" MinHeight="650"
- FontFamily="Segoe UI" FontSize="14" Background="#F3F5F8" WindowStartupLocation="CenterScreen">
+ Style="{DynamicResource {x:Type Window}}" WindowStartupLocation="CenterScreen">
  <Grid Margin="24">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <DockPanel Margin="0,0,0,18">
-   <Border DockPanel.Dock="Right" Background="#DFEAE6" CornerRadius="5" Padding="12,6" VerticalAlignment="Center"><TextBlock Text="PRESET EDITOR" Foreground="#22604B" FontSize="12" FontWeight="SemiBold"/></Border>
-   <StackPanel><TextBlock Text="AoT Preset Editor" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Create presets from named rules, shared settings, and templates" Foreground="#5B687B" Margin="0,4,0,0"/></StackPanel>
+   <Button DockPanel.Dock="Right" Content="Appearance..." Click="Appearance_Click" VerticalAlignment="Center"/>
+   <StackPanel><TextBlock Text="AoT Preset Editor" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Create presets from named rules, shared settings, and templates" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,4,0,0"/></StackPanel>
   </DockPanel>
   <DockPanel Grid.Row="1" Margin="0,0,0,16">
    <Button x:Name="ReloadButton" DockPanel.Dock="Right" Content="Reload" Click="Reload_Click"/>
    <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="Data folder..." Click="Browse_Click"/>
    <TextBox x:Name="DataPath" IsReadOnly="True" AutomationProperties.Name="Skyrim Data folder" ToolTip="Launch through MO2 to read the selected profile's files."/>
   </DockPanel>
-  <TabControl Grid.Row="2" Background="White" BorderBrush="#D5DBE5">
+  <TabControl Grid.Row="2">
    <TabItem Header="Forms">
     <Grid Margin="16">
      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -23,8 +23,8 @@
       <StackPanel Grid.Column="1" Margin="0,0,12,0"><TextBlock Text="Record type" Margin="0,0,0,5"/><ComboBox x:Name="Types" SelectionChanged="Filter_Changed" AutomationProperties.Name="Record type"/></StackPanel>
       <StackPanel Grid.Column="2"><TextBlock Text="Origin or winning plugin" Margin="0,0,0,5"/><ComboBox x:Name="Plugins" SelectionChanged="Filter_Changed" AutomationProperties.Name="Plugin filter"/></StackPanel>
      </Grid>
-     <TextBlock x:Name="ResultCount" Grid.Row="1" Margin="0,12,0,8" Foreground="#5B687B"/>
-     <DataGrid x:Name="FormGrid" Grid.Row="2" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#EEF0F4" BorderBrush="#E0E5EC" RowHeight="30" EnableRowVirtualization="True" SelectionMode="Single" SelectionChanged="Form_Selected">
+     <TextBlock x:Name="ResultCount" Grid.Row="1" Margin="0,12,0,8" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+     <DataGrid x:Name="FormGrid" Grid.Row="2" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{DynamicResource DividerStrokeColorDefaultBrush}" RowHeight="30" EnableRowVirtualization="True" SelectionMode="Single" SelectionChanged="Form_Selected">
       <DataGrid.Columns>
        <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*"/>
        <DataGridTextColumn Header="EditorID" Binding="{Binding EditorId}" Width="2*"/>
@@ -47,12 +47,12 @@
        <ComboBox x:Name="PresetKinds" SelectionChanged="PresetFilter_Changed" AutomationProperties.Name="Preset kind"/>
       </StackPanel>
       <TextBox x:Name="PresetSearch" DockPanel.Dock="Top" Margin="0,0,0,8" TextChanged="PresetFilter_Changed" AutomationProperties.Name="Search presets" ToolTip="Filter preset paths"/><ListBox x:Name="PresetList" DisplayMemberPath="RelativePath" SelectionChanged="Preset_Selected" ScrollViewer.HorizontalScrollBarVisibility="Auto"/></DockPanel>
-     <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center" Background="#E0E5EC"/>
+     <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center" Background="{DynamicResource DividerStrokeColorDefaultBrush}"/>
      <local:PresetWorkspace x:Name="Workspace" Grid.Column="2"/>
     </Grid>
    </TabItem>
    <TabItem Header="Load order"><DockPanel Margin="16"><TextBlock x:Name="LoadOrderInfo" DockPanel.Dock="Top" Margin="0,0,0,12" TextWrapping="Wrap"/><ListBox x:Name="LoadOrderList" FontFamily="Consolas"/></DockPanel></TabItem>
   </TabControl>
-  <TextBlock x:Name="Status" Grid.Row="3" Margin="0,12,0,0" Text="Choose your Skyrim Data folder, or launch through MO2 with --data." TextWrapping="Wrap" Foreground="#5B687B"/>
+  <TextBlock x:Name="Status" Grid.Row="3" Margin="0,12,0,0" Text="Choose your Skyrim Data folder, or launch through MO2 with --data." TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
  </Grid>
 </Window>

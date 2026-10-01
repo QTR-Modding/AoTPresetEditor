@@ -1,7 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Media;
 using YamlDotNet.Core;
 
 namespace AoTPresetEditor;
@@ -86,7 +85,7 @@ public sealed class ValueEditorWindow : Window
                 Environment.NewLine + "Apply to check your changes in the overview."
             : "";
         validationDetails.Visibility = initialIssues.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        problems.Foreground = EditorControls.Muted;
+        problems.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
         var modes = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 14) };
         if (document.Blocks.Any(block => block.Kind is BlockKind.Shared or BlockKind.Template))
             modes.Children.Add(EditorControls.Button("Use shared settings or template...", ChooseReference));
@@ -264,12 +263,15 @@ public sealed class ValueEditorWindow : Window
         var inherited = Value.Get("<<") is not null;
         var detail = EditorControls.Text(value is null ? (inherited ? "Not set here" : descriptor.Required ? "Required" : "Optional") : Summary(value, document));
         detail.FontSize = 12;
-        detail.Foreground = value is null && descriptor.Required && !inherited ? Brushes.DarkOrange : EditorControls.Muted;
+        detail.SetResourceReference(TextBlock.ForegroundProperty, value is null && descriptor.Required && !inherited ? "SystemFillColorCautionBrush" : "TextFillColorSecondaryBrush");
         detail.Margin = new Thickness(0);
         box.Children.Add(detail);
         row.Children.Add(box);
-        content.Children.Add(new Border { Child = row, Background = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(224, 229, 237)),
-            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(5), Padding = new Thickness(12, 9, 10, 9), Margin = new Thickness(0, 0, 6, 7) });
+        var card = new Border { Child = row, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(5),
+            Padding = new Thickness(12, 9, 10, 9), Margin = new Thickness(0, 0, 6, 7) };
+        card.SetResourceReference(Border.BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
+        card.SetResourceReference(Border.BorderBrushProperty, "CardStrokeColorDefaultBrush");
+        content.Children.Add(card);
     }
 
     private void RenderList()

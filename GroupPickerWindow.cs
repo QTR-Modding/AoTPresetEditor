@@ -47,7 +47,7 @@ public sealed class GroupPickerWindow : Window
         DockPanel.SetDock(search, Dock.Top); left.Children.Add(search); left.Children.Add(groupList);
         columns.Children.Add(left);
         var right = new DockPanel();
-        var details = new StackPanel(); details.Children.Add(description); source.Foreground = EditorControls.Muted; details.Children.Add(source);
+        var details = new StackPanel(); details.Children.Add(description); source.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); details.Children.Add(source);
         DockPanel.SetDock(details, Dock.Top); right.Children.Add(details); right.Children.Add(members);
         Grid.SetColumn(right, 1); columns.Children.Add(right); layout.Children.Add(columns); Content = layout;
         search.TextChanged += (_, _) => Filter();
@@ -162,7 +162,7 @@ public sealed class GroupEditorWindow : Window
         var header = new StackPanel();
         header.Children.Add(EditorControls.Text("New form group", true));
         header.Children.Add(EditorControls.Text("Group name")); header.Children.Add(name);
-        nameStatus.Margin = new Thickness(0, 6, 0, 12); nameStatus.Foreground = EditorControls.Muted; header.Children.Add(nameStatus);
+        nameStatus.Margin = new Thickness(0, 6, 0, 12); nameStatus.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); header.Children.Add(nameStatus);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
         actions.Children.Add(EditorControls.Button("Add forms...", AddForms));
         var remove = EditorControls.Button("Remove selected", RemoveSelected); remove.Visibility = Visibility.Collapsed;

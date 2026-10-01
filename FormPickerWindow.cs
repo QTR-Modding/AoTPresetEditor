@@ -2,7 +2,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
-using System.Windows.Media;
 using System.Windows.Threading;
 
 namespace AoTPresetEditor;
@@ -40,8 +39,7 @@ public sealed class FormPickerWindow : Window
         Title = multiple ? "Choose forms" : "Choose a form";
         Width = 1120; Height = 700; MinWidth = 800; MinHeight = 460;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = new SolidColorBrush(Color.FromRgb(243, 245, 248));
-        FontFamily = new FontFamily("Segoe UI"); FontSize = 14;
+        SetResourceReference(StyleProperty, typeof(Window));
         Content = BuildContent();
 
         types.ItemsSource = new[] { AllTypes }.Concat(this.forms.Select(form => form.Type)

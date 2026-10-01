@@ -20,6 +20,10 @@ The complete app is written to `dist`. Keep that folder together; it includes th
 
 MO2 supplies that profile's plugin list and virtual Data folder. Running outside MO2 reads the normal game installation instead.
 
+## Appearance
+
+The editor starts in Dark mode. **Appearance** offers Dark, Light, or Follow Windows, plus a button accent color. Changes preview immediately; **Save** remembers them, and **Cancel** restores the previous appearance. Preferences are stored in `%LOCALAPPDATA%/AoTPresetEditor/appearance.json`, separately from presets.
+
 ## Edit a preset
 
 1. Open **Presets**, choose **New preset**, and select an item type and Default, Custom, or Addon. You can also open an installed preset from the list.

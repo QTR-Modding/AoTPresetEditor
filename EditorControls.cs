@@ -1,12 +1,10 @@
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
 
 namespace AoTPresetEditor;
 
 internal static class EditorControls
 {
-    public static readonly Brush Muted = new SolidColorBrush(Color.FromRgb(91, 104, 123));
     public static TextBlock Text(string text, bool heading = false) => new()
     {
         Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),

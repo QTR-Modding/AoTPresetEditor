@@ -45,6 +45,8 @@ public partial class MainWindow : Window
 
     private async void Reload_Click(object sender, RoutedEventArgs e) => await LoadData();
 
+    private void Appearance_Click(object sender, RoutedEventArgs e) => new AppearanceWindow((App)Application.Current) { Owner = this }.ShowDialog();
+
     private async Task LoadData()
     {
         if (loading) return;

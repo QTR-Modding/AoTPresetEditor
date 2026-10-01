@@ -65,7 +65,7 @@ public sealed class PresetWorkspace : UserControl
         actions.Children.Add(edit); actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
         blockActions.Children.Add(actions);
         var help = EditorControls.Text("Open a block to edit its fields. Rule order controls priority; shared settings and templates keep their own definitions.");
-        help.Margin = new Thickness(0, 14, 0, 0); help.Foreground = EditorControls.Muted; blockActions.Children.Add(help);
+        help.Margin = new Thickness(0, 14, 0, 0); help.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); blockActions.Children.Add(help);
         DockPanel.SetDock(blockActions, Dock.Bottom); layout.Children.Add(blockActions);
         blocks.SelectionChanged += (_, _) => UpdateActions();
         blocks.MouseDoubleClick += (_, _) => Edit();
@@ -255,7 +255,7 @@ public sealed class PresetWorkspace : UserControl
             var status = validation is null ? "\u2022" : errors.Count > 0 || validation.FileErrors.Count > 0 ? "\u2717" : "\u2713";
             var row = new DockPanel { Margin = new Thickness(12), MinHeight = 44 };
             var mark = EditorControls.Text(status); mark.FontSize = 22; mark.Width = 36; DockPanel.SetDock(mark, Dock.Left); row.Children.Add(mark);
-            var kind = EditorControls.Text(KindLabel(block.Kind)); kind.Foreground = EditorControls.Muted; DockPanel.SetDock(kind, Dock.Right); row.Children.Add(kind);
+            var kind = EditorControls.Text(KindLabel(block.Kind)); kind.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); DockPanel.SetDock(kind, Dock.Right); row.Children.Add(kind);
             row.Children.Add(EditorControls.Text(block.Name));
             var item = new ListBoxItem { Content = row, Tag = block.Id, HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 ToolTip = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : "Open to edit" };
