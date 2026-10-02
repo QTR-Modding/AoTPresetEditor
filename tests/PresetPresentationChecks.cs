@@ -38,9 +38,9 @@ internal static class PresetPresentationChecks
         var expanded = PresetCatalog.Expand(source, CancellationToken.None).GetAwaiter().GetResult();
         var presentation = new PresetPresentation(document, Forms, expandedYaml: expanded);
         var rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
-        Require(presentation.RuleSummary(rules[0]) == "Raw Beef → Cooked Beef · 2 triggered transformations",
+        Require(presentation.RuleSummary(rules[0]) == "Raw Beef → Cooked Beef · 2 transformations",
             "The overview must describe the real transformation instead of repeating the template name.");
-        Require(presentation.RuleSummary(rules[1]) == "Venison → Venison Chop · 2 triggered transformations",
+        Require(presentation.RuleSummary(rules[1]) == "Venison → Venison Chop · 2 transformations",
             "Repeated uses of a template must be distinguishable.");
         Require(presentation.EffectiveValue(rules[0])?.Get("transformers")?.Items[1].Get("duration")?.Text == "0.06",
             "The presentation must use native expansion for inherited fields.");

@@ -14,10 +14,10 @@ public static class PresetSchema
     private static readonly string[] ItemTypes = ["Ingestible", "Ingredient", "Armor", "Weapon", "Scroll", "Book", "SoulGem", "MiscItem"];
     private static readonly PresetField[] VisualFields =
     [
-        new("color", "World tint", FieldKind.Color, "Hexadecimal color for items lying in the world: RRGGBB, or RRGGBBAA with a nonzero red component. For example, FF0000 is red and FF000080 is half-opacity red. Zero removes tint."),
-        new("sound", "World sound", FieldKind.Form, "Sound played by items lying in the world.", FormTypes: ["SoundDescriptor"]),
-        new("art_object", "World art object", FieldKind.Form, "Art effect attached to items lying in the world.", FormTypes: ["ArtObject"]),
-        new("effect_shader", "World effect shader", FieldKind.Form, "Shader applied to items lying in the world.", FormTypes: ["EffectShader"])
+        new("color", "Tint", FieldKind.Color, "Hexadecimal color for items lying in the world: RRGGBB, or RRGGBBAA with a nonzero red component. For example, FF0000 is red and FF000080 is half-opacity red. Zero removes tint."),
+        new("sound", "Sound", FieldKind.Form, "Sound played by items lying in the world.", FormTypes: ["SoundDescriptor"]),
+        new("art_object", "Art object", FieldKind.Form, "Art effect attached to items lying in the world.", FormTypes: ["ArtObject"]),
+        new("effect_shader", "Effect shader", FieldKind.Form, "Shader applied to items lying in the world.", FormTypes: ["EffectShader"])
     ];
     private static readonly PresetField[] TriggerFields =
     [
@@ -30,8 +30,8 @@ public static class PresetSchema
         new("name", "Stage name", FieldKind.Text, "Stage label shown in LoreBox. Also added to generated FOOD or MISC item names. Leave empty to keep the original name.", true, DefaultText: ""),
         new("duration", "Duration (game hours)", FieldKind.Number, "How long this stage lasts. Use a positive number or .inf for an infinite stage.", true, DefaultText: "1"),
         new("FormEditorID", "Stage item", FieldKind.Form, "Choose a different item of the same type and AoT category as the source. FOOD or MISC stages may leave this unset to generate an item; other categories need a replacement.", FormTypes: ItemTypes, MatchPresetCategory: true, MatchSourceType: true),
-        new("value", "Value override", FieldKind.Integer, "Value of a generated stage item. Unset or a negative number keeps its original value. Zero is a valid override."),
-        new("weight", "Weight override", FieldKind.Number, "Weight of a generated stage item. Unset or a negative number keeps its original weight. Zero is a valid override."),
+        new("value", "Value", FieldKind.Integer, "Value of a generated stage item. Unset or a negative number keeps its original value. Zero is a valid override."),
+        new("weight", "Weight", FieldKind.Number, "Weight of a generated stage item. Unset or a negative number keeps its original weight. Zero is a valid override."),
         new("crafting_allowed", "Allow crafting", FieldKind.Boolean, "Allows a later FOOD stage to stand in for its source item in cooking recipes. Defaults to false.", DefaultText: "false"),
         new("mgeffect", "Magic effects", FieldKind.ObjectList, "Overwrites existing effect slots on generated FOOD items, in order. An unset or empty list keeps original effects. A nonempty list zeroes remaining slots; extra entries cannot add slots.", ChildContext: "effect"),
         .. VisualFields
@@ -39,7 +39,7 @@ public static class PresetSchema
     private static readonly PresetField[] ModulatorFields =
     [
         new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. A form group can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
-        new("magnitude", "Time multiplier", FieldKind.Number, "1 is normal speed, 0 pauses progression, and negative values reverse it. This does not change transformer duration.", true, DefaultText: "1"),
+        new("magnitude", "Time multiplier", FieldKind.Number, "1 is normal speed, 0 pauses progression, and negative values reverse it. This does not change transformation duration.", true, DefaultText: "1"),
         .. TriggerFields,
         .. VisualFields
     ];
@@ -62,8 +62,8 @@ public static class PresetSchema
         new("stages", "Stages", FieldKind.ObjectList, "The sequence of stages, beginning with stage 0.", true, "stage"),
         new("finalFormEditorID", "Final result item", FieldKind.Form, "Object produced after the last stage. AoT accepts any bound object. Required even if an infinite stage prevents reaching it.", true, BoundObjectOnly: true),
         new("containers", "Evolution filter", FieldKind.FormList, "Inventory owner's base forms where evolution is allowed. For a world item, this checks the item's own base form. Unset or empty is unrestricted.", AllowsGroups: true),
-        new("timeModulators", "Time modulators", FieldKind.ObjectList, "Changes stage progression while a trigger applies. The first matching modulator wins when no transformer matches.", ChildContext: "modulator"),
-        new("transformers", "Transformers", FieldKind.ObjectList, "Triggered transformations, in priority order. The first matching transformer wins.", ChildContext: "transformer")
+        new("timeModulators", "Time modifiers", FieldKind.ObjectList, "Changes stage progression while a trigger applies. The first matching time modifier wins when no transformation matches.", ChildContext: "modulator"),
+        new("transformers", "Transformations", FieldKind.ObjectList, "Triggered transformations, in priority order. The first matching transformation wins.", ChildContext: "transformer")
     ];
     private static readonly PresetField[] CustomFields =
     [
@@ -297,19 +297,15 @@ public static class PresetSchema
     public static string DefaultDescription(PresetField field, string context, PresetKind kind = PresetKind.Custom) => field.Key switch
     {
         "allowed_stages" or "containers" when kind == PresetKind.Addon => "Keeps any restriction from the source rule",
-        "weight" => "Keeps original weight",
-        "value" => "Keeps original value",
+        "weight" or "value" => "Unchanged",
         "crafting_allowed" => "Cannot stand in for the source item in crafting",
-        "mgeffect" => "Keeps original magic effects",
+        "mgeffect" => "Unchanged",
         "allowed_stages" => "Applies to every stage",
         "containers" => NormalizeContext(context) == "rule" ? "No evolution filter" : "All inventories allowed",
         "timeModulators" => "Normal stage progression",
-        "transformers" => "No triggered transformations",
+        "transformers" => "None",
         "sound" or "art_object" or "effect_shader" or "color" when NormalizeContext(context) is "transformer" or "modulator" => "Uses the stage setting",
-        "sound" => "No added world sound",
-        "art_object" => "No added world art effect",
-        "effect_shader" => "No added world shader",
-        "color" => "No added world tint",
+        "sound" or "art_object" or "effect_shader" or "color" => "None",
         "FormEditorID" when NormalizeContext(context) == "stage" => "Source item at stage 0; generated item at later FOOD or MISC stages",
         "FormEditorID" when NormalizeContext(context) == "effect" => "Zeroes the corresponding effect's magnitude and duration",
         _ => field.Required ? "Choose a value to complete this field" : "Not set"
@@ -458,16 +454,16 @@ public static class PresetSchema
         if (!partial && !unresolved && Enumerable.Range(0, stages.Items.Count).Any(index => !numbers.Contains((uint)index)))
             errors.Add(At(path, "Stage numbers must start at 0 and increase by one without gaps."));
         if (partial || unresolved) return;
-        foreach (var key in new[] { "timeModulators", "transformers" })
+        foreach (var field in RuleFields.Where(field => field.Key is "timeModulators" or "transformers"))
         {
-            if (rule.Get(key) is not { Kind: ValueKind.Sequence } triggers) continue;
+            if (rule.Get(field.Key) is not { Kind: ValueKind.Sequence } triggers) continue;
             for (var index = 0; index < triggers.Items.Count; index++)
             {
                 if (triggers.Items[index].Get("allowed_stages") is not { IsNull: false } allowed) continue;
                 var allowedItems = allowed.Kind == ValueKind.Sequence ? allowed.Items : [allowed];
                 foreach (var item in allowedItems)
                     if (TryUnsigned(item.Text, out var stageNumber) && !numbers.Contains(stageNumber))
-                        errors.Add(At(path, $"{key} {index + 1}: stage {stageNumber} is not defined by this rule."));
+                        errors.Add(At(path, $"{field.Label} {index + 1}: stage {stageNumber} is not defined by this rule."));
             }
         }
     }

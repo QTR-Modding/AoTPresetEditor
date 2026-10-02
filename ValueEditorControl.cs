@@ -303,7 +303,7 @@ public sealed class ValueEditorControl : UserControl
         panelReuse.Children.Add(Help(inherited is null ? "Reuse fields from a named definition. Values entered here take precedence."
             : "From " + presentation.ReferenceLabel(inherited) + ". Values entered here take precedence."));
         var actions = new WrapPanel();
-        actions.Children.Add(EditorControls.Button(inherited is null ? "Add shared settings..." : "Change shared settings...", () =>
+        actions.Children.Add(EditorControls.Button(inherited is null ? "Add..." : "Change...", () =>
         {
             var editor = new ValueEditorWindow(Document, forms, inherited ?? PresetValue.List(), "Inheritance", "Inherited settings", parametersAllowed, groups: groups)
                 { Owner = Window.GetWindow(this) };
@@ -312,7 +312,7 @@ public sealed class ValueEditorControl : UserControl
         }));
         if (inherited is not null)
         {
-            actions.Children.Add(EditorControls.Button("Remove inheritance", () => { Value.Remove("<<"); Render(); NotifyChanged(); }));
+            actions.Children.Add(EditorControls.Button("Remove", () => { Value.Remove("<<"); Render(); NotifyChanged(); }));
             foreach (var alias in PresetDocument.Descendants(inherited).Where(node => node.Kind == ValueKind.Alias))
             {
                 var definition = Document.Blocks.FirstOrDefault(block => block.Value.Anchor == alias.Text);
@@ -594,7 +594,8 @@ public sealed class ValueEditorControl : UserControl
     {
         if (field?.Kind == FieldKind.Boolean)
         {
-            var choice = new CheckBox { Content = field.Label, IsChecked = Value.IsUnsetArgument ? null : Value.Text.ToLowerInvariant() is "true" or "yes" or "y" or "on", Margin = new Thickness(0, 6, 0, 8) };
+            var choice = new CheckBox { Content = "Enabled", IsChecked = Value.IsUnsetArgument ? null : Value.Text.ToLowerInvariant() is "true" or "yes" or "y" or "on", Margin = new Thickness(0, 6, 0, 8) };
+            AutomationProperties.SetName(choice, field.Label);
             capture = () => { if (choice.IsChecked is null) return; Value.Text = choice.IsChecked == true ? "true" : "false"; Value.Style = ScalarStyle.Plain; Value.Tag = ""; };
             choice.Checked += (_, _) => { capture(); NotifyChanged(); }; choice.Unchecked += (_, _) => { capture(); NotifyChanged(); };
             content.Children.Add(choice); return;

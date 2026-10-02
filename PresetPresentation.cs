@@ -109,9 +109,9 @@ public sealed class PresetPresentation
         {
             "rule" => SummarizeRule(value),
             "stage" => Join("Stage " + (value.Get("no")?.Text ?? "?"), value.Get("name")?.Text ?? "",
-                Duration(value.Get("duration"), "game hours")),
+                Duration(value.Get("duration"), "game hour")),
             "transformer" => Join(value.Get("FormEditorID") is { } trigger ? "Trigger: " + ListLabels(trigger) : "Choose a trigger",
-                value.Get("finalFormEditorID") is { } result ? "Produces " + ListLabels(result) : "Choose a result item", Duration(value.Get("duration"), "game hours")),
+                value.Get("finalFormEditorID") is { } result ? "Produces " + ListLabels(result) : "Choose a result item", Duration(value.Get("duration"), "game hour")),
             "modulator" => Join(value.Get("FormEditorID") is { } trigger ? "Trigger: " + ListLabels(trigger) : "Choose a trigger",
                 value.Get("magnitude") is { } multiplier ? multiplier.Text == "0" ? "Progress paused" : "Time multiplier: " + multiplier.Text : "Choose a time multiplier"),
             "effect" => SummarizeEffect(value),
@@ -125,7 +125,7 @@ public sealed class PresetPresentation
         if (PresetSchema.InactiveReason(magnitudeField, value, "effect", document.Category) is not null)
             return "Zeroes the existing effect slot";
         return Join(value.Get("FormEditorID") is { IsNull: false } effect ? ListLabels(effect) : "Inherited effect",
-            value.Get("magnitude") is { } magnitude ? "Magnitude " + magnitude.Text : "", Duration(value.Get("duration"), "seconds"));
+            value.Get("magnitude") is { } magnitude ? "Magnitude " + magnitude.Text : "", Duration(value.Get("duration"), "second"));
     }
 
     private string SummarizeRule(PresetValue value)
@@ -139,7 +139,7 @@ public sealed class PresetPresentation
         var label = items is null ? document.Kind == PresetKind.Default ? "Default item progression" : "Choose affected items" : ListLabels(items);
         if (target is not null) label += " → " + ListLabels(target);
         else if (results.Length == 1) label += " → " + results[0];
-        return Join(label, Count(value.Get("stages"), "stage", "stages"), Count(transformers, "triggered transformation", "triggered transformations"),
+        return Join(label, Count(value.Get("stages"), "stage", "stages"), Count(transformers, "transformation", "transformations"),
             Count(value.Get("timeModulators"), "time modifier", "time modifiers"));
     }
 
@@ -148,8 +148,13 @@ public sealed class PresetPresentation
         (values.Count > 3 ? $" +{values.Count - 3}" : "");
     private static string Count(PresetValue? value, string singular, string plural) => value?.Kind == ValueKind.Sequence
         ? value.Items.Count == 0 ? "" : $"{value.Items.Count} {(value.Items.Count == 1 ? singular : plural)}" : "";
-    private static string Duration(PresetValue? value, string units) => value is null ? "" : value.Text.Equals(".inf", StringComparison.OrdinalIgnoreCase)
-        ? "No time limit" : value.Text + " " + units;
+    private static string Duration(PresetValue? value, string unit)
+    {
+        if (value is null) return "";
+        if (value.Text.Equals(".inf", StringComparison.OrdinalIgnoreCase)) return "No time limit";
+        var singular = double.TryParse(value.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) && number == 1;
+        return value.Text + " " + unit + (singular ? "" : "s");
+    }
     private static string Join(params string[] parts) => string.Join(" · ", parts.Where(part => part.Length != 0));
     private static bool IsCall(PresetValue value, out string name, out List<PresetValue> arguments)
     {

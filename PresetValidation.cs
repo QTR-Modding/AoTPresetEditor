@@ -93,7 +93,7 @@ public static class PresetValidation
         CheckResult(rule.Get("finalFormEditorID"), "Final result item");
         if (rule.Get("transformers") is { Kind: ValueKind.Sequence } transformations)
             for (var index = 0; index < transformations.Items.Count; index++)
-                CheckResult(transformations.Items[index].Get("finalFormEditorID"), $"Transformers {index + 1}: Result item");
+                CheckResult(transformations.Items[index].Get("finalFormEditorID"), $"Transformations {index + 1}: Result item");
         if (rule.Get("stages") is not { Kind: ValueKind.Sequence } stages) return errors;
         var stageField = PresetSchema.GetFields("stage", PresetKind.Custom).Single(field => field.Key == "FormEditorID");
         var categorySelection = new FormSelection(Category: category);

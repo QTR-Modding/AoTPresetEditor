@@ -271,10 +271,10 @@ public sealed class PresetWorkspace : UserControl
     {
         var dialog = new Window { Title = dialogTitle, Owner = Host, Width = 500, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(22) };
-        panel.Children.Add(EditorControls.Text("Preset name")); var name = new TextBox { Text = initialName }; panel.Children.Add(name);
+        panel.Children.Add(EditorControls.Text("Name")); var name = new TextBox { Text = initialName }; panel.Children.Add(name);
         panel.Children.Add(EditorControls.Text("Item type"));
         var types = new ComboBox { ItemsSource = CategoryNames, SelectedIndex = Math.Max(0, Array.IndexOf(Categories, category)) }; panel.Children.Add(types);
-        panel.Children.Add(EditorControls.Text("Preset kind"));
+        panel.Children.Add(EditorControls.Text("Kind"));
         var kinds = new ComboBox { ItemsSource = new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon }, SelectedItem = kind == PresetKind.Other ? PresetKind.Custom : kind }; panel.Children.Add(kinds);
         var kindHelp = EditorControls.Text(""); panel.Children.Add(kindHelp);
         void ExplainKind() => kindHelp.Text = (PresetKind)kinds.SelectedItem switch

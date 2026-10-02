@@ -119,7 +119,7 @@ internal static class FormSelectionChecks
         }
         var badTransformation = rule.Clone();
         badTransformation.Get("transformers")!.Items[0].Set("finalFormEditorID", PresetValue.Scalar("Location"));
-        Require(Errors(badTransformation).Single().StartsWith("Transformers 1: Result item:", StringComparison.Ordinal),
+        Require(Errors(badTransformation).Single().StartsWith("Transformations 1: Result item:", StringComparison.Ordinal),
             "Known transformer results need the same bound-object check and an addressable field path.");
         var crossClass = rule.Clone(); crossClass.Get("stages")!.Items[1].Set("FormEditorID", PresetValue.Scalar("FoodIngredient"));
         Require(Errors(crossClass).Any(error => error.Contains("same form type")),

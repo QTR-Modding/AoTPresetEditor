@@ -23,6 +23,7 @@ internal static class EditorInteractionChecks
         ListEditing();
         DraftIsolation();
         InlineEditing();
+        TriggerStageIssueNavigation();
         CompactFields();
         CompactScalarLists();
         CollectionDisclosure();
@@ -335,6 +336,27 @@ internal static class EditorInteractionChecks
         Require(((Button)actions.Children[0]).Visibility == Visibility.Collapsed, "A preset with a shared rule list must hide the unavailable Add rule action.");
     }
 
+    private static void TriggerStageIssueNavigation()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        foreach (var key in new[] { "transformers", "timeModulators" })
+        {
+            var rule = PresetYaml.Parse("owners: FoodBeef\nstages: [{no: 0, name: Fresh, duration: 1}]\nfinalFormEditorID: FoodBeef");
+            var trigger = PresetYaml.Parse(key == "transformers"
+                ? "FormEditorID: Fire\nfinalFormEditorID: FoodCookedBeef\nduration: 1"
+                : "FormEditorID: Fire\nmagnitude: 0");
+            var triggers = PresetValue.List();
+            triggers.Items.Add(trigger.Clone()); triggers.Items.Add(trigger.Clone());
+            triggers.Items[1].Set("allowed_stages", PresetValue.Scalar("9")); rule.Set(key, triggers);
+            var issue = PresetSchema.Validate(rule, "CustomRule", "FOOD").Single();
+            var editor = new ValueEditorControl(document, Forms, rule, "CustomRule", "Rule");
+            Require(editor.FocusIssue(issue), "An undefined-stage issue must have an editing target.");
+            var list = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == key);
+            Require(Field<ListBox>(list, "entryList").SelectedIndex == 1,
+                "An issue produced by validation must open the affected transformation or time modifier.");
+        }
+    }
+
     private static void InlineEditing()
     {
         var document = PresetDocument.Parse("""
@@ -366,7 +388,7 @@ internal static class EditorInteractionChecks
         editor.UpdatePresentation(new PresetPresentation(document, Forms), editor.Value.Clone());
         Require(changes == afterChange && ReferenceEquals(entry, Descendants<TextBox>(duration).Single()),
             "Capturing and refreshing summaries must preserve the input control and must not report another edit.");
-        Require(editor.FocusIssue("Transformers 2: Duration (game hours): enter a number."), "A list issue must have an editing target.");
+        Require(editor.FocusIssue("Transformations 2: Duration (game hours): enter a number."), "A list issue must have an editing target.");
         var listEditor = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "transformers");
         Require(Field<ListBox>(listEditor, "entryList").SelectedIndex == 1, "An issue for the second transformation must select the second entry.");
         var secondDuration = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "duration");
@@ -694,7 +716,7 @@ internal static class EditorInteractionChecks
         var inheritedEditor = new ValueEditorControl(inheritedDocument, Forms, inherited, "Stage", "Inherited stage");
         inheritedEditor.UpdatePresentation(new PresetPresentation(inheritedDocument, Forms), value.Clone());
         var inheritedValue = FieldCard(inheritedEditor, "value");
-        Require(inheritedValue.Child is Expander { Header: "Unused: Value override", IsExpanded: false } &&
+        Require(inheritedValue.Child is Expander { Header: "Unused: Value", IsExpanded: false } &&
             !Descendants<Button>(inheritedValue).Any(button => Equals(button.Content, "Remove setting")) && inheritedEditor.Value.Get("value") is null,
             "An inherited stage-0 value must be identified as unused without offering to remove the shared definition's field.");
     }

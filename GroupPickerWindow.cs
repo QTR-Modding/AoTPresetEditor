@@ -34,7 +34,7 @@ public sealed class GroupPickerWindow : Window
         heading.Children.Add(EditorControls.Text("Choose an existing group, or create a reusable list of forms."));
         DockPanel.SetDock(heading, Dock.Top); layout.Children.Add(heading);
         var footer = new StackPanel();
-        choose = EditorControls.Button("Choose group", Choose); choose.IsDefault = true; choose.Visibility = Visibility.Collapsed;
+        choose = EditorControls.Button("Choose", Choose); choose.IsDefault = true; choose.Visibility = Visibility.Collapsed;
         choose.SetResourceReference(StyleProperty, "PrimaryButton");
         EditorControls.Footer(footer, EditorControls.Button("New group...", NewGroup), choose,
             EditorControls.Button("Cancel", () => DialogResult = false));
@@ -179,7 +179,7 @@ public sealed class GroupEditorWindow : Window
         var layout = new DockPanel { Margin = new Thickness(14) };
         var header = new StackPanel();
         var nameRow = new DockPanel();
-        var label = new Label { Content = "Group name", VerticalAlignment = VerticalAlignment.Center, Padding = new Thickness(0, 0, 10, 0), Target = name };
+        var label = new Label { Content = "Name", VerticalAlignment = VerticalAlignment.Center, Padding = new Thickness(0, 0, 10, 0), Target = name };
         DockPanel.SetDock(label, Dock.Left); nameRow.Children.Add(label); nameRow.Children.Add(name); header.Children.Add(nameRow);
         nameStatus.Margin = new Thickness(0, 5, 0, 8); nameStatus.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); header.Children.Add(nameStatus);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
