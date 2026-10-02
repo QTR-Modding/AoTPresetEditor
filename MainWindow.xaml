@@ -3,23 +3,19 @@
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:AoTPresetEditor"
  Title="AoT Preset Editor" Width="1400" Height="900" MinWidth="1050" MinHeight="650"
  Style="{DynamicResource {x:Type Window}}" WindowStartupLocation="CenterScreen">
- <Grid Margin="24">
-  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-  <DockPanel Margin="0,0,0,18">
-   <Button DockPanel.Dock="Right" Content="Appearance..." Click="Appearance_Click" VerticalAlignment="Center"/>
-   <Menu x:Name="ToolsMenu" DockPanel.Dock="Right" VerticalAlignment="Center" Visibility="Collapsed">
-    <MenuItem Header="Tools"><MenuItem Header="Form browser..." Click="FormBrowser_Click"/></MenuItem>
+ <Grid Margin="12,6,12,8">
+  <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <DockPanel Panel.ZIndex="1" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,0,4,0">
+   <Menu x:Name="ToolsMenu" DockPanel.Dock="Right" VerticalAlignment="Center">
+    <MenuItem Header="Tools">
+     <MenuItem Header="Appearance..." Click="Appearance_Click"/>
+     <MenuItem x:Name="FormBrowserAction" Header="Form browser..." Click="FormBrowser_Click" Visibility="Collapsed"/>
+    </MenuItem>
    </Menu>
-   <StackPanel><TextBlock Text="AoT Preset Editor" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Create presets from named rules, shared settings, and templates" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,4,0,0"/></StackPanel>
   </DockPanel>
-  <DockPanel Grid.Row="1" Margin="0,0,0,16">
-   <Button x:Name="ReloadButton" DockPanel.Dock="Right" Content="Reload" Click="Reload_Click"/>
-   <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="Data folder..." Click="Browse_Click"/>
-   <TextBox x:Name="DataPath" IsReadOnly="True" AutomationProperties.Name="Skyrim Data folder" ToolTip="Launch through MO2 to read the selected profile's files."/>
-  </DockPanel>
-  <TabControl Grid.Row="2">
+  <TabControl>
    <TabItem Header="Presets">
-    <DockPanel Margin="12">
+    <DockPanel Margin="4">
      <Expander x:Name="PresetBrowser" Header="Installed presets" DockPanel.Dock="Top" IsExpanded="True" Margin="0,0,0,12">
       <DockPanel Height="210" Margin="8">
        <StackPanel DockPanel.Dock="Left" Width="220" Margin="0,0,16,0">
@@ -36,8 +32,20 @@
      <local:PresetWorkspace x:Name="Workspace"/>
     </DockPanel>
    </TabItem>
-   <TabItem Header="Load order"><DockPanel Margin="16"><TextBlock x:Name="LoadOrderInfo" DockPanel.Dock="Top" Margin="0,0,0,12" TextWrapping="Wrap"/><ListBox x:Name="LoadOrderList" FontFamily="Consolas"/></DockPanel></TabItem>
+   <TabItem Header="Game data">
+    <DockPanel Margin="12">
+     <TextBlock Text="Skyrim Data folder" DockPanel.Dock="Top" Margin="0,0,0,6"/>
+     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+      <TextBlock x:Name="DataLoading" DockPanel.Dock="Right" Text="Loading..." Margin="12,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+      <Button x:Name="ReloadButton" DockPanel.Dock="Right" Content="Reload" Click="Reload_Click" Visibility="Collapsed"/>
+      <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="Data folder..." Click="Browse_Click"/>
+      <TextBox x:Name="DataPath" IsReadOnly="True" AutomationProperties.Name="Skyrim Data folder" ToolTip="Launch through MO2 to read the selected profile's files."/>
+     </DockPanel>
+     <TextBlock x:Name="LoadOrderInfo" DockPanel.Dock="Top" Margin="0,0,0,8" TextWrapping="Wrap"/>
+     <ListBox x:Name="LoadOrderList" FontFamily="Consolas"/>
+    </DockPanel>
+   </TabItem>
   </TabControl>
-  <TextBlock x:Name="Status" Grid.Row="3" Margin="0,12,0,0" Text="Choose your Skyrim Data folder, or launch through MO2 with --data." TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+  <TextBlock x:Name="Status" Grid.Row="1" Margin="0,3,0,0" FontSize="12" Text="Launch through MO2, or choose a Skyrim Data folder on the Game data tab." TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
  </Grid>
 </Window>

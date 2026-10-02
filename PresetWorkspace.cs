@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Threading;
 using Microsoft.Win32;
 
@@ -27,13 +28,24 @@ public sealed class PresetWorkspace : UserControl
     private readonly TextBlock title = EditorControls.Text("Open or create a preset", true);
     private readonly TextBlock state = EditorControls.Text("Choose a file from the list, or create a new preset.");
     private readonly TextBlock location = EditorControls.Text("");
-    private readonly ListBox blocks = new() { BorderThickness = new Thickness(0), Margin = new Thickness(0, 14, 0, 14) };
-    private readonly StackPanel addActions = new() { Orientation = Orientation.Horizontal };
+    private readonly ListBox blocks = new() { BorderThickness = new Thickness(0), Margin = new Thickness(0, 4, 0, 4) };
+    private readonly StackPanel addActions = new();
+    private readonly Expander addMenu = new() { Header = "Add block" };
     private readonly StackPanel blockActions = new();
+    private readonly DockPanel blockSidebar = new() { Name = "BlockSidebar" };
+    private readonly ColumnDefinition sidebarColumn = new() { Width = new GridLength(240), MinWidth = 180, MaxWidth = 400 };
+    private readonly ColumnDefinition splitterColumn = new() { Width = new GridLength(8) };
+    private readonly GridSplitter splitter = new() { Width = 4, HorizontalAlignment = HorizontalAlignment.Center };
+    private readonly Button focus;
+    private readonly Button reviewIssues;
+    private GridLength sidebarWidth = new(240);
+    private bool focused;
     private readonly Button save;
     private readonly Button yaml;
-    private readonly Button up;
-    private readonly Button down;
+    private readonly MenuItem blockMenu = new();
+    private readonly MenuItem up = new() { Header = "Move up" };
+    private readonly MenuItem down = new() { Header = "Move down" };
+    private readonly MenuItem fileDraft = new() { Header = "Save draft..." };
     private readonly Button draftSave;
     private readonly ContentControl details = new();
     private readonly StackPanel issueList = new();
@@ -59,45 +71,69 @@ public sealed class PresetWorkspace : UserControl
 
     public PresetWorkspace()
     {
-        var layout = new DockPanel { Margin = new Thickness(14, 0, 0, 0) };
+        var layout = new DockPanel();
         var header = new StackPanel();
-        var toolbar = new WrapPanel { Margin = new Thickness(0, 0, 0, 18) };
-        toolbar.Children.Add(EditorControls.Button("New preset...", New));
-        toolbar.Children.Add(EditorControls.Button("Open file...", OpenFile));
-        toolbar.Children.Add(EditorControls.Button("Installed presets", () => BrowseRequested?.Invoke()));
+        var toolbar = new DockPanel { Margin = new Thickness(0, 0, 0, 5) };
+        focus = EditorControls.Button("Focus editor", ToggleFocusMode);
+        focus.ToolTip = "Hide the rule list to give the selected settings the full width.";
+        DockPanel.SetDock(focus, Dock.Right); toolbar.Children.Add(focus);
+        reviewIssues = EditorControls.Button("Review issues", () =>
+        {
+            issues.IsExpanded = !issues.IsExpanded;
+            issues.Visibility = issues.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+        });
+        DockPanel.SetDock(reviewIssues, Dock.Right); toolbar.Children.Add(reviewIssues);
+        var fileMenu = new Menu { VerticalAlignment = VerticalAlignment.Center };
+        var file = new MenuItem { Header = "File" };
+        foreach (var (label, action) in new (string, Action)[] { ("New preset...", New), ("Open file or draft...", OpenFile), ("Installed presets...", () => BrowseRequested?.Invoke()) })
+        {
+            var item = new MenuItem { Header = label }; item.Click += (_, _) => action(); file.Items.Add(item);
+        }
+        fileDraft.Click += (_, _) => SaveDraft(); file.Items.Add(fileDraft);
+        fileMenu.Items.Add(file); DockPanel.SetDock(fileMenu, Dock.Left); toolbar.Children.Add(fileMenu);
+        var saveActions = new StackPanel { Orientation = Orientation.Horizontal };
         draftSave = EditorControls.Button("Save draft...", () => SaveDraft());
         save = EditorControls.Button("Save to mod...", Save);
         yaml = EditorControls.Button("View YAML...", ShowYaml);
-        toolbar.Children.Add(draftSave); toolbar.Children.Add(save); toolbar.Children.Add(yaml);
+        saveActions.Children.Add(draftSave); saveActions.Children.Add(save); saveActions.Children.Add(yaml); toolbar.Children.Add(saveActions);
         save.SetResourceReference(StyleProperty, "PrimaryButton");
-        header.Children.Add(toolbar); header.Children.Add(title); header.Children.Add(location); header.Children.Add(state);
+        title.FontSize = 15; title.Margin = new Thickness(0); title.TextWrapping = TextWrapping.NoWrap; title.TextTrimming = TextTrimming.CharacterEllipsis;
+        title.SetBinding(ToolTipProperty, new Binding(nameof(TextBlock.Text)) { Source = location });
+        state.FontSize = 12; state.Margin = new Thickness(12, 0, 0, 0); state.TextWrapping = TextWrapping.NoWrap; state.TextTrimming = TextTrimming.CharacterEllipsis;
+        var contextRow = new Grid { Margin = new Thickness(0, 0, 0, 5) };
+        contextRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        contextRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+        contextRow.Children.Add(title); Grid.SetColumn(state, 1); contextRow.Children.Add(state);
+        header.Children.Add(toolbar); header.Children.Add(contextRow);
         addActions.Children.Add(EditorControls.Button("Add rule", () => Add(BlockKind.Rule)));
         addActions.Children.Add(EditorControls.Button("Add shared settings", () => Add(BlockKind.Shared)));
         addActions.Children.Add(EditorControls.Button("Add template", () => Add(BlockKind.Template)));
-        header.Children.Add(addActions);
+        addMenu.Content = addActions;
+        foreach (Button button in addActions.Children) button.Margin = new Thickness(0, 3, 0, 3);
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
-        var actions = new WrapPanel();
-        var remove = EditorControls.Button("Delete block", Remove);
-        up = EditorControls.Button("Move up", () => Move(-1));
-        down = EditorControls.Button("Move down", () => Move(1));
-        actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
+        var actions = new Menu();
+        var remove = new MenuItem { Header = "Delete..." };
+        remove.Click += (_, _) => Remove();
+        up.Click += (_, _) => Move(-1);
+        down.Click += (_, _) => Move(1);
+        blockMenu.Items.Add(up); blockMenu.Items.Add(down); blockMenu.Items.Add(remove);
+        actions.Items.Add(blockMenu);
         blockActions.Children.Add(actions);
-        var help = EditorControls.Text("Select a rule to edit it. Earlier rules take priority. Shared settings and templates can be used by several rules.");
-        help.Margin = new Thickness(0, 14, 0, 0); help.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); blockActions.Children.Add(help);
+        blocks.ToolTip = "Select a block to edit. Earlier rules take priority.";
         issues.Content = new ScrollViewer { Content = issueList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        issues.Collapsed += (_, _) => issues.Visibility = Visibility.Collapsed;
         DockPanel.SetDock(issues, Dock.Bottom); layout.Children.Add(issues);
         var columns = new Grid();
-        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310), MinWidth = 230 });
-        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(10) });
+        columns.ColumnDefinitions.Add(sidebarColumn);
+        columns.ColumnDefinitions.Add(splitterColumn);
         columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 400 });
-        var left = new DockPanel();
-        DockPanel.SetDock(blockActions, Dock.Bottom); left.Children.Add(blockActions); left.Children.Add(blocks);
-        columns.Children.Add(left);
-        var splitter = new GridSplitter { Width = 5, HorizontalAlignment = HorizontalAlignment.Center };
+        DockPanel.SetDock(addMenu, Dock.Top); blockSidebar.Children.Add(addMenu);
+        DockPanel.SetDock(blockActions, Dock.Bottom); blockSidebar.Children.Add(blockActions); blockSidebar.Children.Add(blocks);
+        columns.Children.Add(blockSidebar);
         splitter.SetResourceReference(BackgroundProperty, "DividerStrokeColorDefaultBrush");
         Grid.SetColumn(splitter, 1); columns.Children.Add(splitter);
-        details.Margin = new Thickness(12, 8, 0, 0);
-        var editorScroll = new ScrollViewer { Content = details, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        details.Margin = new Thickness(8, 0, 0, 0);
+        var editorScroll = new ScrollViewer { Name = "EditorViewport", Content = details, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Grid.SetColumn(editorScroll, 2); columns.Children.Add(editorScroll);
         blocks.SelectionChanged += (_, _) => { if (!rendering) SelectBlock(); };
@@ -110,12 +146,31 @@ public sealed class PresetWorkspace : UserControl
 
     private string? SelectedId => (blocks.SelectedItem as ListBoxItem)?.Tag as string;
 
+    private void ToggleFocusMode()
+    {
+        focused = !focused;
+        if (focused) sidebarWidth = new GridLength(sidebarColumn.ActualWidth);
+        sidebarColumn.MinWidth = focused ? 0 : 180;
+        sidebarColumn.Width = focused ? new GridLength(0) : sidebarWidth;
+        splitterColumn.Width = new GridLength(focused ? 0 : 8);
+        blockSidebar.Visibility = splitter.Visibility = focused ? Visibility.Collapsed : Visibility.Visible;
+        details.Margin = focused ? new Thickness(0) : new Thickness(8, 0, 0, 0);
+        focus.Content = focused ? "Show rule list" : "Focus editor";
+    }
+
     private void ShowWelcome()
     {
         var welcome = new StackPanel { Margin = new Thickness(15) };
         welcome.Children.Add(EditorControls.Text("Build a preset", true));
         welcome.Children.Add(EditorControls.Text("Start with a rule: choose the items it affects, then define how they change."));
         welcome.Children.Add(EditorControls.Text("Shared settings reuse the same values. Templates reuse a structure with values you supply for each use."));
+        if (document is null)
+        {
+            var start = new WrapPanel();
+            start.Children.Add(EditorControls.Button("New preset...", New));
+            start.Children.Add(EditorControls.Button("Open file...", OpenFile));
+            welcome.Children.Add(start);
+        }
         details.Content = welcome;
     }
 
@@ -269,6 +324,7 @@ public sealed class PresetWorkspace : UserControl
         var anchor = added.Value.Anchor;
         added.Value = ValueEditorWindow.NewValue(context);
         added.Value.Anchor = anchor;
+        addMenu.IsExpanded = false;
         dirty = true;
         await Refresh(added.Id);
     }
@@ -283,7 +339,7 @@ public sealed class PresetWorkspace : UserControl
     private async void SelectBlock()
     {
         var id = SelectedId;
-        if (id == editingId) return;
+        if (id == editingId && editor is not null) return;
         var needsValidation = editorDirty;
         if (!CommitEditor()) { RenderBlocks(editingId); return; }
         if (document is null || id is null) { editor = null; editingId = null; ShowWelcome(); UpdateActions(); return; }
@@ -366,7 +422,7 @@ public sealed class PresetWorkspace : UserControl
             validation = result;
             UpdatePresentation(result.Expanded);
             var errorCount = result.FileErrors.Count + result.Errors.Values.Sum(errors => errors.Count);
-            state.Text = document.Category + " / " + document.Kind + (result.IsValid ? " · ✓ Ready to save to a mod" : $" · {errorCount} details to complete or fix") + (dirty ? " · Unsaved changes" : "");
+            state.Text = document.Category + " / " + document.Kind + (result.IsValid ? " · ✓ Ready to save to a mod" : $" · {errorCount} {(errorCount == 1 ? "issue" : "issues")}") + (dirty ? " · Unsaved changes" : "");
             state.ToolTip = "Checks fields, templates and shared settings. Test the exported preset in game to verify its behaviour.";
             var selectedNow = SelectedId;
             RenderBlocks(selectedNow); UpdateActions();
@@ -406,7 +462,9 @@ public sealed class PresetWorkspace : UserControl
                 issueList.Children.Add(button);
             }
         issues.Header = $"Review issues ({issueList.Children.Count})";
-        issues.Visibility = issueList.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        reviewIssues.Content = issues.Header;
+        reviewIssues.Visibility = issueList.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        issues.Visibility = issueList.Children.Count > 0 && issues.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void RenderBlocks(string? selected)
@@ -422,16 +480,18 @@ public sealed class PresetWorkspace : UserControl
                 if (entries.Length == 0) continue;
                 var heading = EditorControls.Text((kind == BlockKind.Rule ? "Rules" : kind == BlockKind.Template ? "Templates" : "Shared settings") + $" ({entries.Length})");
                 heading.FontWeight = FontWeights.SemiBold;
-                blocks.Items.Add(new ListBoxItem { Content = heading, IsHitTestVisible = false, Focusable = false, Margin = new Thickness(0, 12, 0, 0) });
+                heading.Margin = new Thickness(0);
+                blocks.Items.Add(new ListBoxItem { Content = heading, IsHitTestVisible = false, Focusable = false, Margin = new Thickness(0, 6, 0, 0) });
                 foreach (var block in entries)
                 {
                     var errors = validation?.Errors.GetValueOrDefault(block.Id) ?? [];
                     var incomplete = errors.Count > 0 && errors.All(error => error.Contains("required", StringComparison.OrdinalIgnoreCase) || error.Contains("unset", StringComparison.OrdinalIgnoreCase));
                     var status = validation is null ? "•" : errors.Count > 0 ? incomplete ? "○" : "!" : validation.FileErrors.Count > 0 ? "•" : "✓";
-                    var row = new DockPanel { Margin = new Thickness(6, 8, 6, 8), MinHeight = 44 };
+                    var row = new DockPanel { Margin = new Thickness(4, 5, 4, 5), MinHeight = 40 };
                     var mark = EditorControls.Text(status); mark.FontSize = 20; mark.Width = 27; DockPanel.SetDock(mark, Dock.Left); row.Children.Add(mark);
                     var text = new StackPanel();
-                    var name = EditorControls.Text(block.Name); name.FontWeight = FontWeights.SemiBold; text.Children.Add(name);
+                    var name = EditorControls.Text(block.Name); name.FontWeight = FontWeights.SemiBold; name.Margin = new Thickness(0, 0, 0, 3);
+                    name.TextWrapping = TextWrapping.NoWrap; name.TextTrimming = TextTrimming.CharacterEllipsis; text.Children.Add(name);
                     var description = presentation?.RuleSummary(block) ?? "";
                     if (block.Kind != BlockKind.Rule && presentation is not null)
                     {
@@ -439,10 +499,12 @@ public sealed class PresetWorkspace : UserControl
                         description += Environment.NewLine + (uses.Count == 0 ? "No uses yet" : "Used by " + string.Join(", ", uses.Take(3).Select(use => use.Name)) + (uses.Count > 3 ? $" +{uses.Count - 3}" : ""));
                     }
                     var summary = EditorControls.Text(description);
-                    summary.FontSize = 12; summary.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); text.Children.Add(summary);
+                    summary.FontSize = 12; summary.LineHeight = 16; summary.MaxHeight = 32; summary.Margin = new Thickness(0);
+                    summary.TextTrimming = TextTrimming.CharacterEllipsis;
+                    summary.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); text.Children.Add(summary);
                     row.Children.Add(text);
                     var item = new ListBoxItem { Content = row, Tag = block.Id, HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                        ToolTip = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : "Select to edit these settings" };
+                        ToolTip = block.Name + Environment.NewLine + description + (errors.Count > 0 ? Environment.NewLine + string.Join(Environment.NewLine, errors) : "") };
                     blocks.Items.Add(item);
                     if (block.Id == selected) blocks.SelectedItem = item;
                 }
@@ -454,20 +516,25 @@ public sealed class PresetWorkspace : UserControl
 
     private void UpdateActions()
     {
-        addActions.Visibility = location.Visibility = document is not null ? Visibility.Visible : Visibility.Collapsed;
+        addMenu.Visibility = addActions.Visibility = document is not null ? Visibility.Visible : Visibility.Collapsed;
+        if (document?.Blocks.Count == 0) addMenu.IsExpanded = true;
+        if (focused && document?.Blocks.Count is null or 0) ToggleFocusMode();
+        focus.Visibility = document?.Blocks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         var canAddRule = document is not null &&
             !document.Blocks.Any(block => block.Kind == BlockKind.Rule && block.Key is "ownerLists" or "formsLists") &&
             (document.Kind != PresetKind.Default || !document.Blocks.Any(block => block.Kind == BlockKind.Rule));
         ((Button)addActions.Children[0]).Visibility = canAddRule ? Visibility.Visible : Visibility.Collapsed;
         save.Visibility = yaml.Visibility = validation?.IsValid == true ? Visibility.Visible : Visibility.Collapsed;
-        draftSave.Visibility = document is not null ? Visibility.Visible : Visibility.Collapsed;
+        fileDraft.Visibility = document is not null ? Visibility.Visible : Visibility.Collapsed;
+        draftSave.Visibility = document is not null && validation?.IsValid != true ? Visibility.Visible : Visibility.Collapsed;
         var selected = document?.Blocks.FirstOrDefault(block => block.Id == SelectedId);
         var siblings = document?.Blocks.Where(block => block.Kind == selected?.Kind).ToArray() ?? [];
         var selectedIndex = Array.IndexOf(siblings, selected);
         blockActions.Visibility = selected is not null ? Visibility.Visible : Visibility.Collapsed;
+        blockMenu.Header = selected is null ? "Block actions" : KindLabel(selected.Kind) + " actions";
         up.Visibility = selectedIndex > 0 ? Visibility.Visible : Visibility.Collapsed;
         down.Visibility = selectedIndex >= 0 && selectedIndex < siblings.Length - 1 ? Visibility.Visible : Visibility.Collapsed;
-        if (validation is null) issues.Visibility = Visibility.Collapsed;
+        if (validation is null) issues.Visibility = reviewIssues.Visibility = Visibility.Collapsed;
     }
 
     private void ShowYaml()

@@ -23,29 +23,45 @@ public sealed class YamlPreviewWindow : Window
     private const double MaximumTextSize = 30;
     private readonly TabControl tabs = new();
     private readonly List<CodePage> pages = [];
-    private readonly TextBlock zoom = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 6, 0) };
+    private readonly Button zoom = new() { VerticalAlignment = VerticalAlignment.Center, ToolTip = "Reset text size (Ctrl+mouse wheel also zooms)" };
+    private readonly TextBlock normalZoom = new() { Text = "100%", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 3, 0), ToolTip = "Ctrl+mouse wheel also zooms" };
+    private readonly Button find;
+    private readonly Button copy;
+    private readonly Button decrease;
+    private readonly Button increase;
+    private readonly MenuItem sections = new() { Header = "Sections" };
     private sealed record CodePage(TextEditor Editor, FoldingManager Folding, SearchPanel Search);
 
     public YamlPreviewWindow(string filename, string source, string expanded)
     {
         Title = filename + " - YAML";
         Width = 1120; Height = 780; MinWidth = 640; MinHeight = 400;
+        EditorControls.FitToOwner(this);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(StyleProperty, typeof(Window));
-        var layout = new DockPanel { Margin = new Thickness(20) };
-        var toolbar = new WrapPanel { Margin = new Thickness(0, 0, 0, 12) };
-        toolbar.Children.Add(EditorControls.Button("Find (Ctrl+F)", Find));
-        toolbar.Children.Add(EditorControls.Button("Copy YAML", CopyYaml));
-        toolbar.Children.Add(EditorControls.Button("Collapse sections", () => FoldAll(true)));
-        toolbar.Children.Add(EditorControls.Button("Expand sections", () => FoldAll(false)));
-        toolbar.Children.Add(zoom);
-        toolbar.Children.Add(EditorControls.Button("A-", () => ChangeZoom(-1)));
-        toolbar.Children.Add(EditorControls.Button("A+", () => ChangeZoom(1)));
-        toolbar.Children.Add(EditorControls.Button("Reset size", () => SetZoom(DefaultTextSize)));
+        var layout = new DockPanel { Margin = new Thickness(12) };
+        var toolbar = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
+        find = EditorControls.Button("Find", Find); find.ToolTip = "Find text (Ctrl+F)"; toolbar.Children.Add(find);
+        copy = EditorControls.Button("Copy", CopyYaml); copy.ToolTip = "Copy the complete YAML, including folded sections"; toolbar.Children.Add(copy);
+        var collapse = new MenuItem { Header = "Collapse all" }; collapse.Click += (_, _) => FoldAll(true);
+        var expand = new MenuItem { Header = "Expand all" }; expand.Click += (_, _) => FoldAll(false);
+        sections.Items.Add(collapse); sections.Items.Add(expand);
+        sections.SubmenuOpened += (_, _) =>
+        {
+            collapse.Visibility = SelectedPage.Folding.AllFoldings.Any(section => !section.IsFolded) ? Visibility.Visible : Visibility.Collapsed;
+            expand.Visibility = SelectedPage.Folding.AllFoldings.Any(section => section.IsFolded) ? Visibility.Visible : Visibility.Collapsed;
+        };
+        var foldingMenu = new Menu { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(5, 0, 0, 0) };
+        foldingMenu.Items.Add(sections); toolbar.Children.Add(foldingMenu);
+        decrease = EditorControls.Button("A-", () => ChangeZoom(-1)); toolbar.Children.Add(decrease);
+        toolbar.Children.Add(normalZoom);
+        zoom.Click += (_, _) => SetZoom(DefaultTextSize); toolbar.Children.Add(zoom);
+        increase = EditorControls.Button("A+", () => ChangeZoom(1)); toolbar.Children.Add(increase);
         DockPanel.SetDock(toolbar, Dock.Top);
         layout.Children.Add(toolbar);
         AddPage("Preset YAML", "The preset to save, including shared settings and templates. Editor labels are folded at the top; copying includes them.", source, false);
         AddPage("Expanded rules", "Shared settings and template arguments have been applied. This read-only view helps check the resulting rules. Definitions are folded to keep the rules in view.", expanded, true);
+        tabs.SelectionChanged += (_, e) => { if (ReferenceEquals(e.Source, tabs)) UpdateActions(); };
         layout.Children.Add(tabs);
         Content = layout;
         Loaded += (_, _) => UpdatePalette();
@@ -55,7 +71,7 @@ public sealed class YamlPreviewWindow : Window
             ChangeZoom(e.Delta > 0 ? 1 : -1);
             e.Handled = true;
         };
-        CommandBindings.Add(new CommandBinding(ApplicationCommands.Find, (_, _) => Find()));
+        CommandBindings.Add(new CommandBinding(ApplicationCommands.Find, (_, _) => Find(), (_, e) => e.CanExecute = SelectedPage.Editor.Document.TextLength > 0));
         InputBindings.Add(new KeyBinding(ApplicationCommands.Find, Key.F, ModifierKeys.Control));
         SetZoom(DefaultTextSize);
         UpdatePalette();
@@ -92,7 +108,7 @@ public sealed class YamlPreviewWindow : Window
         pages.Add(new CodePage(editor, folding, search));
         var panel = new DockPanel();
         var info = EditorControls.Text(explanation);
-        info.Margin = new Thickness(4, 12, 4, 12);
+        info.Margin = new Thickness(4, 6, 4, 6); info.FontSize = 12;
         info.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
         DockPanel.SetDock(info, Dock.Top);
         panel.Children.Add(info);
@@ -209,7 +225,20 @@ public sealed class YamlPreviewWindow : Window
     private void SetZoom(double size)
     {
         foreach (var page in pages) page.Editor.FontSize = size;
-        zoom.Text = $"{Math.Round(size / DefaultTextSize * 100)}%";
+        zoom.Content = $"{Math.Round(size / DefaultTextSize * 100)}%";
+        UpdateActions();
+    }
+
+    private void UpdateActions()
+    {
+        var hasText = SelectedPage.Editor.Document.TextLength > 0;
+        var size = SelectedPage.Editor.FontSize;
+        find.Visibility = copy.Visibility = hasText ? Visibility.Visible : Visibility.Collapsed;
+        sections.Visibility = SelectedPage.Folding.AllFoldings.Any() ? Visibility.Visible : Visibility.Collapsed;
+        decrease.Visibility = hasText && size > MinimumTextSize ? Visibility.Visible : Visibility.Collapsed;
+        increase.Visibility = hasText && size < MaximumTextSize ? Visibility.Visible : Visibility.Collapsed;
+        zoom.Visibility = hasText && size != DefaultTextSize ? Visibility.Visible : Visibility.Collapsed;
+        normalZoom.Visibility = hasText && size == DefaultTextSize ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private sealed class IndentationGuides(TextEditor editor) : IBackgroundRenderer

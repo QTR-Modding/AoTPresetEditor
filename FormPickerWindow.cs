@@ -21,7 +21,7 @@ public sealed class FormPickerWindow : Window
     private readonly ComboBox types = new();
     private readonly ComboBox plugins = new();
     private readonly TextBlock count = new();
-    private readonly TextBlock selection = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock selection = new() { TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly DataGrid results = new();
     private readonly Button choose = new() { Content = "Choose", IsDefault = true, Visibility = Visibility.Collapsed };
     private readonly Button clear = new() { Content = "Clear selection", Visibility = Visibility.Collapsed };
@@ -44,6 +44,7 @@ public sealed class FormPickerWindow : Window
         Title = this.purpose;
         if (browseOnly) choose.Content = "Copy identifier";
         Width = 1120; Height = 700; MinWidth = 800; MinHeight = 460;
+        EditorControls.FitToOwner(this);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(StyleProperty, typeof(Window));
         Content = BuildContent();
@@ -67,38 +68,41 @@ public sealed class FormPickerWindow : Window
 
     private UIElement BuildContent()
     {
-        var layout = new Grid { Margin = new Thickness(20) };
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var layout = new Grid { Margin = new Thickness(14) };
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        var header = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
-        header.Children.Add(new TextBlock { Text = purpose, FontSize = 22, FontWeight = FontWeights.SemiBold });
-        var hint = new TextBlock { Text = browseOnly ? "Explore the active profile's forms and copy an identifier."
-            : "Choose from the forms available for this field in the active profile.", Margin = new Thickness(0, 4, 0, 0) };
-        hint.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
-        header.Children.Add(hint); layout.Children.Add(header);
+        var header = new TextBlock { Text = purpose, FontSize = 16, FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 0, 8), TextWrapping = TextWrapping.Wrap,
+            ToolTip = browseOnly ? "Explore the active profile's forms and copy an identifier."
+                : "Forms shown here are applicable to this field in the active profile." };
+        layout.Children.Add(header);
         var filters = new Grid();
+        var showTypes = forms.Select(form => form.Type).Distinct(StringComparer.OrdinalIgnoreCase).Skip(1).Any();
+        var showPlugins = forms.SelectMany(form => new[] { form.Plugin, form.Winner }).Distinct(StringComparer.OrdinalIgnoreCase).Skip(1).Any();
         filters.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
-        filters.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        filters.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        filters.ColumnDefinitions.Add(new ColumnDefinition { Width = showTypes ? new GridLength(1, GridUnitType.Star) : new GridLength(0) });
+        filters.ColumnDefinitions.Add(new ColumnDefinition { Width = showPlugins ? new GridLength(1, GridUnitType.Star) : new GridLength(0) });
         AddFilter(filters, "Search name, EditorID, ID, or plugin", search, 0);
-        AddFilter(filters, "Type", types, 1);
-        AddFilter(filters, "Plugin", plugins, 2);
+        AddFilter(filters, "Type", types, 1, showTypes);
+        AddFilter(filters, "Plugin", plugins, 2, showPlugins);
         Grid.SetRow(filters, 1); layout.Children.Add(filters);
 
-        count.Margin = new Thickness(0, 12, 0, 8);
-        Grid.SetRow(count, 2); layout.Children.Add(count);
         ConfigureGrid();
-        Grid.SetRow(results, 3); layout.Children.Add(results);
+        results.Margin = new Thickness(0, 10, 0, 0);
+        Grid.SetRow(results, 2); layout.Children.Add(results);
 
-        var footer = new Grid { Margin = new Thickness(0, 12, 0, 0) };
+        var footer = new Grid { Margin = new Thickness(0, 8, 0, 0) };
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         selection.VerticalAlignment = VerticalAlignment.Center;
-        footer.Children.Add(selection);
+        selection.SetBinding(ToolTipProperty, new Binding(nameof(TextBlock.Text)) { Source = selection });
+        var summary = new StackPanel { Margin = new Thickness(0, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center };
+        count.FontSize = 12; count.TextWrapping = TextWrapping.Wrap;
+        count.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        summary.Children.Add(count); summary.Children.Add(selection); footer.Children.Add(summary);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Bottom };
         if (multiple)
         {
@@ -108,13 +112,13 @@ public sealed class FormPickerWindow : Window
         buttons.Children.Add(new Button { Content = browseOnly ? "Close" : "Cancel", IsCancel = true });
         buttons.Children.Add(choose);
         Grid.SetColumn(buttons, 1); footer.Children.Add(buttons);
-        Grid.SetRow(footer, 4); layout.Children.Add(footer);
+        Grid.SetRow(footer, 3); layout.Children.Add(footer);
         return layout;
     }
 
-    private static void AddFilter(Grid grid, string label, Control control, int column)
+    private static void AddFilter(Grid grid, string label, Control control, int column, bool visible = true)
     {
-        var panel = new StackPanel { Margin = new Thickness(column == 0 ? 0 : 12, 0, 0, 0) };
+        var panel = new StackPanel { Margin = new Thickness(column == 0 ? 0 : 12, 0, 0, 0), Visibility = visible ? Visibility.Visible : Visibility.Collapsed };
         panel.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 0, 0, 5) });
         panel.Children.Add(control);
         Grid.SetColumn(panel, column); grid.Children.Add(panel);
@@ -140,9 +144,13 @@ public sealed class FormPickerWindow : Window
         AddColumn("Winning plugin", nameof(FormRow.Winner), 180);
     }
 
-    private void AddColumn(string title, string property, double width)
+    private void AddColumn(string title, string property, double weight)
     {
-        results.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(property), Width = width });
+        var text = new Style(typeof(TextBlock));
+        text.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis));
+        text.Setters.Add(new Setter(ToolTipProperty, new Binding(property)));
+        results.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(property),
+            Width = new DataGridLength(weight, DataGridLengthUnitType.Star), MinWidth = 65, ElementStyle = text });
     }
 
     private void ScheduleSearch()
@@ -203,7 +211,7 @@ public sealed class FormPickerWindow : Window
         choose.IsEnabled = selected.Count > 0;
         choose.Visibility = clear.Visibility = selected.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         selection.Text = multiple
-            ? $"{selected.Count:N0} selected. Ctrl/Shift selects multiple forms; selections stay when filtering."
+            ? $"{selected.Count:N0} selected · Ctrl/Shift for multiple · Kept when filtering"
             : selected.FirstOrDefault() is { } form ? $"{(form.Name.Length == 0 ? form.EditorId : form.Name)} · {form.Identifier}" : "Choose a form from the list.";
     }
 

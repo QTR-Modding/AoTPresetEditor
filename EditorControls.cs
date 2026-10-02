@@ -5,6 +5,24 @@ namespace AoTPresetEditor;
 
 internal static class EditorControls
 {
+    public static void FitToOwner(Window window, double ownerFraction = 0.94, double screenFraction = 0.85)
+    {
+        window.SourceInitialized += (_, _) =>
+        {
+            const double edgeInset = 24;
+            var owner = window.Owner;
+            var hasOwnerSize = owner is { ActualWidth: > 0, ActualHeight: > 0 };
+            var bounds = hasOwnerSize ? new Size(owner!.ActualWidth, owner.ActualHeight) : SystemParameters.WorkArea.Size;
+            var width = Math.Max(1, bounds.Width - edgeInset);
+            var height = Math.Max(1, bounds.Height - edgeInset);
+            var fraction = hasOwnerSize ? ownerFraction : screenFraction;
+            window.MinWidth = Math.Min(window.MinWidth, width);
+            window.MinHeight = Math.Min(window.MinHeight, height);
+            window.Width = Math.Clamp(bounds.Width * fraction, window.MinWidth, width);
+            window.Height = Math.Clamp(bounds.Height * fraction, window.MinHeight, height);
+        };
+    }
+
     public static TextBlock Text(string text, bool heading = false) => new()
     {
         Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),

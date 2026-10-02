@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Automation;
 using System.Text.RegularExpressions;
 using YamlDotNet.Core;
 
@@ -10,6 +11,7 @@ public sealed class ValueEditorControl : UserControl
 {
     private PresetDocument document;
     private readonly ValueEditorControl root;
+    private readonly string? blockId;
     private readonly Action<PresetValue>? replace;
     private readonly IReadOnlyList<FormRow> forms;
     private readonly IReadOnlyList<FormGroupDefinition> groups;
@@ -26,9 +28,12 @@ public sealed class ValueEditorControl : UserControl
     private PresetValue? effective;
     private TextBlock? resolvedPreview;
     private StackPanel? resolvedDetails;
+    private Expander? resolvedSection;
     private Button? independentCopy;
     private Action refreshSummary = () => { };
     private ListBox? entryList;
+    private Action? revealEntry;
+    private WrapPanel? valueOptions;
     private bool refreshing;
     public PresetValue Value { get; private set; }
     public PresetDocument Document => root.document;
@@ -45,6 +50,7 @@ public sealed class ValueEditorControl : UserControl
         IReadOnlyList<FormGroupDefinition> groups, ValueEditorControl? parent, Action<PresetValue>? replace)
     {
         root = parent?.root ?? this;
+        blockId = parent is null ? document.Blocks.FirstOrDefault(block => ReferenceEquals(block.Value, value))?.Id : root.blockId;
         this.document = parent is null ? document.Clone() : root.document;
         this.forms = forms; this.groups = groups; this.context = context; this.title = title;
         this.parametersAllowed = parametersAllowed; this.field = field; this.replace = replace;
@@ -53,14 +59,19 @@ public sealed class ValueEditorControl : UserControl
         var layout = new StackPanel();
         if (parent is null)
         {
-            layout.Children.Add(EditorControls.Text(title, true));
             if (blockName is not null)
             {
-                layout.Children.Add(EditorControls.Text("Name"));
-                name = new TextBox { Text = blockName, Margin = new Thickness(0, 0, 0, 12) };
-                name.TextChanged += (_, _) => NotifyChanged(); layout.Children.Add(name);
+                var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
+                var caption = EditorControls.Text(title + " name");
+                caption.FontWeight = FontWeights.SemiBold;
+                caption.Margin = new Thickness(0, 0, 10, 0); caption.VerticalAlignment = VerticalAlignment.Center;
+                DockPanel.SetDock(caption, Dock.Left); header.Children.Add(caption);
+                name = new TextBox { Text = blockName };
+                AutomationProperties.SetName(name, title + " name");
+                name.TextChanged += (_, _) => NotifyChanged(); header.Children.Add(name); layout.Children.Add(header);
             }
-            if (field is not null) layout.Children.Add(Help(field.Help));
+            else layout.Children.Add(EditorControls.Text(title, true));
+            if (field is { Help.Length: > 0 }) layout.Children.Add(new Expander { Header = "Field help", Content = Help(field.Help), Margin = new Thickness(0, 0, 0, 6) });
         }
         layout.Children.Add(content); Content = layout; Render();
     }
@@ -77,6 +88,7 @@ public sealed class ValueEditorControl : UserControl
         if (resolvedPreview is not null) resolvedPreview.Text = effective is null ? "Complete the preset to preview the resulting settings."
             : presentation.Summary(effective, context);
         if (independentCopy is not null) independentCopy.Visibility = effective is null ? Visibility.Collapsed : Visibility.Visible;
+        if (resolvedSection is not null) resolvedSection.Visibility = effective is null ? Visibility.Collapsed : Visibility.Visible;
         if (resolvedDetails is not null)
         {
             resolvedDetails.Children.Clear();
@@ -88,11 +100,14 @@ public sealed class ValueEditorControl : UserControl
 
     public bool FocusIssue(string message)
     {
+        var openedEntry = false;
         if (entryList is not null)
         {
             var match = Regex.Match(message, "^(?:" + Regex.Escape(field?.Label ?? "Entry") + @"|Entry) (\d+):?\s*", RegexOptions.IgnoreCase);
             if (match.Success && int.TryParse(match.Groups[1].Value, out var number) && number > 0 && number <= Value.Items.Count)
-            { entryList.SelectedIndex = number - 1; message = message[match.Length..]; }
+            { entryList.SelectedIndex = number - 1; revealEntry?.Invoke(); openedEntry = true; message = message[match.Length..]; }
+            else if (field is not null && entryList.SelectedIndex >= 0 && message.StartsWith(field.Label, StringComparison.OrdinalIgnoreCase))
+            { revealEntry?.Invoke(); openedEntry = true; }
         }
         foreach (var (_, view) in fields)
             if (message.StartsWith(view.Field.Label, StringComparison.OrdinalIgnoreCase) || message.StartsWith(view.Field.Key + ":", StringComparison.OrdinalIgnoreCase))
@@ -108,7 +123,7 @@ public sealed class ValueEditorControl : UserControl
                 Reveal(view.Target); return true;
             }
         if (name is not null && message.Contains("name", StringComparison.OrdinalIgnoreCase)) { name.Focus(); return true; }
-        return false;
+        return openedEntry;
     }
 
     private static void Reveal(FrameworkElement target)
@@ -126,7 +141,7 @@ public sealed class ValueEditorControl : UserControl
 
     private void Render()
     {
-        refreshing = true; capture = () => { }; refreshSummary = () => { }; children.Clear(); fields.Clear(); content.Children.Clear(); resolvedPreview = null; resolvedDetails = null; independentCopy = null; entryList = null;
+        refreshing = true; capture = () => { }; refreshSummary = () => { }; children.Clear(); fields.Clear(); content.Children.Clear(); resolvedPreview = null; resolvedDetails = null; resolvedSection = null; independentCopy = null; entryList = null; revealEntry = null; valueOptions = null;
         if (parametersAllowed && name is not null)
         {
             var parameters = TemplateCall.FindParameters(Value, Document);
@@ -149,11 +164,12 @@ public sealed class ValueEditorControl : UserControl
         else if (Value.Kind == ValueKind.Mapping) RenderMap();
         else if (Value.Kind == ValueKind.Sequence) RenderList();
         else RenderScalar();
-        var reuse = new WrapPanel { Margin = new Thickness(0, 4, 0, 8) };
-        if (Document.Blocks.Any(block => block.Kind is BlockKind.Shared or BlockKind.Template))
+        var reuse = valueOptions ?? new WrapPanel();
+        reuse.Margin = new Thickness(0, 3, 0, 4);
+        if (AvailableDefinitions().Any())
             reuse.Children.Add(EditorControls.Button("Use shared settings or template...", ChooseReference));
         if (parametersAllowed) reuse.Children.Add(EditorControls.Button("Use parameter...", ChooseParameter));
-        if (reuse.Children.Count > 0) content.Children.Add(new Expander { Header = "Reuse a value", Content = reuse });
+        if (reuse.Children.Count > 0) content.Children.Add(new Expander { Header = valueOptions is null ? "Reuse a value" : "More options", Content = reuse });
         refreshing = false; RefreshFeedback();
     }
 
@@ -163,7 +179,9 @@ public sealed class ValueEditorControl : UserControl
         content.Children.Add(resolvedPreview);
         resolvedDetails = new StackPanel();
         if (effective is not null) DescribeResolved(effective, context, resolvedDetails);
-        content.Children.Add(new Expander { Header = "Resulting settings", Content = resolvedDetails, Margin = new Thickness(0, 0, 0, 8) });
+        resolvedSection = new Expander { Header = "Resulting settings", Content = resolvedDetails, Margin = new Thickness(0, 0, 0, 8),
+            Visibility = effective is null ? Visibility.Collapsed : Visibility.Visible };
+        content.Children.Add(resolvedSection);
     }
 
     private void DescribeResolved(PresetValue value, string valueContext, Panel target)
@@ -215,8 +233,9 @@ public sealed class ValueEditorControl : UserControl
         }
         independentCopy = EditorControls.Button("Make independent copy for this use", () => { if (effective is not null) SetValue(effective.Clone()); });
         independentCopy.Visibility = effective is null ? Visibility.Collapsed : Visibility.Visible;
-        content.Children.Add(independentCopy);
-        content.Children.Add(EditorControls.Button("Replace with own settings...", () =>
+        valueOptions ??= new WrapPanel();
+        valueOptions.Children.Add(independentCopy);
+        valueOptions.Children.Add(EditorControls.Button("Replace with own settings...", () =>
         {
             if (MessageBox.Show(Window.GetWindow(this), "Replace this reference with new independent settings?", title,
                 MessageBoxButton.OKCancel) == MessageBoxResult.OK) SetValue(NewValue(context, field));
@@ -272,7 +291,7 @@ public sealed class ValueEditorControl : UserControl
                 ChildContext: PresetSchema.InferContext(key, Value.Fields[key])), content);
         if (descriptors.Count == 0) content.Children.Add(EditorControls.Button("Add setting...", AddSetting));
         var inherited = Value.Get("<<");
-        if (inherited is null && !Document.Blocks.Any(block => block.Kind is BlockKind.Shared or BlockKind.Template)) return;
+        if (inherited is null && !AvailableDefinitions().Any()) return;
         var panelReuse = new StackPanel();
         panelReuse.Children.Add(Help(inherited is null ? "Reuse fields from a named definition. Values entered here take precedence."
             : "From " + presentation.ReferenceLabel(inherited) + ". Values entered here take precedence."));
@@ -307,8 +326,12 @@ public sealed class ValueEditorControl : UserControl
     private void RenderField(PresetField descriptor, Panel target)
     {
         var current = Value.Get(descriptor.Key); var box = new StackPanel(); var row = new DockPanel();
-        var label = EditorControls.Text(descriptor.Label); label.FontWeight = FontWeights.SemiBold; var actions = new WrapPanel();
-        if (current is not null) actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Clear" : "Use inherited value", () =>
+        var label = EditorControls.Text(descriptor.Label); label.FontWeight = FontWeights.SemiBold;
+        label.Margin = new Thickness(0, 0, 8, 2); label.VerticalAlignment = VerticalAlignment.Center;
+        var actions = new WrapPanel();
+        var explanation = Help(descriptor.Help);
+        explanation.Visibility = Visibility.Collapsed;
+        if (current is not null && (!descriptor.Required || Value.Get("<<") is not null)) actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Clear" : "Use inherited value", () =>
             { Value.Remove(descriptor.Key); Render(); NotifyChanged(); }));
         else if (!descriptor.Required || Value.Get("<<") is not null)
             actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Set" : "Override here", () =>
@@ -316,6 +339,15 @@ public sealed class ValueEditorControl : UserControl
                 var replacement = effective?.Get(descriptor.Key)?.Clone() ?? NewValue(descriptor.ChildContext, descriptor); replacement.Anchor = "";
                 Value.Set(descriptor.Key, replacement); Render(); NotifyChanged();
             }));
+        var help = new Button { Content = "Help", Padding = new Thickness(8, 3, 8, 3) };
+        AutomationProperties.SetName(help, "Help for " + descriptor.Label);
+        help.Click += (_, _) =>
+        {
+            var show = explanation.Visibility != Visibility.Visible;
+            explanation.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            help.Content = show ? "Hide help" : "Help";
+        };
+        if (descriptor.Help.Length > 0) actions.Children.Add(help);
         DockPanel.SetDock(actions, Dock.Right); row.Children.Add(actions); row.Children.Add(label); box.Children.Add(row);
         var status = Help(""); box.Children.Add(status);
         if (current is not null || descriptor.Required && Value.Get("<<") is null)
@@ -326,10 +358,11 @@ public sealed class ValueEditorControl : UserControl
                 value => Value.Set(descriptor.Key, value), resolved => resolved?.Get(descriptor.Key));
             box.Children.Add(child);
         }
-        box.Children.Add(Help(descriptor.Help));
-        var card = new Border { Child = box, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(5),
-            Padding = new Thickness(12, 9, 12, 8), Margin = new Thickness(0, 0, 6, 8) };
-        card.SetResourceReference(Border.BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
+        box.Children.Add(explanation);
+        var collection = descriptor.Kind == FieldKind.ObjectList;
+        var card = new Border { Child = box, BorderThickness = collection ? new Thickness(0, 0, 0, 1) : new Thickness(1),
+            CornerRadius = new CornerRadius(collection ? 0 : 5), Padding = collection ? new Thickness(0, 6, 0, 6) : new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 6) };
+        if (!collection) card.SetResourceReference(Border.BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
         card.SetResourceReference(Border.BorderBrushProperty, "CardStrokeColorDefaultBrush");
         fields[descriptor.Key] = (card, status, descriptor); target.Children.Add(card);
     }
@@ -357,29 +390,49 @@ public sealed class ValueEditorControl : UserControl
 
     private void RenderList()
     {
-        var list = new ListBox { MinHeight = 64, MaxHeight = 220, Margin = new Thickness(0, 0, 0, 8) };
+        var compact = field?.Kind is FieldKind.FormList or FieldKind.IntegerList ||
+            field?.Kind != FieldKind.ObjectList && context != "Inheritance" && PresetSchema.GetFields(ItemContext(), Document.Kind).Count == 0 &&
+            Value.Items.All(item => item.Kind is ValueKind.Scalar or ValueKind.Alias);
+        var list = new ListBox { MaxHeight = 160, Margin = new Thickness(0, 0, 0, 4) };
+        ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
         entryList = list;
-        var details = new StackPanel { Margin = new Thickness(12, 10, 0, 8) }; ValueEditorControl? activeEditor = null; var actions = new WrapPanel();
+        var details = new StackPanel { Margin = new Thickness(0, 6, 0, 4) }; ValueEditorControl? activeEditor = null; var actions = new WrapPanel();
+        var remove = new Button { Content = "Remove" };
+        var up = new Button { Content = "Move up" };
+        var down = new Button { Content = "Move down" };
+        var edit = new Button { Content = "Edit entry" };
         void RefreshList(int selected)
         {
-            list.ItemsSource = Value.Items.Select((item, index) => new ListBoxItem { Content = $"{index + 1}. {presentation.Summary(item, ItemContext())}" }).ToArray(); list.SelectedIndex = selected;
+            list.ItemsSource = Value.Items.Select((item, index) => new ListBoxItem
+            {
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Content = new TextBlock { Text = $"{index + 1}. {presentation.Summary(item, ItemContext())}", TextWrapping = TextWrapping.Wrap }
+            }).ToArray();
+            list.Visibility = Value.Items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+            list.SelectedIndex = selected;
         }
         refreshSummary = () =>
         {
             for (var index = 0; index < Math.Min(Value.Items.Count, list.Items.Count); index++)
-                ((ListBoxItem)list.Items[index]).Content = $"{index + 1}. {presentation.Summary(effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count ? effective.Items[index] : Value.Items[index], ItemContext())}";
+                ((TextBlock)((ListBoxItem)list.Items[index]).Content).Text = $"{index + 1}. {presentation.Summary(effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count ? effective.Items[index] : Value.Items[index], ItemContext())}";
         };
         void SelectEntry()
         {
             if (activeEditor is not null) { activeEditor.Capture(); children.RemoveAll(pair => pair.Editor == activeEditor); }
-            details.Children.Clear(); activeEditor = null; var index = list.SelectedIndex; if (index < 0) return;
-            details.Children.Add(EditorControls.Text(ItemLabel() + " " + (index + 1), true));
-            activeEditor = Child(Value.Items[index], ItemContext(), ItemLabel() + " " + (index + 1), ItemField(), value => Value.Items[index] = value,
+            details.Children.Clear(); details.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+            activeEditor = null; var index = list.SelectedIndex; if (index < 0) return;
+            var label = compact ? field?.Kind switch { FieldKind.FormList => "Identifier", FieldKind.IntegerList => "Number", _ => "Entry" }
+                : ItemLabel() + " " + (index + 1);
+            var caption = EditorControls.Text(label);
+            caption.FontWeight = FontWeights.SemiBold; caption.Margin = new Thickness(0, 0, 0, 4);
+            details.Children.Add(caption);
+            activeEditor = Child(Value.Items[index], ItemContext(), label, ItemField(), value => Value.Items[index] = value,
                 resolved => resolved?.Kind == ValueKind.Sequence && index < resolved.Items.Count ? resolved.Items[index] : null);
             details.Children.Add(activeEditor);
         }
-        actions.Children.Add(EditorControls.Button("Add " + ItemLabel().ToLowerInvariant(), () =>
-        { Capture(); Value.Items.Add(NewListItem()); RefreshList(Value.Items.Count - 1); NotifyChanged(); }));
+        var addLabel = field?.Kind switch { FieldKind.FormList => "Add by identifier", FieldKind.IntegerList => "Add number", _ => "Add " + ItemLabel().ToLowerInvariant() };
+        var add = EditorControls.Button(addLabel, () =>
+        { Capture(); Value.Items.Add(NewListItem()); RefreshList(Value.Items.Count - 1); ShowEntry(); NotifyChanged(); });
         if (field?.Kind == FieldKind.FormList) actions.Children.Add(EditorControls.Button("Choose forms...", () =>
         {
             var picker = new FormPickerWindow(forms, multiple: true, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
@@ -393,20 +446,35 @@ public sealed class ValueEditorControl : UserControl
             if (!Value.Items.Any(item => item.Kind == ValueKind.Scalar && item.Text == group.Name)) Value.Items.Add(PresetValue.Scalar(group.Name));
             RefreshList(Value.Items.Count - 1); NotifyChanged();
         })));
-        var remove = EditorControls.Button("Remove", () =>
+        actions.Children.Add(add);
+        remove.Click += (_, _) =>
         {
             var index = list.SelectedIndex; if (index < 0) return;
             activeEditor?.Capture(); if (activeEditor is not null) children.RemoveAll(pair => pair.Editor == activeEditor); activeEditor = null;
             Value.Items.RemoveAt(index); RefreshList(Math.Min(index, Value.Items.Count - 1)); NotifyChanged();
-        });
-        var up = EditorControls.Button("Move up", () => MoveItem(-1)); var down = EditorControls.Button("Move down", () => MoveItem(1));
-        actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
+        };
+        up.Click += (_, _) => MoveItem(-1); down.Click += (_, _) => MoveItem(1);
+        edit.Click += (_, _) =>
+        {
+            if (details.Visibility == Visibility.Visible) { activeEditor?.Capture(); details.Visibility = Visibility.Collapsed; ShowActions(); }
+            else ShowEntry();
+        };
+        actions.Children.Add(edit); actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
         void ShowActions()
         {
+            edit.Visibility = compact && list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
+            edit.Content = details.Visibility == Visibility.Visible ? "Hide entry" : "Edit entry";
             remove.Visibility = list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
             up.Visibility = list.SelectedIndex > 0 ? Visibility.Visible : Visibility.Collapsed;
             down.Visibility = list.SelectedIndex >= 0 && list.SelectedIndex < Value.Items.Count - 1 ? Visibility.Visible : Visibility.Collapsed;
         }
+        void ShowEntry()
+        {
+            if (list.SelectedIndex < 0) return;
+            details.Visibility = Visibility.Visible; ShowActions();
+            activeEditor?.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+        }
+        revealEntry = ShowEntry;
         void MoveItem(int direction)
         {
             var index = list.SelectedIndex; if (index < 0 || index + direction < 0 || index + direction >= Value.Items.Count) return;
@@ -415,6 +483,7 @@ public sealed class ValueEditorControl : UserControl
             RefreshList(index + direction); NotifyChanged();
         }
         list.SelectionChanged += (_, _) => { SelectEntry(); ShowActions(); };
+        list.MouseDoubleClick += (_, _) => { if (compact) ShowEntry(); };
         content.Children.Add(list); content.Children.Add(actions); content.Children.Add(details);
         RefreshList(Value.Items.Count > 0 ? 0 : -1); ShowActions();
         if (context == "Inheritance") content.Children.Add(Help("Earlier settings take precedence. Values entered on the containing block override inherited values."));
@@ -459,23 +528,25 @@ public sealed class ValueEditorControl : UserControl
             choice.Checked += (_, _) => { capture(); NotifyChanged(); }; choice.Unchecked += (_, _) => { capture(); NotifyChanged(); };
             content.Children.Add(choice); return;
         }
-        var entry = new TextBox { Text = Value.Text, Margin = new Thickness(0, 0, 0, 8), MinWidth = 80 };
+        var entry = new TextBox { Text = Value.Text, Margin = new Thickness(0, 0, 0, 4), MinWidth = 80 };
         capture = () =>
         {
             if (Value.Text == entry.Text) return;
             Value.Text = entry.Text; Value.Tag = ""; Value.Style = entry.Text.Length == 0 ? ScalarStyle.DoubleQuoted : ScalarStyle.Plain;
         };
-        entry.TextChanged += (_, _) => { capture(); NotifyChanged(); }; content.Children.Add(entry);
-        var actions = new WrapPanel();
+        entry.TextChanged += (_, _) => { capture(); NotifyChanged(); };
+        var choices = new WrapPanel();
+        valueOptions = new WrapPanel();
         if (Value.IsUnsetArgument && field?.Kind == FieldKind.Text)
-            actions.Children.Add(EditorControls.Button("Use empty text", () => SetValue(new PresetValue { Kind = ValueKind.Scalar, Style = ScalarStyle.DoubleQuoted })));
-        if (field?.Kind is FieldKind.Form or FieldKind.FormList || field is null) actions.Children.Add(EditorControls.Button("Choose form...", () =>
+            valueOptions.Children.Add(EditorControls.Button("Use empty text", () => SetValue(new PresetValue { Kind = ValueKind.Scalar, Style = ScalarStyle.DoubleQuoted })));
+        if (field?.Kind is FieldKind.Form or FieldKind.FormList || field is null) choices.Children.Add(EditorControls.Button("Choose form...", () =>
         {
             var picker = new FormPickerWindow(forms, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
             if (picker.ShowDialog() == true && picker.SelectedForms.FirstOrDefault() is { } form) entry.Text = form.Identifier;
         }));
-        if (field?.AllowsGroups == true) actions.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group => entry.Text = group.Name)));
-        if (field?.Kind is FieldKind.FormList or FieldKind.IntegerList || field is null) actions.Children.Add(EditorControls.Button("Use a list of values...", () =>
+        if (field?.AllowsGroups == true) choices.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group => entry.Text = group.Name)));
+        content.Children.Add(choices.Children.Count == 0 ? entry : FormEntryRow(entry, choices));
+        if (field?.Kind is FieldKind.FormList or FieldKind.IntegerList || field is null) valueOptions.Children.Add(EditorControls.Button("Use a list of values...", () =>
         {
             Capture(); var list = PresetValue.List();
             if (Value.Text.Length > 0)
@@ -484,8 +555,28 @@ public sealed class ValueEditorControl : UserControl
             }
             SetValue(list);
         }));
-        if (actions.Children.Count > 0) content.Children.Add(actions);
-        if (field is null) content.Children.Add(EditorControls.Button("Use a settings block...", () => SetValue(PresetValue.Map())));
+        if (field is null) valueOptions.Children.Add(EditorControls.Button("Use a settings block...", () => SetValue(PresetValue.Map())));
+    }
+
+    private static Grid FormEntryRow(TextBox entry, WrapPanel choices)
+    {
+        const double minimumInlineWidth = 520;
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition());
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetColumn(choices, 1);
+        row.Children.Add(entry); row.Children.Add(choices);
+        row.SizeChanged += (_, args) =>
+        {
+            var inline = args.NewSize.Width >= minimumInlineWidth;
+            Grid.SetRow(choices, inline ? 0 : 1);
+            Grid.SetColumn(choices, inline ? 1 : 0);
+            Grid.SetColumnSpan(choices, inline ? 1 : 2);
+            Grid.SetColumnSpan(entry, inline ? 1 : 2);
+        };
+        return row;
     }
 
     private FormSelection FormSelection() => new(field?.FormTypes, field?.MatchPresetCategory == true ? Document.Category : null, field?.TriggerOnly == true);
@@ -505,7 +596,7 @@ public sealed class ValueEditorControl : UserControl
         Capture();
         var dialog = new Window { Owner = Window.GetWindow(this), Title = "Reuse settings", Width = 500, Height = 420, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(20) }; panel.Children.Add(EditorControls.Text("Choose a named block", true));
-        var available = Document.Blocks.Where(block => block.Kind is BlockKind.Shared or BlockKind.Template).ToArray();
+        var available = AvailableDefinitions().ToArray();
         var choices = new ListBox { MinHeight = 170, MaxHeight = 240 };
         foreach (var definition in available)
         {
@@ -523,6 +614,12 @@ public sealed class ValueEditorControl : UserControl
         });
         use.Visibility = Visibility.Collapsed; choices.SelectionChanged += (_, _) => use.Visibility = choices.SelectedItem is not null ? Visibility.Visible : Visibility.Collapsed;
         EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false)); dialog.Content = panel; dialog.ShowDialog();
+    }
+    private IEnumerable<PresetBlock> AvailableDefinitions()
+    {
+        IsCall(Value, out var currentTemplate, out _);
+        return Document.Blocks.Where(block => block.Kind is BlockKind.Shared or BlockKind.Template && block.Id != root.blockId &&
+            block.Id != currentTemplate?.Id && !(Value.Kind == ValueKind.Alias && block.Kind == BlockKind.Shared && block.Value.Anchor == Value.Text));
     }
     private void UseDefinition(PresetBlock chosen)
     {
@@ -548,21 +645,33 @@ public sealed class ValueEditorControl : UserControl
         var panel = new StackPanel { Margin = new Thickness(20) }; panel.Children.Add(EditorControls.Text("Parameter name", true));
         var entry = new TextBox { Text = Value.Kind == ValueKind.Scalar && Value.Text.StartsWith('$') ? Value.Text[1..] : "" }; panel.Children.Add(entry);
         var error = Help("Each use of the template supplies a value for this name."); panel.Children.Add(error);
-        EditorControls.Footer(panel, EditorControls.Button("Use parameter", () =>
+        var use = EditorControls.Button("Use parameter", () =>
         {
             var parameter = entry.Text.Trim(); if (!TemplateCall.IsName(parameter)) { error.Text = "Use letters, digits, underscores or hyphens."; return; }
             SetValue(PresetValue.Scalar("$" + parameter)); dialog.DialogResult = true;
-        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false)); dialog.Content = panel; dialog.ShowDialog();
+        });
+        void UpdateChoice() => use.Visibility = TemplateCall.IsName(entry.Text.Trim()) ? Visibility.Visible : Visibility.Collapsed;
+        entry.TextChanged += (_, _) => UpdateChoice(); UpdateChoice();
+        EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false)); dialog.Content = panel; dialog.ShowDialog();
     }
     private void AddSetting()
     {
         var dialog = new Window { Owner = Window.GetWindow(this), Title = "Add setting", Width = 450, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(20) }; panel.Children.Add(EditorControls.Text("Setting name")); var entry = new TextBox(); panel.Children.Add(entry);
-        EditorControls.Footer(panel, EditorControls.Button("Add", () =>
+        var status = Help("Enter a unique setting name."); panel.Children.Add(status);
+        var add = EditorControls.Button("Add", () =>
         {
             var key = entry.Text.Trim(); if (key.Length == 0 || Value.Fields.ContainsKey(key)) return;
             Value.Set(key, PresetValue.Scalar("")); dialog.DialogResult = true; Render(); NotifyChanged();
-        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false)); dialog.Content = panel; dialog.ShowDialog();
+        });
+        void UpdateChoice()
+        {
+            var key = entry.Text.Trim(); var duplicate = Value.Fields.ContainsKey(key);
+            add.Visibility = key.Length > 0 && !duplicate ? Visibility.Visible : Visibility.Collapsed;
+            status.Text = duplicate ? "This setting already exists." : "Enter a unique setting name.";
+        }
+        entry.TextChanged += (_, _) => UpdateChoice(); UpdateChoice();
+        EditorControls.Footer(panel, add, EditorControls.Button("Cancel", () => dialog.DialogResult = false)); dialog.Content = panel; dialog.ShowDialog();
     }
     private void SetValue(PresetValue value)
     {
@@ -573,7 +682,8 @@ public sealed class ValueEditorControl : UserControl
         (value.Text.StartsWith('$') || TemplateCall.TryParse(value.Text, out _, out _));
     private static TextBlock Help(string text)
     {
-        var label = EditorControls.Text(text); label.FontSize = 12; label.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); return label;
+        var label = EditorControls.Text(text); label.FontSize = 12; label.Margin = new Thickness(0, 0, 0, 4);
+        label.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); return label;
     }
     public static PresetValue NewValue(string context, PresetField? field = null)
     {

@@ -21,7 +21,8 @@ public sealed class ValueEditorWindow : Window
     {
         SetResourceReference(StyleProperty, typeof(Window));
         Title = blockName is null ? title : blockName + " - " + title;
-        Width = 820; Height = 760; MinWidth = 620; MinHeight = 450; WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        MinWidth = 620; MinHeight = 450; WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        EditorControls.FitToOwner(this);
         Editor = new ValueEditorControl(document, forms, value, context, title, parametersAllowed, field, blockName, issues, groups);
         blockId = document.Blocks.FirstOrDefault(block => ReferenceEquals(block.Value, value))?.Id;
         presentation = new PresetPresentation(Editor.Document, forms, groups);
@@ -34,7 +35,7 @@ public sealed class ValueEditorWindow : Window
         };
         Loaded += async (_, _) => await RefreshPreview();
         Closed += (_, _) => { previewTimer.Stop(); previewCancellation?.Cancel(); };
-        var layout = new DockPanel { Margin = new Thickness(22) }; var footer = new StackPanel();
+        var layout = new DockPanel { Margin = new Thickness(14) }; var footer = new StackPanel();
         var error = EditorControls.Text(""); error.Visibility = Visibility.Collapsed; footer.Children.Add(error);
         var apply = EditorControls.Button("Apply", () =>
         {
@@ -44,7 +45,17 @@ public sealed class ValueEditorWindow : Window
             DialogResult = true;
         });
         apply.SetResourceReference(StyleProperty, "PrimaryButton");
-        EditorControls.Footer(footer, apply, EditorControls.Button("Cancel", () => DialogResult = false));
+        apply.IsDefault = true;
+        var cancel = EditorControls.Button("Cancel", () => DialogResult = false); cancel.IsCancel = true;
+        void UpdateApply()
+        {
+            var missingName = blockName is not null && BlockName.Length == 0;
+            apply.Visibility = missingName ? Visibility.Collapsed : Visibility.Visible;
+            error.Text = missingName ? "Give this block a name." : "";
+            error.Visibility = missingName ? Visibility.Visible : Visibility.Collapsed;
+        }
+        Editor.Changed += (_, _) => UpdateApply(); UpdateApply();
+        EditorControls.Footer(footer, apply, cancel);
         DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer);
         layout.Children.Add(new ScrollViewer { Content = Editor, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }); Content = layout;
     }

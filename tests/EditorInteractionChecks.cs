@@ -21,6 +21,9 @@ internal static class EditorInteractionChecks
         ListEditing();
         DraftIsolation();
         InlineEditing();
+        CompactFields();
+        CompactScalarLists();
+        ContextualActions();
         OverviewActions();
     }
 
@@ -118,7 +121,7 @@ internal static class EditorInteractionChecks
 
         var argumentField = PresetSchema.GetParameterField(changed.Blocks.Single(block => block.Id == template.Id), "frozen", changed)!;
         var argument = new ValueEditorWindow(call.Document, Forms, arguments[0], argumentField.ChildContext, "frozen", field: argumentField);
-        Field<StackPanel>(argument, "content").Children.OfType<TextBox>().Single().Text = "FoodChickenF";
+        Descendants<TextBox>(argument.Editor).Single().Text = "FoodChickenF";
         Field<Action>(argument, "capture")();
         Invoke(call, "AdoptDocument", argument.Document);
         Require(TemplateCall.TryParse(call.Value.Text, out callName, out arguments), "The edited call must remain readable.");
@@ -272,7 +275,7 @@ internal static class EditorInteractionChecks
         var changes = 0;
         editor.Changed += (_, _) => changes++;
         var duration = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "duration");
-        var entry = Field<StackPanel>(duration, "content").Children.OfType<TextBox>().Single();
+        var entry = Descendants<TextBox>(duration).Single();
         entry.Text = "3";
         Require(editor.Value.Get("transformers")!.Items[0].Get("duration")!.Text == "3",
             "An inline duration edit must reach the containing rule without opening or applying another window.");
@@ -280,7 +283,7 @@ internal static class EditorInteractionChecks
         var afterChange = changes;
         editor.Capture();
         editor.UpdatePresentation(new PresetPresentation(document, Forms), editor.Value.Clone());
-        Require(changes == afterChange && ReferenceEquals(entry, Field<StackPanel>(duration, "content").Children.OfType<TextBox>().Single()),
+        Require(changes == afterChange && ReferenceEquals(entry, Descendants<TextBox>(duration).Single()),
             "Capturing and refreshing summaries must preserve the input control and must not report another edit.");
         Require(editor.FocusIssue("Transformers 2: Duration (game hours): enter a number."), "A list issue must have an editing target.");
         var listEditor = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "transformers");
@@ -290,15 +293,21 @@ internal static class EditorInteractionChecks
 
         var empty = new ValueEditorControl(document, Forms, PresetValue.Map(), "Transformer", "Transformation");
         var missingDuration = Descendants<ValueEditorControl>(empty).Single(child => Field<PresetField?>(child, "field")?.Key == "duration");
-        Require(Field<StackPanel>(missingDuration, "content").Children.OfType<TextBox>().Single().Text.Length == 0,
+        Require(Descendants<TextBox>(missingDuration).Single().Text.Length == 0,
             "A missing required value must not display a default that has never been set.");
 
-        var independent = new ValueEditorControl(document, Forms, rule.Value.Get("transformers")!.Items[0], "Transformer", "Transformation");
+        var independentValue = rule.Value.Get("transformers")!.Items[0].Clone();
+        independentValue.Set("color", PresetValue.Scalar("ff006433"));
+        var independent = new ValueEditorControl(document, Forms, independentValue, "Transformer", "Transformation");
         independent.UpdatePresentation(new PresetPresentation(document, Forms), independent.Value.Clone());
         var durationCard = Field<StackPanel>(independent, "content").Children.OfType<Border>()
             .Single(card => Descendants<TextBlock>(card).Any(text => text.Text == "Duration (game hours)"));
-        Click(Descendants<Button>(durationCard).Single(button => Equals(button.Content, "Clear")));
-        Require(independent.Value.Get("duration") is null, "Clearing a field must remain safe while the previous expansion is still displayed.");
+        Require(!Descendants<Button>(durationCard).Any(button => Equals(button.Content, "Clear")),
+            "Required fields should be edited directly without an action that only makes them missing.");
+        var colorField = Descendants<ValueEditorControl>(independent).Single(child => Field<PresetField?>(child, "field")?.Key == "color");
+        var colorCard = (StackPanel)colorField.Parent;
+        Click(Descendants<Button>(colorCard).Single(button => Equals(button.Content, "Clear")));
+        Require(independent.Value.Get("color") is null, "Clearing an optional field must remain safe while the previous expansion is still displayed.");
 
         var alias = new ValueEditorControl(document, Forms, PresetValue.Alias("cooking"), "Transformer", "Shared use");
         var copy = Descendants<Button>(alias).Single(button => Equals(button.Content, "Make independent copy for this use"));
@@ -319,6 +328,94 @@ internal static class EditorInteractionChecks
             "Reusing an imported definition must create an available shared anchor without colliding with existing anchors.");
         Require(imported.Blocks.Single(block => block.Key == "cooking").Value.Anchor.Length == 0,
             "Choosing a shared definition must leave the original document untouched until its draft is applied.");
+    }
+
+    private static void CompactFields()
+    {
+        var document = PresetDocument.Parse("""
+            formsLists:
+            - forms: FoodBeef
+              transformers:
+              - FormEditorID: Fire
+                finalFormEditorID: FoodCookedBeef
+                duration: 1
+            """, "FOOD", PresetKind.Addon);
+        var value = document.Blocks.Single().Value.Get("transformers")!.Items.Single();
+        var editor = new ValueEditorControl(document, Forms, value, "Transformer", "Transformation");
+        var changes = 0;
+        editor.Changed += (_, _) => changes++;
+        var trigger = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "FormEditorID");
+        var row = Field<StackPanel>(trigger, "content").Children.OfType<Grid>().Single();
+        Require(row.Children.OfType<TextBox>().Count() == 1 && Descendants<Button>(row).Any(button => Equals(button.Content, "Choose form...")),
+            "A form input and its picker must share a responsive row.");
+        var card = Field<StackPanel>(editor, "content").Children.OfType<Border>()
+            .Single(candidate => Descendants<TextBlock>(candidate).Any(text => text.Text == "Duration (game hours)"));
+        var explanation = Descendants<TextBlock>(card).Single(text => text.Text == PresetSchema.GetFields("Transformer", PresetKind.Addon).Single(field => field.Key == "duration").Help);
+        var help = Descendants<Button>(card).Single(button => Equals(button.Content, "Help"));
+        Require(explanation.Visibility == Visibility.Collapsed, "Static field instructions should start collapsed.");
+        Click(help);
+        Require(explanation.Visibility == Visibility.Visible && Equals(help.Content, "Hide help"), "The field's help button must reveal its instructions without relying on hover.");
+        Click(help);
+        Require(explanation.Visibility == Visibility.Collapsed && changes == 0 && editor.Value.Get("duration")!.Text == "1",
+            "Opening and closing field help must leave the preset draft unchanged.");
+    }
+
+    private static void CompactScalarLists()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Addon);
+        var descriptor = PresetSchema.GetFields("AddonRule", PresetKind.Addon).Single(field => field.Key == "forms");
+        var values = PresetValue.List(); values.Items.Add(PresetValue.Scalar("FoodBeef"));
+        var editor = new ValueEditorControl(document, Forms, values, "Values", "Applies to", field: descriptor);
+        var panel = Field<StackPanel>(editor, "content");
+        var details = panel.Children.OfType<StackPanel>().Single();
+        var actions = panel.Children.OfType<WrapPanel>().Single();
+        var edit = actions.Children.OfType<Button>().Single(button => Equals(button.Content, "Edit entry"));
+        Require(details.Visibility == Visibility.Collapsed && edit.Visibility == Visibility.Visible,
+            "A scalar list should initially show its summary and an explicit edit action without repeated inputs.");
+        Click(edit);
+        Require(details.Visibility == Visibility.Visible && Descendants<TextBlock>(details).Any(text => text.Text == "Identifier"),
+            "Editing a form-list entry must reveal its identifier input.");
+        Descendants<TextBox>(details).Single().Text = "FoodVenison";
+        editor.Capture();
+        Require(editor.Value.Items[0].Text == "FoodVenison" && values.Items[0].Text == "FoodBeef",
+            "Editing an expanded scalar entry must preserve draft isolation.");
+        Click(edit);
+        Require(details.Visibility == Visibility.Collapsed, "The entry editor should close without removing the selection.");
+        Click(actions.Children.OfType<Button>().Single(button => Equals(button.Content, "Add by identifier")));
+        Require(editor.Value.Items.Count == 2 && details.Visibility == Visibility.Visible,
+            "Adding an empty identifier must open its input immediately.");
+        Field<ListBox>(editor, "entryList").SelectedIndex = 0;
+        Require(details.Visibility == Visibility.Collapsed, "Selecting a different existing form should show its summary until editing is requested.");
+    }
+
+    private static void ContextualActions()
+    {
+        var document = PresetDocument.Parse("""
+            cooking:
+              duration: 1
+            formsLists: []
+            """, "FOOD", PresetKind.Addon);
+        var definition = document.Blocks.Single();
+        var source = new ValueEditorControl(document, Forms, definition.Value, definition.Context, "Shared settings");
+        Require(!Descendants<Button>(source).Any(button => Equals(button.Content, "Use shared settings or template...")),
+            "A definition must not offer itself as its only reuse choice.");
+        var alias = new ValueEditorControl(document, Forms, PresetValue.Alias("cooking"), "Transformer", "Shared use");
+        var preview = Descendants<Expander>(alias).Single(expander => Equals(expander.Header, "Resulting settings"));
+        Require(preview.Visibility == Visibility.Collapsed, "Unresolved references must not show an empty results control.");
+        var options = Descendants<Expander>(alias).Single(expander => Equals(expander.Header, "More options"));
+        Require(!options.IsExpanded && Descendants<Button>(options).Any(button => Equals(button.Content, "Replace with own settings...")),
+            "Whole-reference replacement must remain discoverable in collapsed options.");
+        alias.UpdatePresentation(new PresetPresentation(document, Forms), definition.Value.Clone());
+        Require(preview.Visibility == Visibility.Visible, "Resolved settings must become available after validation.");
+
+        var dialog = new ValueEditorWindow(document, Forms, PresetValue.Map(), "Transformer", "Transformation", blockName: "");
+        var apply = Descendants<Button>(dialog).Single(button => Equals(button.Content, "Apply"));
+        var cancel = Descendants<Button>(dialog).Single(button => Equals(button.Content, "Cancel"));
+        Require(apply.Visibility == Visibility.Collapsed && cancel.Visibility == Visibility.Visible && cancel.IsCancel,
+            "An unnamed draft must keep Cancel available and explain the missing name before offering Apply.");
+        Field<TextBox>(dialog, "name").Text = "Cooking";
+        Require(apply.Visibility == Visibility.Visible && apply.IsDefault, "Apply must appear when the required name is supplied.");
+        dialog.Close();
     }
 
     private static T Field<T>(object owner, string name)

@@ -20,11 +20,16 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Closing += (_, e) => e.Cancel = !Workspace.CanLeave();
-        Workspace.Opened += () => { PresetList.SelectedItem = null; selectedPreset = null; PresetBrowser.IsExpanded = false; };
-        Workspace.BrowseRequested += () => PresetBrowser.IsExpanded = !PresetBrowser.IsExpanded;
+        Workspace.Opened += () => { PresetList.SelectedItem = null; selectedPreset = null; PresetBrowser.Visibility = Visibility.Collapsed; };
+        Workspace.BrowseRequested += () =>
+        {
+            PresetBrowser.Visibility = PresetBrowser.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+            PresetBrowser.IsExpanded = true;
+        };
         if (dataFolder is not null)
         {
             DataPath.Text = dataFolder;
+            ReloadButton.Visibility = Visibility.Visible;
             Loaded += async (_, _) => await LoadData();
         }
     }
@@ -47,12 +52,13 @@ public partial class MainWindow : Window
     {
         if (loading) return;
         loading = true;
-        ReloadButton.IsEnabled = BrowseButton.IsEnabled = false;
+        ReloadButton.Visibility = BrowseButton.Visibility = Visibility.Collapsed;
+        DataLoading.Visibility = Visibility.Visible;
 
         forms = []; presets = [];
         Workspace.SetCatalog([], []);
         PresetList.ItemsSource = null; LoadOrderList.ItemsSource = null;
-        ToolsMenu.Visibility = Visibility.Collapsed;
+        FormBrowserAction.Visibility = Visibility.Collapsed;
         LoadOrderInfo.Text = "";
         var timer = Stopwatch.StartNew();
         try
@@ -67,7 +73,7 @@ public partial class MainWindow : Window
             var result = await Task.Run(() => FormCatalog.Load(data, progress));
             forms = result.Forms;
             Workspace.SetCatalog(forms, groups);
-            ToolsMenu.Visibility = forms.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            FormBrowserAction.Visibility = forms.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             LoadOrderInfo.Text = $"{result.Plugins.Count:N0} active plugins. Order read from: {result.PluginsPath}";
             LoadOrderList.ItemsSource = result.Plugins.Select((name, i) => $"{i + 1,4}  {name}");
             Status.Text = $"Loaded {forms.Count:N0} forms, {result.Plugins.Count:N0} plugins, and {presets.Count:N0} presets in {timer.Elapsed.TotalSeconds:F1}s.";
@@ -76,7 +82,13 @@ public partial class MainWindow : Window
         {
             Status.Text = "Could not load forms: " + error.Message;
         }
-        finally { loading = false; ReloadButton.IsEnabled = BrowseButton.IsEnabled = true; }
+        finally
+        {
+            loading = false;
+            DataLoading.Visibility = Visibility.Collapsed;
+            BrowseButton.Visibility = Visibility.Visible;
+            ReloadButton.Visibility = string.IsNullOrWhiteSpace(DataPath.Text) ? Visibility.Collapsed : Visibility.Visible;
+        }
     }
 
     private void PresetFilter_Changed(object sender, RoutedEventArgs e)

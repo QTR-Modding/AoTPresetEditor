@@ -26,11 +26,11 @@ public sealed class GroupPickerWindow : Window
         this.forms = forms;
         this.constraint = constraint;
         Title = purpose ?? "Choose a form group"; Width = 1080; Height = 660; MinWidth = 780; MinHeight = 450;
+        EditorControls.FitToOwner(this);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(StyleProperty, typeof(Window));
-        var layout = new DockPanel { Margin = new Thickness(22) };
+        var layout = new DockPanel { Margin = new Thickness(14) };
         var heading = new StackPanel();
-        heading.Children.Add(EditorControls.Text(purpose ?? "Form groups", true));
         heading.Children.Add(EditorControls.Text("Choose an existing group, or create a reusable list of forms."));
         DockPanel.SetDock(heading, Dock.Top); layout.Children.Add(heading);
         var footer = new StackPanel();
@@ -40,16 +40,22 @@ public sealed class GroupPickerWindow : Window
             EditorControls.Button("Cancel", () => DialogResult = false));
         DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer);
         var columns = new Grid();
-        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(260) });
-        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var left = new DockPanel { Margin = new Thickness(0, 0, 18, 0) };
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 160, MaxWidth = 280 });
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2.4, GridUnitType.Star), MinWidth = 360 });
+        var left = new DockPanel { Margin = new Thickness(0, 0, 6, 0) };
         search.Margin = new Thickness(0, 0, 0, 10); search.ToolTip = "Search group names";
         DockPanel.SetDock(search, Dock.Top); left.Children.Add(search); left.Children.Add(groupList);
         columns.Children.Add(left);
+        var splitter = new GridSplitter { Width = 4, HorizontalAlignment = HorizontalAlignment.Center };
+        splitter.SetResourceReference(BackgroundProperty, "DividerStrokeColorDefaultBrush");
+        Grid.SetColumn(splitter, 1); columns.Children.Add(splitter);
         var right = new DockPanel();
+        source.TextWrapping = TextWrapping.NoWrap; source.TextTrimming = TextTrimming.CharacterEllipsis;
+        source.SetBinding(ToolTipProperty, new Binding(nameof(TextBlock.Text)) { Source = source });
         var details = new StackPanel(); details.Children.Add(description); source.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); details.Children.Add(source);
         DockPanel.SetDock(details, Dock.Top); right.Children.Add(details); right.Children.Add(members);
-        Grid.SetColumn(right, 1); columns.Children.Add(right); layout.Children.Add(columns); Content = layout;
+        Grid.SetColumn(right, 2); columns.Children.Add(right); layout.Children.Add(columns); Content = layout;
         search.TextChanged += (_, _) => Filter();
         groupList.SelectionChanged += (_, _) => ShowGroup();
         groupList.MouseDoubleClick += (_, args) =>
@@ -133,11 +139,18 @@ public sealed class GroupPickerWindow : Window
             SelectionMode = DataGridSelectionMode.Extended, SelectionUnit = DataGridSelectionUnit.FullRow,
             EnableRowVirtualization = true, HeadersVisibility = DataGridHeadersVisibility.Column
         };
-        foreach (var (title, property, width) in new[]
+        foreach (var (title, property, weight) in new[]
         {
             ("Status", nameof(MemberRow.Status), 125d), ("Name", nameof(MemberRow.Name), 180d), ("Identifier", nameof(MemberRow.Identifier), 240d),
             ("Type", nameof(MemberRow.Type), 105d), ("Plugin", nameof(MemberRow.Plugin), 170d)
-        }) grid.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(property), Width = width });
+        })
+        {
+            var text = new Style(typeof(TextBlock));
+            text.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis));
+            text.Setters.Add(new Setter(ToolTipProperty, new Binding(property)));
+            grid.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(property),
+                Width = new DataGridLength(weight, DataGridLengthUnitType.Star), MinWidth = title == "Status" ? 110 : 55, ElementStyle = text });
+        }
         return grid;
     }
 }
@@ -152,6 +165,7 @@ public sealed class GroupEditorWindow : Window
     private readonly DataGrid members = GroupPickerWindow.CreateMemberGrid();
     private readonly TextBlock status = EditorControls.Text("");
     private readonly TextBlock nameStatus = EditorControls.Text("");
+    private readonly Button create;
 
     public FormGroupDefinition? Group { get; private set; }
 
@@ -159,22 +173,27 @@ public sealed class GroupEditorWindow : Window
     {
         this.existing = existing; this.forms = forms; this.constraint = constraint;
         Title = "New form group"; Width = 980; Height = 650; MinWidth = 760; MinHeight = 460;
+        EditorControls.FitToOwner(this);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(StyleProperty, typeof(Window));
-        var layout = new DockPanel { Margin = new Thickness(22) };
+        var layout = new DockPanel { Margin = new Thickness(14) };
         var header = new StackPanel();
-        header.Children.Add(EditorControls.Text("New form group", true));
-        header.Children.Add(EditorControls.Text("Group name")); header.Children.Add(name);
-        nameStatus.Margin = new Thickness(0, 6, 0, 12); nameStatus.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); header.Children.Add(nameStatus);
+        var nameRow = new DockPanel();
+        var label = new Label { Content = "Group name", VerticalAlignment = VerticalAlignment.Center, Padding = new Thickness(0, 0, 10, 0), Target = name };
+        DockPanel.SetDock(label, Dock.Left); nameRow.Children.Add(label); nameRow.Children.Add(name); header.Children.Add(nameRow);
+        nameStatus.Margin = new Thickness(0, 5, 0, 8); nameStatus.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); header.Children.Add(nameStatus);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
-        actions.Children.Add(EditorControls.Button("Add forms...", AddForms));
+        var add = EditorControls.Button("Add forms...", AddForms);
+        add.Visibility = forms.Any(form => constraint?.Matches(form) ?? true) ? Visibility.Visible : Visibility.Collapsed;
+        actions.Children.Add(add);
         var remove = EditorControls.Button("Remove selected", RemoveSelected); remove.Visibility = Visibility.Collapsed;
         members.SelectionChanged += (_, _) => remove.Visibility = members.SelectedItems.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         actions.Children.Add(remove); header.Children.Add(actions);
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
         var footer = new StackPanel(); footer.Children.Add(status);
-        footer.Children.Add(EditorControls.Text("Use Save to mod in the preset overview to save this group."));
-        EditorControls.Footer(footer, EditorControls.Button("Create group", Create), EditorControls.Button("Cancel", () => DialogResult = false));
+        create = EditorControls.Button("Create group", Create);
+        create.ToolTip = "Adds this group to the preset. Save to mod exports it with the preset.";
+        EditorControls.Footer(footer, create, EditorControls.Button("Cancel", () => DialogResult = false));
         DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer); layout.Children.Add(members); Content = layout;
         name.TextChanged += (_, _) => CheckName();
         Refresh(); CheckName();
@@ -198,7 +217,7 @@ public sealed class GroupEditorWindow : Window
     private void Refresh()
     {
         members.ItemsSource = GroupPickerWindow.MemberRows(identifiers, forms, constraint);
-        status.Text = $"{identifiers.Count} members";
+        status.Text = $"{identifiers.Count} members" + (forms.Any(form => constraint?.Matches(form) ?? true) ? "" : " · No applicable forms in the loaded catalog.");
     }
 
     private string? NameError()
@@ -211,7 +230,9 @@ public sealed class GroupEditorWindow : Window
 
     private void CheckName()
     {
-        nameStatus.Text = NameError() ?? (forms.Any(form => form.EditorId.Equals(name.Text.Trim(), StringComparison.OrdinalIgnoreCase))
+        var error = NameError();
+        create.Visibility = error is null ? Visibility.Visible : Visibility.Collapsed;
+        nameStatus.Text = error ?? (forms.Any(form => form.EditorId.Equals(name.Text.Trim(), StringComparison.OrdinalIgnoreCase))
             ? "This name also identifies a form. AoT will use the group first in fields that accept groups."
             : "Use this name wherever a preset field accepts form groups.");
     }

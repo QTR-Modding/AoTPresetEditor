@@ -43,6 +43,7 @@ internal static class ThemeChecks
             CheckSelection(main);
             CheckAccent(app, primary);
             CheckCancel(app);
+            LayoutChecks.Run();
         }
         finally
         {
