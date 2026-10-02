@@ -17,12 +17,20 @@ internal static class EditorInteractionChecks
         PickerFiltering();
         ParametersAndArguments();
         NestedTemplateEditing();
+        ResolvedPreviewInvalidation();
         TypedChildControls();
+        StagePickerApplicability();
         ListEditing();
         DraftIsolation();
         InlineEditing();
         CompactFields();
         CompactScalarLists();
+        CollectionDisclosure();
+        CollectionSections();
+        FieldApplicability();
+        RetainedUnusedSettings();
+        ReusableDefinitionApplicability();
+        EffectApplicability();
         ContextualActions();
         OverviewActions();
     }
@@ -141,6 +149,79 @@ internal static class EditorInteractionChecks
         Require(original.Blocks.Single(block => block.Id == rule.Id).Value.Get("transformers")!.Text ==
             "transforms(FoodCookedBeef, FoodBeefF)", "Nested edits must not mutate the original preset before it is applied.");
         argument.Close(); definition.Close(); call.Close(); outer.Close();
+    }
+
+    private static void ResolvedPreviewInvalidation()
+    {
+        var document = PresetDocument.Parse("""
+            templates:
+              cooking:
+                FormEditorID: Fire
+                finalFormEditorID: FoodBeef
+                duration: $duration
+            formsLists: []
+            """, "FOOD", PresetKind.Addon);
+        var call = new ValueEditorControl(document, Forms, PresetValue.Scalar("cooking(1)"), "Transformer", "Cooking");
+        var expanded = document.Blocks.Single().Value.Clone(); expanded.Get("duration")!.Text = "1";
+        call.UpdatePresentation(new PresetPresentation(document, Forms), expanded);
+        var copy = Descendants<Button>(call).Single(button => Equals(button.Content, "Make independent copy for this use"));
+        Require(copy.Visibility == Visibility.Visible, "A current expansion should allow making an independent copy.");
+        Descendants<TextBox>(call).Single().Text = "2";
+        Require(copy.Visibility == Visibility.Collapsed && call.Value.Text == "cooking(2)" && Field<PresetValue?>(call, "effective") is null,
+            "Editing a template argument must invalidate the previous expansion before another action can use it.");
+        Click(copy);
+        Require(call.Value.Kind == ValueKind.Scalar && call.Value.Text == "cooking(2)",
+            "An invalidated copy action must not replace newly edited arguments with stale generated settings.");
+        expanded.Get("duration")!.Text = "2";
+        call.UpdatePresentation(new PresetPresentation(document, Forms), expanded);
+        Require(copy.Visibility == Visibility.Visible, "A new expansion must restore the independent-copy action.");
+        Click(copy);
+        Require(call.Value.Kind == ValueKind.Mapping && call.Value.Get("duration")?.Text == "2",
+            "Making a copy after fresh expansion must retain the edited argument's resulting value.");
+    }
+
+    private static void StagePickerApplicability()
+    {
+        FormRow[] catalog =
+        [
+            new("Raw Beef", "FoodBeef", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x65C99~Skyrim.esm", ItemCategories.FOOD, IsBoundObject: true),
+            new("Cooked Beef", "FoodCooked", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x721E8~Skyrim.esm", ItemCategories.FOOD, IsBoundObject: true),
+            new("Stew", "FoodStew", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0xF4312~Skyrim.esm", ItemCategories.FOOD, IsBoundObject: true),
+            new("Berries", "FoodBerries", "Ingredient", "Skyrim.esm", "Skyrim.esm", "0x800~Skyrim.esm", ItemCategories.FOOD | ItemCategories.INGR, IsBoundObject: true),
+            new("Other Berries", "FoodOtherBerries", "Ingredient", "Skyrim.esm", "Skyrim.esm", "0x801~Skyrim.esm", ItemCategories.FOOD | ItemCategories.INGR, IsBoundObject: true),
+            new("Used Berries", "FoodUsedBerries", "Ingredient", "Skyrim.esm", "Skyrim.esm", "0x802~Skyrim.esm", ItemCategories.FOOD | ItemCategories.INGR, IsBoundObject: true),
+            new("Key", "TestKey", "Key", "Skyrim.esm", "Skyrim.esm", "0x803~Skyrim.esm", IsBoundObject: true),
+            new("Location", "TestLocation", "Location", "Skyrim.esm", "Skyrim.esm", "0x804~Skyrim.esm")
+        ];
+        foreach (var (sourceIndex, allowedIndex, wrongTypeIndex, usedIndex) in new[] { (0, 2, 4, 1), (3, 4, 2, 5) })
+        {
+            var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+            var rule = document.Add(BlockKind.Rule, "Food stages", "CustomRule");
+            rule.Value.Set("owners", PresetValue.Scalar(catalog[sourceIndex].EditorId));
+            rule.Value.Set("finalFormEditorID", PresetValue.Scalar("TestKey"));
+            var stages = PresetValue.List();
+            for (var index = 0; index < 3; index++)
+            {
+                var stage = PresetValue.Map(); stage.Set("no", PresetValue.Scalar(index.ToString()));
+                stage.Set("name", PresetValue.Scalar("Stage")); stage.Set("duration", PresetValue.Scalar("1"));
+                if (index > 0) stage.Set("FormEditorID", PresetValue.Scalar(index == 1 ? "" : catalog[usedIndex].EditorId));
+                stages.Items.Add(stage);
+            }
+            rule.Value.Set("stages", stages);
+            var editor = new ValueEditorControl(document, catalog, rule.Value, "CustomRule", "Rule");
+            var stageList = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "stages");
+            Field<ListBox>(stageList, "entryList").SelectedIndex = 1;
+            var stageItem = Descendants<ValueEditorControl>(stageList).Single(child => Field<PresetField?>(child, "field")?.Key == "FormEditorID");
+            var selection = (FormSelection)Invoke(stageItem, "FormSelection")!;
+            Require(selection.Matches(catalog[allowedIndex]) && !selection.Matches(catalog[wrongTypeIndex]),
+                "A later FOOD stage must match its source's native type even when both candidate types belong to FOOD.");
+            Require(!selection.Matches(catalog[sourceIndex]) && !selection.Matches(catalog[usedIndex]),
+                "A stage replacement picker must exclude the source item and items already used by another stage.");
+            var finalItem = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "finalFormEditorID");
+            var finalSelection = (FormSelection)Invoke(finalItem, "FormSelection")!;
+            Require(finalSelection.Matches(catalog[6]) && !finalSelection.Matches(catalog[7]),
+                "A final result picker must accept a bound Key while rejecting a Location.");
+        }
     }
 
     private static void TypedChildControls()
@@ -388,6 +469,296 @@ internal static class EditorInteractionChecks
         Require(details.Visibility == Visibility.Collapsed, "Selecting a different existing form should show its summary until editing is requested.");
     }
 
+    private static void CollectionDisclosure()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        foreach (var (parentContext, key, editedKey) in new[]
+        {
+            ("CustomRule", "stages", "duration"),
+            ("CustomRule", "transformers", "duration"),
+            ("CustomRule", "timeModulators", "magnitude"),
+            ("Stage", "mgeffect", "duration")
+        })
+        {
+            var descriptor = PresetSchema.GetFields(parentContext, document.Kind).Single(field => field.Key == key);
+            var item = PresetValue.Map();
+            item.Set(editedKey, PresetValue.Scalar("1"));
+            if (key == "stages")
+            {
+                item.Set("no", PresetValue.Scalar("0"));
+                item.Set("name", PresetValue.Scalar("Fresh"));
+            }
+            else
+            {
+                item.Set("FormEditorID", PresetValue.Scalar("Fire"));
+                if (key == "transformers") item.Set("finalFormEditorID", PresetValue.Scalar("FoodBeef"));
+                if (key == "mgeffect") item.Set("magnitude", PresetValue.Scalar("1"));
+            }
+            var values = PresetValue.List(); values.Items.Add(item); values.Items.Add(item.Clone());
+            if (key == "stages") values.Items[1].Get("no")!.Text = "1";
+            var editor = new ValueEditorControl(document, Forms, values, descriptor.ChildContext, descriptor.Label, field: descriptor);
+            var panel = Field<StackPanel>(editor, "content");
+            var details = panel.Children.OfType<StackPanel>().Single();
+            var actions = panel.Children.OfType<WrapPanel>().Single();
+            var list = Field<ListBox>(editor, "entryList");
+            var edit = actions.Children.OfType<Button>().Single(button => Equals(button.Content, "Edit entry"));
+            var child = details.Children.OfType<ValueEditorControl>().Single();
+            var input = Descendants<TextBox>(Descendants<ValueEditorControl>(child).Single(control => Field<PresetField?>(control, "field")?.Key == editedKey)).Single();
+            var changes = 0; editor.Changed += (_, _) => changes++;
+            Require(list.SelectedIndex == 0 && details.Visibility == Visibility.Collapsed && edit.Visibility == Visibility.Visible,
+                $"{descriptor.Label} must begin with a selected summary and collapsed entry details.");
+            if (key == "stages")
+            {
+                Require(details.Children.OfType<TextBlock>().Single().Text == "Stage 0",
+                    "A stage detail heading must use the authored stage number, not its one-based list position.");
+                Require(!((TextBlock)((ListBoxItem)list.Items[0]).Content).Text.StartsWith("1. "),
+                    "A stage summary must not add a conflicting one-based stage number.");
+            }
+            Click(edit); input.Text = "2"; var afterEdit = changes;
+            Click(edit); editor.Capture(); editor.UpdatePresentation(new PresetPresentation(document, Forms), editor.Value.Clone());
+            Require(details.Visibility == Visibility.Collapsed && list.SelectedIndex == 0 && changes == afterEdit,
+                $"Refreshing hidden {descriptor.Label} must retain selection and must not dirty the draft.");
+            Click(edit);
+            Require(details.Visibility == Visibility.Visible && ReferenceEquals(child, details.Children.OfType<ValueEditorControl>().Single()) &&
+                Descendants<TextBox>(child).Contains(input) && input.Text == "2" && editor.Value.Items[0].Get(editedKey)!.Text == "2" && item.Get(editedKey)!.Text == "1",
+                $"Reopening {descriptor.Label} must preserve the same input and isolated edited value.");
+            editor.UpdatePresentation(new PresetPresentation(document, Forms), editor.Value.Clone());
+            Require(details.Visibility == Visibility.Visible && list.SelectedIndex == 0 && changes == afterEdit,
+                $"Refreshing open {descriptor.Label} must preserve disclosure and must not report another edit.");
+            if (key == "stages")
+            {
+                var number = Descendants<ValueEditorControl>(child).Single(control => Field<PresetField?>(control, "field")?.Key == "no");
+                Descendants<TextBox>(number).Single().Text = "7";
+                editor.UpdatePresentation(new PresetPresentation(document, Forms), editor.Value.Clone());
+                Require(details.Children.OfType<TextBlock>().Single().Text == "Stage 7",
+                    "Changing a stage number must update the detail heading without replacing the input controls.");
+            }
+            list.SelectedIndex = 1;
+            Require(details.Visibility == Visibility.Collapsed && Equals(edit.Content, "Edit entry"),
+                $"Selecting another {descriptor.Label} entry must return to its summary.");
+            editor.UpdatePresentation(new PresetPresentation(document, Forms), editor.Value.Clone());
+            Require(list.SelectedIndex == 1 && details.Visibility == Visibility.Collapsed,
+                $"Validation must not reset the selected {descriptor.Label} entry.");
+            var fieldLabel = PresetSchema.GetFields(descriptor.ChildContext, document.Kind).Single(field => field.Key == editedKey).Label;
+            Require(editor.FocusIssue($"{descriptor.Label} 2: {fieldLabel}: enter a number.") && list.SelectedIndex == 1 && details.Visibility == Visibility.Visible,
+                $"An issue must open the named {descriptor.Label} entry.");
+            Click(actions.Children.OfType<Button>().Single(button => button.Content is string label && label.StartsWith("Add ")));
+            Require(editor.Value.Items.Count == 3 && list.SelectedIndex == 2 && details.Visibility == Visibility.Visible,
+                $"Adding to {descriptor.Label} must immediately open the new entry for editing.");
+        }
+    }
+
+    private static void CollectionSections()
+    {
+        var document = PresetDocument.Parse("""
+            ownerLists:
+            - owners: FoodBeef
+              stages:
+              - no: 0
+                name: Fresh
+                duration: 1
+              - no: 1
+                name: Stale
+                duration: 2
+              finalFormEditorID: FoodBeef
+            """, "FOOD", PresetKind.Custom);
+        var editor = new ValueEditorControl(document, Forms, document.Blocks.Single().Value, "CustomRule", "Rule");
+        var stages = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "stages");
+        var section = Ancestors<Expander>(stages).First();
+        section.IsExpanded = false;
+        var list = Field<ListBox>(stages, "entryList");
+        var details = Field<StackPanel>(stages, "content").Children.OfType<StackPanel>().Single();
+        Require(editor.FocusIssue("Stages 2: Duration (game hours): enter a number.") && section.IsExpanded &&
+            list.SelectedIndex == 1 && details.Visibility == Visibility.Visible,
+            "Issue navigation must open the collapsed collection and the requested entry together.");
+        var selected = details.Children.OfType<ValueEditorControl>().Single();
+        section.IsExpanded = false;
+        var evolution = Descendants<Border>(editor).Single(card => Descendants<TextBlock>(card).Any(text => text.Text.StartsWith("Evolution filter", StringComparison.Ordinal)));
+        Click(Descendants<Button>(evolution).Single(button => Equals(button.Content, "Set")));
+        Require(ReferenceEquals(stages, Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "stages")) &&
+            !section.IsExpanded && list.SelectedIndex == 1 && ReferenceEquals(selected, details.Children.OfType<ValueEditorControl>().Single()),
+            "Setting another field must preserve the selected stage editor and its collapsed section.");
+        evolution = Descendants<Border>(editor).Single(card => Descendants<TextBlock>(card).Any(text => text.Text.StartsWith("Evolution filter", StringComparison.Ordinal)));
+        Click(Descendants<Button>(evolution).Single(button => Equals(button.Content, "Clear")));
+        Require(!section.IsExpanded && list.SelectedIndex == 1 && ReferenceEquals(selected, details.Children.OfType<ValueEditorControl>().Single()),
+            "Clearing another field must preserve the selected stage editor and its collapsed section.");
+
+        var transformation = PresetValue.Map();
+        transformation.Set("FormEditorID", PresetValue.Scalar("Fire"));
+        transformation.Set("finalFormEditorID", PresetValue.Scalar("FoodBeef"));
+        transformation.Set("duration", PresetValue.Scalar("1"));
+        transformation.Set("color", PresetValue.Scalar("ff006433"));
+        var configured = new ValueEditorControl(document, Forms, transformation, "Transformer", "Transformation");
+        var color = Descendants<ValueEditorControl>(configured).Single(child => Field<PresetField?>(child, "field")?.Key == "color");
+        Require(Ancestors<Expander>(color).Any(expander => Equals(expander.Tag, "World effects")),
+            "A configured world effect must remain in its named section instead of moving among required fields.");
+    }
+
+    private static void FieldApplicability()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        var stage = PresetValue.Map();
+        stage.Set("no", PresetValue.Scalar("0")); stage.Set("name", PresetValue.Scalar("Fresh")); stage.Set("duration", PresetValue.Scalar("1"));
+        var editor = new ValueEditorControl(document, Forms, stage, "Stage", "Stage");
+        var number = FieldInput(editor, "no"); var duration = FieldInput(editor, "duration");
+        string[] stageOverrides = ["FormEditorID", "value", "weight", "mgeffect", "crafting_allowed"];
+        Require(stageOverrides.All(key => FieldCard(editor, key).Visibility == Visibility.Collapsed) && FieldCard(editor, "name").Visibility == Visibility.Visible,
+            "Stage 0 must hide unset inapplicable item fields while keeping its required name.");
+        number.Text = "1";
+        Require(stageOverrides.All(key => FieldCard(editor, key).Visibility == Visibility.Visible) && ReferenceEquals(duration, FieldInput(editor, "duration")),
+            "Entering a later FOOD stage must reveal generated-item settings immediately without replacing unrelated inputs.");
+        number.Text = "0";
+        Require(stageOverrides.All(key => FieldCard(editor, key).Visibility == Visibility.Collapsed) && ReferenceEquals(duration, FieldInput(editor, "duration")),
+            "Returning to stage 0 must hide unset item settings immediately without replacing unrelated inputs.");
+
+        foreach (var (category, hidden) in new[]
+        {
+            ("FOOD", Array.Empty<string>()),
+            ("MISC", new[] { "mgeffect", "crafting_allowed" }),
+            ("BOOK", new[] { "value", "weight", "mgeffect", "crafting_allowed" })
+        })
+        {
+            var later = stage.Clone(); later.Get("no")!.Text = "1";
+            var categoryEditor = new ValueEditorControl(PresetDocument.Create(category, PresetKind.Custom), Forms, later, "Stage", "Stage");
+            foreach (var key in stageOverrides)
+                Require(FieldCard(categoryEditor, key).Visibility == (hidden.Contains(key) ? Visibility.Collapsed : Visibility.Visible),
+                    $"The {category} stage must expose only applicable {key} settings.");
+        }
+
+        foreach (var (stageNumber, replacement) in new[] { ("$stage", ""), ("1", "$replacement") })
+        {
+            var parameterized = stage.Clone(); parameterized.Get("no")!.Text = stageNumber;
+            if (replacement.Length > 0) parameterized.Set("FormEditorID", PresetValue.Scalar(replacement));
+            var template = new ValueEditorControl(document, Forms, parameterized, "Stage", "Template stage", parametersAllowed: true);
+            Require(stageOverrides.All(key => FieldCard(template, key).Visibility == Visibility.Visible),
+                "An unresolved stage or replacement parameter must keep potentially applicable settings available.");
+        }
+    }
+
+    private static void RetainedUnusedSettings()
+    {
+        var document = PresetDocument.Parse("""
+            ownerLists:
+            - owners: FoodBeef
+              stages:
+              - no: 0
+                name: Fresh
+                duration: 1
+                FormEditorID: FoodVenison
+                value: 5
+                weight: 0.25
+                crafting_allowed: true
+                mgeffect:
+                - FormEditorID: Heal
+                  magnitude: 2
+                  duration: 3
+              finalFormEditorID: FoodVenison
+            """, "FOOD", PresetKind.Custom);
+        var value = document.Blocks.Single().Value.Get("stages")!.Items.Single();
+        var editor = new ValueEditorControl(document, Forms, value, "Stage", "Stage");
+        foreach (var key in new[] { "FormEditorID", "value", "weight", "mgeffect", "crafting_allowed" })
+        {
+            var card = FieldCard(editor, key); var unused = (Expander)card.Child;
+            Require(card.Visibility == Visibility.Visible && unused.Header is string header && header.StartsWith("Unused: ") && !unused.IsExpanded &&
+                Descendants<TextBlock>(unused).Any(text => text.Text.Length > 0) && Descendants<Button>(unused).Any(button => Equals(button.Content, "Remove setting")),
+                "An imported inactive setting must remain visible in collapsed details with its reason and explicit removal action.");
+        }
+        editor.Capture(); var saved = document.Clone(); saved.Blocks.Single().Value.Get("stages")!.Items[0] = editor.Value;
+        var restored = PresetDocument.Parse(saved.ToYaml(), "FOOD", PresetKind.Custom).Blocks.Single().Value.Get("stages")!.Items.Single();
+        Require(restored.Get("FormEditorID")?.Text == "FoodVenison" && restored.Get("value")?.Text == "5" && restored.Get("weight")?.Text == "0.25" &&
+            restored.Get("crafting_allowed")?.Text == "true" && restored.Get("mgeffect")?.Items.Single().Get("duration")?.Text == "3",
+            "Opening, capturing, and serializing unused settings must preserve every imported value.");
+        Click(Descendants<Button>(FieldCard(editor, "value")).Single(button => Equals(button.Content, "Remove setting")));
+        Require(editor.Value.Get("value") is null && FieldCard(editor, "value").Visibility == Visibility.Collapsed && value.Get("value")?.Text == "5",
+            "Only explicitly removing an unused setting may delete it from the isolated draft.");
+
+        var generated = value.Clone(); generated.Get("no")!.Text = "1"; generated.Remove("FormEditorID");
+        var later = new ValueEditorControl(document, Forms, generated, "Stage", "Stage");
+        var duration = FieldInput(later, "duration");
+        var weight = FieldInput(later, "weight");
+        Click(Descendants<Button>(FieldCard(later, "FormEditorID")).Single(button => Equals(button.Content, "Set")));
+        FieldInput(later, "FormEditorID").Text = "FoodVenison";
+        Require(new[] { "value", "weight", "mgeffect" }.All(key => FieldCard(later, key).Child is Expander { Header: string label } && label.StartsWith("Unused: ")) &&
+            ReferenceEquals(duration, FieldInput(later, "duration")),
+            "Choosing an explicit replacement must mark generated-item overrides unused immediately without disturbing duration input.");
+        Click(Descendants<Button>(FieldCard(later, "FormEditorID")).Single(button => Equals(button.Content, "Clear")));
+        Require(ReferenceEquals(weight, FieldInput(later, "weight")) && weight.Text == "0.25" &&
+            new[] { "value", "weight", "mgeffect" }.All(key => FieldCard(later, key).Visibility == Visibility.Visible &&
+                !(FieldCard(later, key).Child is Expander { Header: string label } && label.StartsWith("Unused: "))),
+            "Clearing the replacement must restore the original generated-item controls and values.");
+
+        var inheritedDocument = document.Clone();
+        var shared = inheritedDocument.Add(BlockKind.Shared, "baseStage", "Stage");
+        shared.Value = value.Clone(); shared.Value.Anchor = shared.Key;
+        var inherited = PresetValue.Map(); inherited.Set("<<", PresetValue.Alias(shared.Value.Anchor));
+        var inheritedEditor = new ValueEditorControl(inheritedDocument, Forms, inherited, "Stage", "Inherited stage");
+        inheritedEditor.UpdatePresentation(new PresetPresentation(inheritedDocument, Forms), value.Clone());
+        var inheritedValue = FieldCard(inheritedEditor, "value");
+        Require(inheritedValue.Child is Expander { Header: "Unused: Value override", IsExpanded: false } &&
+            !Descendants<Button>(inheritedValue).Any(button => Equals(button.Content, "Remove setting")) && inheritedEditor.Value.Get("value") is null,
+            "An inherited stage-0 value must be identified as unused without offering to remove the shared definition's field.");
+    }
+
+    private static void ReusableDefinitionApplicability()
+    {
+        foreach (var kind in new[] { BlockKind.Shared, BlockKind.Template })
+        foreach (var (context, number, key) in new[] { ("Stage", "0", "value"), ("Stage", "1", "value"), ("Effect", "", "magnitude") })
+        {
+            var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+            var definition = document.Add(kind, "Settings", context);
+            definition.Value.Set("FormEditorID", PresetValue.Scalar(context == "Stage" ? "FoodVenison" : "0"));
+            definition.Value.Set(key, PresetValue.Scalar("5"));
+            definition.Value.Set("duration", PresetValue.Scalar("1"));
+            if (context == "Stage")
+            {
+                definition.Value.Set("no", PresetValue.Scalar(number));
+                definition.Value.Set("name", PresetValue.Scalar("Fresh"));
+            }
+            var editor = new ValueEditorControl(document, Forms, definition.Value, context, "Definition", parametersAllowed: kind == BlockKind.Template);
+            var input = FieldInput(editor, key);
+            Require(FieldCard(editor, key).Visibility == Visibility.Visible && input.Text == "5",
+                "A reusable definition must keep settings editable because a use can override its stage number or selected form.");
+            editor.Capture();
+            Require(editor.Value.Get(key)?.Text == "5" && definition.Value.Get(key)?.Text == "5",
+                "Opening and capturing a reusable definition must preserve its configured values.");
+            input.Text = "6";
+            Require(editor.Value.Get(key)?.Text == "6" && definition.Value.Get(key)?.Text == "5",
+                "Reusable settings must remain editable inside the isolated draft despite the definition's current discriminator.");
+        }
+    }
+
+    private static void EffectApplicability()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        var empty = new ValueEditorControl(document, Forms, PresetValue.Map(), "Effect", "Effect");
+        Require(FieldCard(empty, "magnitude").Visibility == Visibility.Collapsed && FieldCard(empty, "duration").Visibility == Visibility.Collapsed,
+            "An effect without a chosen ID must hide unset magnitude and duration.");
+        var value = PresetValue.Map(); value.Set("FormEditorID", PresetValue.Scalar(""));
+        value.Set("magnitude", PresetValue.Scalar("2")); value.Set("duration", PresetValue.Scalar("5"));
+        var editor = new ValueEditorControl(document, Forms, value, "Effect", "Effect");
+        Require(FieldCard(editor, "magnitude").Child is Expander { Header: "Unused: Magnitude" } &&
+            FieldCard(editor, "duration").Child is Expander { Header: "Unused: Duration (seconds)" },
+            "Imported effect stats with an empty ID must be retained as unused settings.");
+        FieldInput(editor, "FormEditorID").Text = "Heal";
+        var magnitude = FieldInput(editor, "magnitude");
+        Require(magnitude.Text == "2" && FieldInput(editor, "duration").Text == "5",
+            "Choosing an effect must immediately restore its preserved stat inputs.");
+        Click(Descendants<Button>(FieldCard(editor, "FormEditorID")).Single(button => Equals(button.Content, "Clear")));
+        Require(FieldCard(editor, "magnitude").Child is Expander { Header: "Unused: Magnitude" } && editor.Value.Get("magnitude")?.Text == "2",
+            "Clearing the effect ID must mark its stats unused without deleting them.");
+        Click(Descendants<Button>(FieldCard(editor, "FormEditorID")).Single(button => Equals(button.Content, "Set")));
+        FieldInput(editor, "FormEditorID").Text = "Heal";
+        Require(ReferenceEquals(magnitude, FieldInput(editor, "magnitude")) && value.Get("FormEditorID")!.Text.Length == 0,
+            "Choosing an effect again must reuse its preserved stat input while leaving the original document untouched.");
+        var inheritedValue = PresetYaml.Parse("<<: *effectBase\nmagnitude: 5\nduration: 60\n");
+        var inherited = new ValueEditorControl(document, Forms, inheritedValue, "Effect", "Inherited effect");
+        inherited.UpdatePresentation(new PresetPresentation(document, Forms), PresetYaml.Parse("FormEditorID: Heal\nmagnitude: 5\nduration: 60\n"));
+        var inheritedMagnitude = FieldInput(inherited, "magnitude");
+        inheritedMagnitude.Text = "25";
+        Require(ReferenceEquals(inheritedMagnitude, FieldInput(inherited, "magnitude")) && inherited.Value.Get("magnitude")?.Text == "25",
+            "Pending inherited-effect expansion must keep magnitude editable while the user types.");
+    }
+
     private static void ContextualActions()
     {
         var document = PresetDocument.Parse("""
@@ -423,6 +794,13 @@ internal static class EditorInteractionChecks
         if (owner is ValueEditorWindow window) owner = window.Editor;
         return (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;
     }
+    private static Border FieldCard(ValueEditorControl editor, string key)
+    {
+        var view = Field<System.Collections.IDictionary>(editor, "fields")[key]!;
+        return (Border)view.GetType().GetProperty("Target")!.GetValue(view)!;
+    }
+    private static TextBox FieldInput(ValueEditorControl editor, string key) =>
+        Descendants<TextBox>(FieldCard(editor, key)).Single();
     private static void SetField(object owner, string name, object value) => owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(owner, value);
     private static object? Invoke(object owner, string name, params object?[] arguments)
     {
@@ -436,6 +814,11 @@ internal static class EditorInteractionChecks
             if (child is T match) yield return match;
             foreach (var descendant in Descendants<T>(child)) yield return descendant;
         }
+    }
+    private static IEnumerable<T> Ancestors<T>(DependencyObject child) where T : DependencyObject
+    {
+        for (var parent = LogicalTreeHelper.GetParent(child); parent is not null; parent = LogicalTreeHelper.GetParent(parent))
+            if (parent is T match) yield return match;
     }
     private static void Search(object window, string text) { Field<TextBox>(window, "search").Text = text; Invoke(window, "FilterForms"); }
     private static void Click(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

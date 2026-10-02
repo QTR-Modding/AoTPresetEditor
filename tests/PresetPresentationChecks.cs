@@ -57,6 +57,20 @@ internal static class PresetPresentationChecks
             "An incomplete document must still show useful template arguments before expansion succeeds.");
         Require(document.ToYaml() == source, "Presentation must not mutate the authored preset.");
 
+        var effect = PresetValue.Map();
+        effect.Set("magnitude", PresetValue.Scalar("25"));
+        effect.Set("duration", PresetValue.Scalar("60"));
+        foreach (var identifier in new string?[] { null, "null", "", "0", "0x0", "00000000" })
+        {
+            if (identifier is null) effect.Remove("FormEditorID");
+            else effect.Set("FormEditorID", PresetValue.Scalar(identifier));
+            Require(presentation.Summary(effect, "effect") == "Zeroes the existing effect slot",
+                "A missing or zero magic effect must describe the existing slot and hide ignored magnitude and duration.");
+        }
+        effect.Set("FormEditorID", PresetValue.Scalar("RestoreHealth"));
+        Require(presentation.Summary(effect, "effect") == "RestoreHealth · Magnitude 25 · 60 seconds",
+            "A selected magic effect must retain its magnitude and duration in the summary.");
+
         var group = new FormGroupDefinition("Mixed", ["00065C99", "0x000800~Sounds.esp", "UnknownOptionalForm"]);
         var picker = new GroupPickerWindow([group], Forms, new(Category: "FOOD"), purpose: "Choose affected item group");
         Field<ListBox>(picker, "groupList").SelectedItem = group;

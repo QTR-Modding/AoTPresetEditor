@@ -21,16 +21,19 @@ public enum ItemCategories
 }
 
 public sealed record FormRow(string Name, string EditorId, string Type, string Plugin, string Winner, string Identifier,
-    ItemCategories Categories = ItemCategories.None, bool IsTrigger = false);
+    ItemCategories Categories = ItemCategories.None, bool IsTrigger = false, bool IsBoundObject = false);
 
-public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, string? Category = null, bool TriggerOnly = false)
+public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, string? Category = null, bool TriggerOnly = false,
+    bool BoundObjectOnly = false, IReadOnlyCollection<FormRow>? ExcludedForms = null)
 {
     private readonly ItemCategories category = Enum.TryParse<ItemCategories>(Category, true, out var value) ? value : ItemCategories.None;
 
     public bool Matches(FormRow form) =>
         (Types is null || Types.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
         (string.IsNullOrEmpty(Category) || (form.Categories & category) != 0) &&
-        (!TriggerOnly || form.IsTrigger);
+        (!TriggerOnly || form.IsTrigger) &&
+        (!BoundObjectOnly || form.IsBoundObject) &&
+        (ExcludedForms is null || !ExcludedForms.Contains(form));
 }
 
 public sealed record CatalogResult(IReadOnlyList<FormRow> Forms, IReadOnlyList<string> Plugins, string PluginsPath);
@@ -91,8 +94,9 @@ public static class FormCatalog
                 _ => ""
             };
             string origin = record.FormKey.ModKey.FileName.String;
+            var boundObject = IsBoundObject(record);
             forms[record.FormKey] = new FormRow(name, record.EditorID ?? "", record.Registration.Name, origin, winner,
-                $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), IsTrigger(record));
+                $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter, boundObject);
         }
     }
 
@@ -122,8 +126,8 @@ public static class FormCatalog
         };
     }
 
-    // TESBoundObject subclasses represented by Mutagen, plus AoT's location and perk triggers.
-    private static bool IsTrigger(IMajorRecordGetter record) => record is
+    // Matches CommonLib's TESForm::As<TESBoundObject>(); OBND fields alone do not describe this inheritance.
+    private static bool IsBoundObject(IMajorRecordGetter record) => record is
         IAcousticSpaceGetter or IActivatorGetter or IAddonNodeGetter or IAlchemicalApparatusGetter or
         IAmmunitionGetter or IArmorGetter or IArtObjectGetter or IBookGetter or IContainerGetter or
         IDoorGetter or IDualCastDataGetter or IExplosionGetter or IFloraGetter or IFurnitureGetter or
@@ -131,5 +135,5 @@ public static class FormCatalog
         IKeyGetter or ILeveledItemGetter or ILeveledNpcGetter or ILeveledSpellGetter or ILightGetter or
         IMiscItemGetter or IMoveableStaticGetter or INpcGetter or IObjectEffectGetter or IProjectileGetter or
         IScrollGetter or ISoulGemGetter or ISoundMarkerGetter or ISpellGetter or IStaticGetter or
-        ITalkingActivatorGetter or ITextureSetGetter or ITreeGetter or IWeaponGetter or ILocationGetter or IPerkGetter;
+        ITalkingActivatorGetter or ITextureSetGetter or ITreeGetter or IWeaponGetter;
 }

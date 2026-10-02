@@ -39,10 +39,31 @@ public sealed class PresetPresentation
     public PresetValue? EffectiveValue(PresetBlock block) => EffectiveValue(block.Value);
     public PresetValue? EffectiveValue(PresetValue value) => effective.GetValueOrDefault(value);
 
+    public FormRow? ResolveForm(string identifier) => forms.GetValueOrDefault(NormalizeIdentifier(identifier)) ?? forms.GetValueOrDefault(identifier);
+
+    public IReadOnlyList<FormRow> SourceForms(PresetValue rule)
+    {
+        var owners = rule.Get("owners");
+        var selection = owners ?? rule.Get("forms");
+        if (selection is null) return [];
+        var result = new HashSet<FormRow>();
+        foreach (var value in selection.Kind == ValueKind.Sequence ? selection.Items : [selection])
+        {
+            if (value.Kind != ValueKind.Scalar || value.IsNull) continue;
+            if (owners is null && groups.TryGetValue(value.Text, out var group))
+            {
+                foreach (var member in group.Members)
+                    if (ResolveForm(member) is { } form) result.Add(form);
+            }
+            else if (ResolveForm(value.Text) is { } form) result.Add(form);
+        }
+        return result.ToArray();
+    }
+
     public string FormLabel(string identifier, bool includeIdentifier = false)
     {
         if (groups.TryGetValue(identifier, out var group)) return $"{group.Name} ({group.Members.Count} forms)";
-        if (!forms.TryGetValue(NormalizeIdentifier(identifier), out var form) && !forms.TryGetValue(identifier, out form)) return identifier;
+        if (ResolveForm(identifier) is not { } form) return identifier;
         var name = form.Name.Length != 0 ? form.Name : form.EditorId.Length != 0 ? form.EditorId : identifier;
         return includeIdentifier && name != identifier ? $"{name} ({identifier})" : name;
     }
@@ -87,16 +108,24 @@ public sealed class PresetPresentation
         return normalized switch
         {
             "rule" => SummarizeRule(value),
-            "stage" => Join(value.Get("name")?.Text is { Length: > 0 } name ? name : "Stage " + (value.Get("no")?.Text ?? "?"),
+            "stage" => Join("Stage " + (value.Get("no")?.Text ?? "?"), value.Get("name")?.Text ?? "",
                 Duration(value.Get("duration"), "game hours")),
             "transformer" => Join(value.Get("FormEditorID") is { } trigger ? "Trigger: " + ListLabels(trigger) : "Choose a trigger",
                 value.Get("finalFormEditorID") is { } result ? "Produces " + ListLabels(result) : "Choose a result item", Duration(value.Get("duration"), "game hours")),
             "modulator" => Join(value.Get("FormEditorID") is { } trigger ? "Trigger: " + ListLabels(trigger) : "Choose a trigger",
                 value.Get("magnitude") is { } multiplier ? multiplier.Text == "0" ? "Progress paused" : "Time multiplier: " + multiplier.Text : "Choose a time multiplier"),
-            "effect" => Join(value.Get("FormEditorID") is { IsNull: false } effect ? ListLabels(effect) : "Clears an effect",
-                value.Get("magnitude") is { } magnitude ? "Magnitude " + magnitude.Text : "", Duration(value.Get("duration"), "seconds")),
+            "effect" => SummarizeEffect(value),
             _ => value.Fields.Count == 0 ? "No settings" : string.Join(", ", value.Fields.Keys.Take(4)) + (value.Fields.Count > 4 ? $" +{value.Fields.Count - 4}" : "")
         };
+    }
+
+    private string SummarizeEffect(PresetValue value)
+    {
+        var magnitudeField = PresetSchema.GetFields("effect", document.Kind).Single(field => field.Key == "magnitude");
+        if (PresetSchema.InactiveReason(magnitudeField, value, "effect", document.Category) is not null)
+            return "Zeroes the existing effect slot";
+        return Join(value.Get("FormEditorID") is { IsNull: false } effect ? ListLabels(effect) : "Inherited effect",
+            value.Get("magnitude") is { } magnitude ? "Magnitude " + magnitude.Text : "", Duration(value.Get("duration"), "seconds"));
     }
 
     private string SummarizeRule(PresetValue value)

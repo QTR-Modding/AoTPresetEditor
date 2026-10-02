@@ -11,6 +11,7 @@ public sealed class ValueEditorControl : UserControl
 {
     private PresetDocument document;
     private readonly ValueEditorControl root;
+    private readonly ValueEditorControl? parent;
     private readonly string? blockId;
     private readonly Action<PresetValue>? replace;
     private readonly IReadOnlyList<FormRow> forms;
@@ -22,7 +23,8 @@ public sealed class ValueEditorControl : UserControl
     private readonly StackPanel content = new();
     private readonly TextBox? name;
     private readonly List<(ValueEditorControl Editor, Func<PresetValue?, PresetValue?> Resolve)> children = [];
-    private readonly Dictionary<string, (FrameworkElement Target, TextBlock Status, PresetField Field)> fields = [];
+    private sealed record FieldView(Border Target, UIElement Body, TextBlock Status, PresetField Field, Expander Unused);
+    private readonly Dictionary<string, FieldView> fields = [];
     private Action capture = () => { };
     private PresetPresentation presentation;
     private PresetValue? effective;
@@ -37,6 +39,7 @@ public sealed class ValueEditorControl : UserControl
     private bool refreshing;
     public PresetValue Value { get; private set; }
     public PresetDocument Document => root.document;
+    private bool IsDefinition => parametersAllowed || Document.Blocks.Any(block => block.Id == root.blockId && block.Kind == BlockKind.Shared);
     public string BlockName => name?.Text.Trim() ?? "";
     public event EventHandler? Changed;
 
@@ -49,6 +52,7 @@ public sealed class ValueEditorControl : UserControl
         string context, string title, bool parametersAllowed, PresetField? field, string? blockName,
         IReadOnlyList<FormGroupDefinition> groups, ValueEditorControl? parent, Action<PresetValue>? replace)
     {
+        this.parent = parent;
         root = parent?.root ?? this;
         blockId = parent is null ? document.Blocks.FirstOrDefault(block => ReferenceEquals(block.Value, value))?.Id : root.blockId;
         this.document = parent is null ? document.Clone() : root.document;
@@ -112,6 +116,7 @@ public sealed class ValueEditorControl : UserControl
         foreach (var (_, view) in fields)
             if (message.StartsWith(view.Field.Label, StringComparison.OrdinalIgnoreCase) || message.StartsWith(view.Field.Key + ":", StringComparison.OrdinalIgnoreCase))
             {
+                if (view.Target.Child == view.Unused) { Reveal(view.Unused); return true; }
                 var nested = children.FirstOrDefault(child => child.Editor.field?.Key == view.Field.Key).Editor;
                 if (nested?.FocusIssue(message) == true) return true;
                 Reveal(view.Target); return true;
@@ -136,7 +141,7 @@ public sealed class ValueEditorControl : UserControl
     private void NotifyChanged()
     {
         if (refreshing) return;
-        replace?.Invoke(Value); RefreshFeedback(); root.Changed?.Invoke(root, EventArgs.Empty);
+        replace?.Invoke(Value); root.UpdatePresentation(presentation); root.Changed?.Invoke(root, EventArgs.Empty);
     }
 
     private void Render()
@@ -279,12 +284,14 @@ public sealed class ValueEditorControl : UserControl
     private void RenderMap()
     {
         var descriptors = PresetSchema.GetFields(context, Document.Kind);
-        var primary = descriptors.Where(descriptor => descriptor.Required || Value.Get(descriptor.Key) is not null).ToArray();
+        var primary = descriptors.Where(descriptor => descriptor.Required ||
+            descriptor.Kind == FieldKind.ObjectList && Value.Get(descriptor.Key) is not null ||
+            PresetSchema.NormalizeContext(context) == "effect").ToArray();
         foreach (var descriptor in primary) RenderField(descriptor, content);
         foreach (var section in descriptors.Except(primary).GroupBy(FieldSection))
         {
             var panel = new StackPanel(); foreach (var descriptor in section) RenderField(descriptor, panel);
-            content.Children.Add(new Expander { Header = section.Key, Content = panel, Margin = new Thickness(0, 6, 0, 8) });
+            content.Children.Add(new Expander { Header = section.Key, Tag = section.Key, Content = panel, Margin = new Thickness(0, 6, 0, 8) });
         }
         foreach (var key in Value.Fields.Keys.Where(key => key != "<<" && !descriptors.Any(item => item.Key == key)).ToArray())
             RenderField(new PresetField(key, key, FieldKind.Text, "Additional setting preserved from this file.",
@@ -326,18 +333,19 @@ public sealed class ValueEditorControl : UserControl
     private void RenderField(PresetField descriptor, Panel target)
     {
         var current = Value.Get(descriptor.Key); var box = new StackPanel(); var row = new DockPanel();
+        Expander? section = null;
         var label = EditorControls.Text(descriptor.Label); label.FontWeight = FontWeights.SemiBold;
         label.Margin = new Thickness(0, 0, 8, 2); label.VerticalAlignment = VerticalAlignment.Center;
         var actions = new WrapPanel();
-        var explanation = Help(descriptor.Help);
+        var explanation = Help(PresetSchema.FieldHelp(descriptor, context, Document.Kind));
         explanation.Visibility = Visibility.Collapsed;
         if (current is not null && (!descriptor.Required || Value.Get("<<") is not null)) actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Clear" : "Use inherited value", () =>
-            { Value.Remove(descriptor.Key); Render(); NotifyChanged(); }));
+            ReplaceField(descriptor, target, null)));
         else if (!descriptor.Required || Value.Get("<<") is not null)
             actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Set" : "Override here", () =>
             {
                 var replacement = effective?.Get(descriptor.Key)?.Clone() ?? NewValue(descriptor.ChildContext, descriptor); replacement.Anchor = "";
-                Value.Set(descriptor.Key, replacement); Render(); NotifyChanged();
+                ReplaceField(descriptor, target, replacement);
             }));
         var help = new Button { Content = "Help", Padding = new Thickness(8, 3, 8, 3) };
         AutomationProperties.SetName(help, "Help for " + descriptor.Label);
@@ -345,6 +353,7 @@ public sealed class ValueEditorControl : UserControl
         {
             var show = explanation.Visibility != Visibility.Visible;
             explanation.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            if (show && section is not null) section.IsExpanded = true;
             help.Content = show ? "Hide help" : "Help";
         };
         if (descriptor.Help.Length > 0) actions.Children.Add(help);
@@ -364,14 +373,48 @@ public sealed class ValueEditorControl : UserControl
             CornerRadius = new CornerRadius(collection ? 0 : 5), Padding = collection ? new Thickness(0, 6, 0, 6) : new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 6) };
         if (!collection) card.SetResourceReference(Border.BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
         card.SetResourceReference(Border.BorderBrushProperty, "CardStrokeColorDefaultBrush");
-        fields[descriptor.Key] = (card, status, descriptor); target.Children.Add(card);
+        if (descriptor.Kind is FieldKind.ObjectList or FieldKind.FormList or FieldKind.IntegerList)
+        {
+            box.Children.Remove(row);
+            section = new Expander { Header = row, Content = box, IsExpanded = true };
+            card.Child = section;
+        }
+        var unused = new StackPanel();
+        unused.Children.Add(Help(""));
+        if (current is not null) unused.Children.Add(EditorControls.Button("Remove setting", () => ReplaceField(descriptor, target, null)));
+        fields[descriptor.Key] = new(card, card.Child, status, descriptor,
+            new Expander { Header = "Unused: " + descriptor.Label, Content = unused });
+        target.Children.Add(card);
+    }
+
+    private void ReplaceField(PresetField descriptor, Panel target, PresetValue? replacement)
+    {
+        if (replacement is null) Value.Remove(descriptor.Key); else Value.Set(descriptor.Key, replacement);
+        var previous = fields[descriptor.Key].Target;
+        var position = target.Children.IndexOf(previous);
+        children.RemoveAll(child => child.Editor.field?.Key == descriptor.Key);
+        target.Children.Remove(previous);
+        RenderField(descriptor, target);
+        var updated = fields[descriptor.Key].Target;
+        target.Children.Remove(updated); target.Children.Insert(position, updated);
+        NotifyChanged();
     }
 
     private void RefreshFeedback()
     {
+        var partial = IsDefinition;
         foreach (var (key, view) in fields)
         {
             var own = Value.Get(key); var inherited = effective?.Get(key); string text; IReadOnlyList<string> errors = [];
+            var inactive = PresetSchema.InactiveReason(view.Field, Value, context, Document.Category, effective, partial);
+            view.Target.Visibility = inactive is not null && own is null && inherited is null ? Visibility.Collapsed : Visibility.Visible;
+            if (inactive is not null)
+            {
+                ((TextBlock)((StackPanel)view.Unused.Content).Children[0]).Text = inactive;
+                view.Target.Child = view.Unused;
+                continue;
+            }
+            view.Target.Child = view.Body;
             if (own is not null)
             {
                 errors = PresetSchema.ValidateField(own, view.Field, context, Document.Category, Document.Kind,
@@ -381,10 +424,26 @@ public sealed class ValueEditorControl : UserControl
             }
             else if (inherited is not null && Value.Get("<<") is { } source) text = presentation.Summary(inherited, view.Field.ChildContext) + " · from " + presentation.ReferenceLabel(source);
             else if (Value.Get("<<") is not null && effective is null) text = "Inherited value will appear after validation.";
-            else text = view.Field.Required ? "Incomplete: " + PresetSchema.DefaultDescription(view.Field, context) : PresetSchema.DefaultDescription(view.Field, context);
+            else text = (view.Field.Required ? "Incomplete: " : "") + PresetSchema.DefaultDescription(view.Field, context, Document.Kind);
             view.Status.Text = text; view.Status.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
             view.Status.SetResourceReference(TextBlock.ForegroundProperty, errors.Count > 0 || own is null && inherited is null && view.Field.Required && (Value.Get("<<") is null || effective is not null)
                 ? "SystemFillColorCautionBrush" : "TextFillColorSecondaryBrush");
+            if (view.Target is Border { Child: Expander { Header: DockPanel header } })
+            {
+                var label = header.Children.OfType<TextBlock>().Single();
+                var value = own ?? inherited;
+                var incomplete = errors.Count > 0 || own is null && inherited is null && view.Field.Required;
+                label.Text = view.Field.Label + (value?.Kind == ValueKind.Sequence ? $" ({value.Items.Count})" : "") + (incomplete ? " · Needs attention" : "");
+                label.SetResourceReference(TextBlock.ForegroundProperty, incomplete ? "SystemFillColorCautionBrush" : "TextFillColorPrimaryBrush");
+            }
+        }
+        foreach (var section in content.Children.OfType<Expander>().Where(section => section.Tag is string))
+        {
+            var category = (string)section.Tag;
+            var members = fields.Values.Where(view => ReferenceEquals(view.Target.Parent, section.Content) && view.Target.Visibility == Visibility.Visible).ToArray();
+            var count = members.Count(view => Value.Get(view.Field.Key) is not null);
+            section.Header = category + (count > 0 ? $" ({count} set)" : "");
+            section.Visibility = members.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         }
     }
 
@@ -406,7 +465,7 @@ public sealed class ValueEditorControl : UserControl
             list.ItemsSource = Value.Items.Select((item, index) => new ListBoxItem
             {
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Content = new TextBlock { Text = $"{index + 1}. {presentation.Summary(item, ItemContext())}", TextWrapping = TextWrapping.Wrap }
+                Content = new TextBlock { Text = ListEntrySummary(item, index), TextWrapping = TextWrapping.Wrap }
             }).ToArray();
             list.Visibility = Value.Items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             list.SelectedIndex = selected;
@@ -414,15 +473,17 @@ public sealed class ValueEditorControl : UserControl
         refreshSummary = () =>
         {
             for (var index = 0; index < Math.Min(Value.Items.Count, list.Items.Count); index++)
-                ((TextBlock)((ListBoxItem)list.Items[index]).Content).Text = $"{index + 1}. {presentation.Summary(effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count ? effective.Items[index] : Value.Items[index], ItemContext())}";
+                ((TextBlock)((ListBoxItem)list.Items[index]).Content).Text = ListEntrySummary(effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count ? effective.Items[index] : Value.Items[index], index);
+            if (!compact && list.SelectedIndex >= 0 && details.Children.OfType<TextBlock>().FirstOrDefault() is { } caption)
+                caption.Text = ItemHeading(list.SelectedIndex);
         };
         void SelectEntry()
         {
             if (activeEditor is not null) { activeEditor.Capture(); children.RemoveAll(pair => pair.Editor == activeEditor); }
-            details.Children.Clear(); details.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+            details.Children.Clear(); details.Visibility = Visibility.Collapsed;
             activeEditor = null; var index = list.SelectedIndex; if (index < 0) return;
             var label = compact ? field?.Kind switch { FieldKind.FormList => "Identifier", FieldKind.IntegerList => "Number", _ => "Entry" }
-                : ItemLabel() + " " + (index + 1);
+                : ItemHeading(index);
             var caption = EditorControls.Text(label);
             caption.FontWeight = FontWeights.SemiBold; caption.Margin = new Thickness(0, 0, 0, 4);
             details.Children.Add(caption);
@@ -462,7 +523,7 @@ public sealed class ValueEditorControl : UserControl
         actions.Children.Add(edit); actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
         void ShowActions()
         {
-            edit.Visibility = compact && list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
+            edit.Visibility = list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
             edit.Content = details.Visibility == Visibility.Visible ? "Hide entry" : "Edit entry";
             remove.Visibility = list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
             up.Visibility = list.SelectedIndex > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -472,6 +533,7 @@ public sealed class ValueEditorControl : UserControl
         {
             if (list.SelectedIndex < 0) return;
             details.Visibility = Visibility.Visible; ShowActions();
+            Reveal(details);
             activeEditor?.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
         }
         revealEntry = ShowEntry;
@@ -483,7 +545,7 @@ public sealed class ValueEditorControl : UserControl
             RefreshList(index + direction); NotifyChanged();
         }
         list.SelectionChanged += (_, _) => { SelectEntry(); ShowActions(); };
-        list.MouseDoubleClick += (_, _) => { if (compact) ShowEntry(); };
+        list.MouseDoubleClick += (_, _) => ShowEntry();
         content.Children.Add(list); content.Children.Add(actions); content.Children.Add(details);
         RefreshList(Value.Items.Count > 0 ? 0 : -1); ShowActions();
         if (context == "Inheritance") content.Children.Add(Help("Earlier settings take precedence. Values entered on the containing block override inherited values."));
@@ -499,6 +561,15 @@ public sealed class ValueEditorControl : UserControl
     };
     private string ItemLabel() => ItemContext().ToLowerInvariant() switch
     { "stage" => "Stage", "transformer" => "Transformation", "modulator" => "Time modifier", "effect" => "Magic effect", _ => "Value" };
+
+    private string ItemHeading(int index)
+    {
+        var item = effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count ? effective.Items[index] : Value.Items[index];
+        return ItemContext().Equals("stage", StringComparison.OrdinalIgnoreCase) ? "Stage " + (item.Get("no")?.Text ?? "?") : ItemLabel() + " " + (index + 1);
+    }
+
+    private string ListEntrySummary(PresetValue item, int index) =>
+        (ItemContext().Equals("stage", StringComparison.OrdinalIgnoreCase) ? "" : $"{index + 1}. ") + presentation.Summary(item, ItemContext());
     private PresetValue NewListItem()
     {
         var child = ItemContext(); if (context == "Inheritance") return PresetValue.Map();
@@ -579,7 +650,37 @@ public sealed class ValueEditorControl : UserControl
         return row;
     }
 
-    private FormSelection FormSelection() => new(field?.FormTypes, field?.MatchPresetCategory == true ? Document.Category : null, field?.TriggerOnly == true);
+    private FormSelection FormSelection()
+    {
+        var types = field?.FormTypes;
+        var excluded = new HashSet<FormRow>();
+        if (field?.MatchSourceType == true && !IsDefinition)
+        {
+            var rule = this;
+            while (rule is not null && PresetSchema.NormalizeContext(rule.context) != "rule") rule = rule.parent;
+            if (rule is not null)
+            {
+                var authored = rule.Value.Get("owners") ?? rule.Value.Get("forms");
+                var source = authored is not null && !IsReference(authored) ? rule.Value : rule.effective ?? rule.Value;
+                foreach (var form in presentation.SourceForms(source).Where(new FormSelection(Category: Document.Category).Matches))
+                {
+                    excluded.Add(form);
+                    types = types is null ? [form.Type] : types.Where(type => type.Equals(form.Type, StringComparison.OrdinalIgnoreCase)).ToArray();
+                }
+                var currentStage = this;
+                while (currentStage is not null && PresetSchema.NormalizeContext(currentStage.context) != "stage") currentStage = currentStage.parent;
+                var stages = rule.Value.Get("stages");
+                if (stages is not null && IsReference(stages)) stages = rule.effective?.Get("stages");
+                if (stages is { Kind: ValueKind.Sequence })
+                    foreach (var stage in stages.Items.Where(stage => !ReferenceEquals(stage, currentStage?.Value) && !ReferenceEquals(stage, currentStage?.effective)))
+                        if (stage.Get("FormEditorID") is { Kind: ValueKind.Scalar } item &&
+                            PresetSchema.InactiveReason(field, stage, "stage", Document.Category) is null &&
+                            presentation.ResolveForm(item.Text) is { } form) excluded.Add(form);
+            }
+        }
+        return new(types, field?.MatchPresetCategory == true ? Document.Category : null,
+            field?.TriggerOnly == true, field?.BoundObjectOnly == true, excluded);
+    }
     private void AdoptDocument(PresetDocument updated)
     {
         updated.RebindValue(root.Value, root.document); root.document = updated; root.presentation = new PresetPresentation(updated, forms, groups);
@@ -619,7 +720,23 @@ public sealed class ValueEditorControl : UserControl
     {
         IsCall(Value, out var currentTemplate, out _);
         return Document.Blocks.Where(block => block.Kind is BlockKind.Shared or BlockKind.Template && block.Id != root.blockId &&
-            block.Id != currentTemplate?.Id && !(Value.Kind == ValueKind.Alias && block.Kind == BlockKind.Shared && block.Value.Anchor == Value.Text));
+            block.Id != currentTemplate?.Id && !(Value.Kind == ValueKind.Alias && block.Kind == BlockKind.Shared && block.Value.Anchor == Value.Text) &&
+            CanReuse(block));
+    }
+
+    private bool CanReuse(PresetBlock definition)
+    {
+        var value = presentation.EffectiveValue(definition) ?? definition.Value;
+        if (IsReference(value)) return true;
+        if (field is not null) return field.Kind switch
+        {
+            FieldKind.ObjectList => value.Kind == ValueKind.Sequence,
+            FieldKind.FormList or FieldKind.IntegerList => value.Kind is ValueKind.Scalar or ValueKind.Sequence,
+            _ => value.Kind == ValueKind.Scalar
+        };
+        if (PresetSchema.GetFields(context, Document.Kind).Count > 0) return value.Kind == ValueKind.Mapping;
+        if (context == "Inheritance") return value.Kind is ValueKind.Mapping or ValueKind.Sequence;
+        return NewValue(context).Kind != ValueKind.Sequence || value.Kind == ValueKind.Sequence;
     }
     private void UseDefinition(PresetBlock chosen)
     {

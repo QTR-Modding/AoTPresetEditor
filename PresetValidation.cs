@@ -8,7 +8,7 @@ public sealed record PresetValidationResult(string Source, string Expanded,
 
 public static class PresetValidation
 {
-    public static async Task<PresetValidationResult> Check(PresetDocument document, CancellationToken token)
+    public static async Task<PresetValidationResult> Check(PresetDocument document, CancellationToken token, PresetPresentation? catalog = null)
     {
         var errors = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         var fileErrors = new List<string>();
@@ -47,6 +47,10 @@ public static class PresetValidation
                 expandedList.Items.AddRange(expandedRules.Select(block => block.Value));
                 var block = rules[0];
                 errors[block.Id] = [.. errors[block.Id], .. PresetSchema.Validate(expandedList, "Rules", document.Category, document.Kind)];
+                if (catalog is not null)
+                    for (var index = 0; index < expandedList.Items.Count; index++)
+                        errors[block.Id] = [.. errors[block.Id], .. KnownFormErrors(expandedList.Items[index], document.Category, catalog)
+                            .Select(error => $"Entry {index + 1}: {error}")];
                 if (expandedList.Items.Count == 0) errors[block.Id] = [.. errors[block.Id], "The rule list is empty."];
             }
             else
@@ -59,6 +63,7 @@ public static class PresetValidation
                     var block = rules[index];
                     errors[block.Id] = [.. errors[block.Id], .. PresetSchema.Validate(expandedRules[index].Value,
                         PresetDocument.RuleContext(document.Kind), document.Category, document.Kind)];
+                    if (catalog is not null) errors[block.Id] = [.. errors[block.Id], .. KnownFormErrors(expandedRules[index].Value, document.Category, catalog)];
                 }
             }
             foreach (var block in document.Blocks.Where(block => block.Kind == BlockKind.Shared))
@@ -76,6 +81,41 @@ public static class PresetValidation
         }
         return new(source, expanded, errors, fileErrors);
     }
+
+    private static IReadOnlyList<string> KnownFormErrors(PresetValue rule, string category, PresetPresentation catalog)
+    {
+        var errors = new List<string>();
+        void CheckResult(PresetValue? value, string label)
+        {
+            if (value is { Kind: ValueKind.Scalar } && catalog.ResolveForm(value.Text) is { IsBoundObject: false } form)
+                errors.Add($"{label}: {catalog.FormLabel(value.Text)} is {form.Type}, not a bound object that AoT can produce.");
+        }
+        CheckResult(rule.Get("finalFormEditorID"), "Final result item");
+        if (rule.Get("transformers") is { Kind: ValueKind.Sequence } transformations)
+            for (var index = 0; index < transformations.Items.Count; index++)
+                CheckResult(transformations.Items[index].Get("finalFormEditorID"), $"Transformers {index + 1}: Result item");
+        if (rule.Get("stages") is not { Kind: ValueKind.Sequence } stages) return errors;
+        var stageField = PresetSchema.GetFields("stage", PresetKind.Custom).Single(field => field.Key == "FormEditorID");
+        var categorySelection = new FormSelection(Category: category);
+        var sources = catalog.SourceForms(rule).Where(categorySelection.Matches).ToArray();
+        var replacements = new Dictionary<FormRow, string>();
+        for (var index = 0; index < stages.Items.Count; index++)
+        {
+            var stage = stages.Items[index];
+            if (PresetSchema.InactiveReason(stageField, stage, "stage", category) is not null ||
+                stage.Get("FormEditorID") is not { Kind: ValueKind.Scalar } value || catalog.ResolveForm(value.Text) is not { } replacement) continue;
+            var label = $"Stages {index + 1}: Stage item";
+            if (!categorySelection.Matches(replacement)) errors.Add($"{label}: {catalog.FormLabel(value.Text)} does not belong to {category}.");
+            if (sources.Any(source => !source.Type.Equals(replacement.Type, StringComparison.OrdinalIgnoreCase)))
+                errors.Add($"{label}: the replacement must have the same form type as every source item ({string.Join(", ", sources.Select(source => source.Type).Distinct())}).");
+            if (sources.Contains(replacement)) errors.Add($"{label}: a later stage cannot reuse the source item.");
+            if (replacements.TryGetValue(replacement, out var previous) && !previous.Equals(value.Text, StringComparison.OrdinalIgnoreCase))
+                errors.Add($"{label}: this form is already used by another stage, under a different identifier.");
+            replacements.TryAdd(replacement, value.Text);
+        }
+        return errors;
+    }
+
     private static bool HasUnsetArgument(PresetValue value, HashSet<string> templates)
     {
         if (value.IsUnsetArgument) return true;

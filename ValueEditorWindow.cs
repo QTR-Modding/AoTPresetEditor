@@ -74,7 +74,7 @@ public sealed class ValueEditorWindow : Window
             var block = snapshot.Blocks.First(candidate => candidate.Id == blockId);
             block.Value = Editor.Value.Clone();
             snapshot.RebindTemplateCalls(before);
-            var validation = await PresetValidation.Check(snapshot, cancellation.Token);
+            var validation = await PresetValidation.Check(snapshot, cancellation.Token, presentation);
             cancellation.Token.ThrowIfCancellationRequested();
             presentation.Update(snapshot, validation.Expanded);
             Editor.UpdatePresentation(presentation, presentation.EffectiveValue(block));

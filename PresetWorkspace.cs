@@ -119,7 +119,7 @@ public sealed class PresetWorkspace : UserControl
         blockMenu.Items.Add(up); blockMenu.Items.Add(down); blockMenu.Items.Add(remove);
         actions.Items.Add(blockMenu);
         blockActions.Children.Add(actions);
-        blocks.ToolTip = "Select a block to edit. Earlier rules take priority.";
+        blocks.ToolTip = "Select a block to edit.";
         issues.Content = new ScrollViewer { Content = issueList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         issues.Collapsed += (_, _) => issues.Visibility = Visibility.Collapsed;
         DockPanel.SetDock(issues, Dock.Bottom); layout.Children.Add(issues);
@@ -417,7 +417,7 @@ public sealed class PresetWorkspace : UserControl
         using var request = new CancellationTokenSource(); checking = request;
         try
         {
-            var result = await PresetValidation.Check(document.Clone(), request.Token);
+            var result = await PresetValidation.Check(document.Clone(), request.Token, presentation);
             request.Token.ThrowIfCancellationRequested();
             validation = result;
             UpdatePresentation(result.Expanded);

@@ -176,6 +176,13 @@ internal static class Program
         Require(PresetSchema.Validate(effect, "effect", "FOOD").Count == 0, "Clearing an effect was rejected.");
         effect.Set("FormEditorID", PresetValue.Scalar("Effect"));
         Require(PresetSchema.Validate(effect, "effect", "FOOD").Count > 0, "A real effect without magnitude was accepted.");
+        effect.Set("FormEditorID", PresetValue.Scalar("0x0"));
+        effect.Set("magnitude", PresetValue.Scalar("unused"));
+        Require(PresetSchema.Validate(effect, "effect", "FOOD").Count == 0, "A zero effect ID must ignore the numerical fields, as AoT does.");
+        derivative.Set("FormEditorID", PresetValue.Scalar("0x0"));
+        Require(PresetSchema.Validate(derivative, "stage", "FOOD").Count > 0, "An explicit zero stage ID must fail even when the item could be generated.");
+        rule.Set("finalFormEditorID", PresetValue.Scalar("0"));
+        Require(PresetSchema.Validate(rule, "CustomRule", "FOOD").Any(error => error.Contains("Final result item")), "A required result cannot be form zero.");
     }
     private static void WholeRuleList()
     {

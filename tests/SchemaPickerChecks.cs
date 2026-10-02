@@ -70,11 +70,12 @@ internal static class SchemaPickerChecks
         Require(Get("cook", "heat") is { TriggerOnly: true, AllowsGroups: true }, "Merged trigger fields must retain their constraints.");
         Require(Get("cook", "time").Kind == FieldKind.Number, "Duration parameters must use numeric controls.");
         Require(Get("cook", "sound").FormTypes!.SequenceEqual(["SoundDescriptor"]), "Sound parameters must show sounds.");
-        Require(Get("cook", "cooked") is { AllowsGroups: false, MatchPresetCategory: false }, "Results accept items across categories, not groups.");
+        Require(Get("cook", "cooked") is { AllowsGroups: false, MatchPresetCategory: false, BoundObjectOnly: true, FormTypes: null },
+            "Results accept bound objects across categories, not groups or only source item types.");
         Require(Get("outer", "audio").FormTypes!.SequenceEqual(["SoundDescriptor"]) && Get("outer", "seconds").Kind == FieldKind.Number,
             "Nested template calls must propagate field types.");
         Require(Get("aliasOnly", "time").Kind == FieldKind.Number, "An alias-only template must infer the shared body's context.");
-        Require(Get("both", "shared") is { Kind: FieldKind.Form, AllowsGroups: false, TriggerOnly: true },
+        Require(Get("both", "shared") is { Kind: FieldKind.Form, AllowsGroups: false, TriggerOnly: true, BoundObjectOnly: true },
             "A parameter used as trigger and result must not accept a group.");
         Require(Get("incompatible", "same").FormTypes is { Length: 0 }, "Incompatible form types must yield no picker choices.");
         Require(Get("soundOnly", "audio").FormTypes!.SequenceEqual(["SoundDescriptor"]), "A standalone sound template must infer its form type.");

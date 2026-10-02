@@ -6,14 +6,15 @@ public enum FieldKind { Text, Form, FormList, Number, Integer, IntegerList, Bool
 
 public sealed record PresetField(string Key, string Label, FieldKind Kind, string Help,
     bool Required = false, string ChildContext = "", string[]? FormTypes = null, string? DefaultText = null,
-    bool AllowsGroups = false, bool MatchPresetCategory = false, bool TriggerOnly = false);
+    bool AllowsGroups = false, bool MatchPresetCategory = false, bool TriggerOnly = false, bool BoundObjectOnly = false,
+    bool MatchSourceType = false);
 
 public static class PresetSchema
 {
     private static readonly string[] ItemTypes = ["Ingestible", "Ingredient", "Armor", "Weapon", "Scroll", "Book", "SoulGem", "MiscItem"];
     private static readonly PresetField[] VisualFields =
     [
-        new("color", "World tint", FieldKind.Color, "RGB or RGBA hexadecimal color for items lying in the world. Zero removes tint."),
+        new("color", "World tint", FieldKind.Color, "Hexadecimal color for items lying in the world: RRGGBB, or RRGGBBAA with a nonzero red component. For example, FF0000 is red and FF000080 is half-opacity red. Zero removes tint."),
         new("sound", "World sound", FieldKind.Form, "Sound played by items lying in the world.", FormTypes: ["SoundDescriptor"]),
         new("art_object", "World art object", FieldKind.Form, "Art effect attached to items lying in the world.", FormTypes: ["ArtObject"]),
         new("effect_shader", "World effect shader", FieldKind.Form, "Shader applied to items lying in the world.", FormTypes: ["EffectShader"])
@@ -26,13 +27,13 @@ public static class PresetSchema
     private static readonly PresetField[] StageFields =
     [
         new("no", "Stage number", FieldKind.Integer, "Start at 0 and increase by one for each stage.", true, DefaultText: "0"),
-        new("name", "Stage name", FieldKind.Text, "Added to the item name for generated FOOD or MISC stages. An empty name leaves the item name unchanged.", true, DefaultText: ""),
+        new("name", "Stage name", FieldKind.Text, "Stage label shown in LoreBox. Also added to generated FOOD or MISC item names. Leave empty to keep the original name.", true, DefaultText: ""),
         new("duration", "Duration (game hours)", FieldKind.Number, "How long this stage lasts. Use a positive number or .inf for an infinite stage.", true, DefaultText: "1"),
-        new("FormEditorID", "Stage item", FieldKind.Form, "Stage 0 always uses the source item. Later FOOD or MISC stages may leave this unset to generate a derivative. Other item types need a replacement item.", FormTypes: ItemTypes, MatchPresetCategory: true),
+        new("FormEditorID", "Stage item", FieldKind.Form, "Choose a different item of the same type and AoT category as the source. FOOD or MISC stages may leave this unset to generate an item; other categories need a replacement.", FormTypes: ItemTypes, MatchPresetCategory: true, MatchSourceType: true),
         new("value", "Value override", FieldKind.Integer, "Value of a generated stage item. Unset or a negative number keeps its original value. Zero is a valid override."),
         new("weight", "Weight override", FieldKind.Number, "Weight of a generated stage item. Unset or a negative number keeps its original weight. Zero is a valid override."),
-        new("crafting_allowed", "Allow crafting", FieldKind.Boolean, "Allows this stage item to stand in for its source item in crafting menus. Defaults to false.", DefaultText: "false"),
-        new("mgeffect", "Magic effects", FieldKind.ObjectList, "Replaces effects on generated FOOD stages. An unset or empty list keeps original effects. Add an entry with no magic effect to clear an existing effect.", ChildContext: "effect"),
+        new("crafting_allowed", "Allow crafting", FieldKind.Boolean, "Allows a later FOOD stage to stand in for its source item in cooking recipes. Defaults to false.", DefaultText: "false"),
+        new("mgeffect", "Magic effects", FieldKind.ObjectList, "Overwrites existing effect slots on generated FOOD items, in order. An unset or empty list keeps original effects. A nonempty list zeroes remaining slots; extra entries cannot add slots.", ChildContext: "effect"),
         .. VisualFields
     ];
     private static readonly PresetField[] ModulatorFields =
@@ -45,21 +46,21 @@ public static class PresetSchema
     private static readonly PresetField[] TransformerFields =
     [
         new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. A form group can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
-        new("finalFormEditorID", "Result item", FieldKind.Form, "The item produced when the transformation finishes.", true, FormTypes: ItemTypes),
+        new("finalFormEditorID", "Result item", FieldKind.Form, "The object produced when the transformation finishes. AoT accepts any bound object.", true, BoundObjectOnly: true),
         new("duration", "Duration (game hours)", FieldKind.Number, "Positive time needed to finish this transformation while its trigger applies.", true, DefaultText: "0.05"),
         .. TriggerFields,
         .. VisualFields
     ];
     private static readonly PresetField[] EffectFields =
     [
-        new("FormEditorID", "Magic effect", FieldKind.Form, "Choose the effect to apply. Leave it unset to clear an existing effect.", FormTypes: ["MagicEffect"]),
+        new("FormEditorID", "Magic effect", FieldKind.Form, "Choose the effect for this existing slot. Leaving it unset keeps that slot's base effect and sets its magnitude and duration to zero.", FormTypes: ["MagicEffect"]),
         new("magnitude", "Magnitude", FieldKind.Number, "Strength of the chosen effect. Required when a magic effect is selected; zero is allowed.", DefaultText: "0"),
         new("duration", "Duration (seconds)", FieldKind.Integer, "Duration of the chosen effect in seconds. Required when an effect is selected; zero is allowed.", DefaultText: "0")
     ];
     private static readonly PresetField[] RuleFields =
     [
         new("stages", "Stages", FieldKind.ObjectList, "The sequence of stages, beginning with stage 0.", true, "stage"),
-        new("finalFormEditorID", "Final result item", FieldKind.Form, "Item produced after the last stage. Required even if an infinite stage prevents reaching it.", true, FormTypes: ItemTypes),
+        new("finalFormEditorID", "Final result item", FieldKind.Form, "Object produced after the last stage. AoT accepts any bound object. Required even if an infinite stage prevents reaching it.", true, BoundObjectOnly: true),
         new("containers", "Evolution filter", FieldKind.FormList, "Inventory owner's base forms where evolution is allowed. For a world item, this checks the item's own base form. Unset or empty is unrestricted.", AllowsGroups: true),
         new("timeModulators", "Time modulators", FieldKind.ObjectList, "Changes stage progression while a trigger applies. The first matching modulator wins when no transformer matches.", ChildContext: "modulator"),
         new("transformers", "Transformers", FieldKind.ObjectList, "Triggered transformations, in priority order. The first matching transformer wins.", ChildContext: "transformer")
@@ -87,6 +88,56 @@ public static class PresetSchema
             "effect" => EffectFields,
             _ => []
         };
+    }
+
+    public static string? InactiveReason(PresetField field, PresetValue value, string context, string category,
+        PresetValue? effective = null, bool partial = false)
+    {
+        if (partial) return null;
+        PresetValue? Setting(string key)
+        {
+            var own = value.Get(key);
+            return own is not null && IsReference(own) || own is null && value.Get("<<") is not null
+                ? effective?.Get(key) ?? own : own;
+        }
+        context = NormalizeContext(context);
+        if (context == "effect" && field.Key is "magnitude" or "duration")
+        {
+            if (value.Get("FormEditorID") is null && value.Get("<<") is not null && effective is null) return null;
+            var effect = Setting("FormEditorID");
+            if (effect is not null && IsReference(effect)) return null;
+            if (!HasText(effect) || IsZeroForm(effect!)) return "AoT sets magnitude and duration to zero when no magic effect is selected.";
+        }
+        if (context != "stage") return null;
+        var number = Setting("no");
+        var initial = number is not null && TryUnsigned(number.Text, out var index) && index == 0;
+        if (initial && field.Key is "FormEditorID" or "value" or "weight" or "mgeffect")
+            return "Stage 0 uses the source item unchanged.";
+        if (field.Key == "crafting_allowed" && (initial || category != "FOOD"))
+            return "Crafting substitution applies only to FOOD stages after stage 0.";
+        if (field.Key is not ("value" or "weight" or "mgeffect")) return null;
+        if (field.Key == "mgeffect" && category != "FOOD") return "Magic effect overrides apply only to generated FOOD items.";
+        if (category is not ("FOOD" or "MISC")) return "Only FOOD and MISC can generate stage items with overrides.";
+        var item = Setting("FormEditorID");
+        return item is not null && !IsReference(item) && HasText(item) && !IsZeroForm(item)
+            ? "An explicit stage item keeps its own properties. Overrides apply only to generated items." : null;
+    }
+
+    private static bool IsZeroForm(PresetValue value)
+    {
+        var text = value.Text.Trim();
+        if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];
+        return text.Length > 0 && text.All(character => character == '0');
+    }
+
+    public static string FieldHelp(PresetField field, string context, PresetKind kind)
+    {
+        var help = field.Help;
+        if (kind == PresetKind.Addon && field.Key is "containers" or "allowed_stages")
+            help += " Addons combine this list with the source rule's existing list; an empty addon list does not clear that restriction.";
+        if (kind == PresetKind.Default && NormalizeContext(context) == "stage" && field.Key == "duration")
+            help += " A default rule whose stage 0 lasts 9999 hours or more (including .inf) only starts for items with matching addon settings.";
+        return help;
     }
 
     public static string InferContext(string key, PresetValue value)
@@ -215,7 +266,9 @@ public static class PresetSchema
             Key = parameter, Label = parameter, Kind = kind, FormTypes = types,
             AllowsGroups = uses.All(field => field is { AllowsGroups: true }),
             MatchPresetCategory = known.Any(field => field.MatchPresetCategory),
-            TriggerOnly = known.Any(field => field.TriggerOnly)
+            TriggerOnly = known.Any(field => field.TriggerOnly),
+            BoundObjectOnly = known.Any(field => field.BoundObjectOnly),
+            MatchSourceType = known.Any(field => field.MatchSourceType)
         };
     }
     public static IReadOnlyList<string> Validate(PresetValue value, string context, string category, bool partial = false) =>
@@ -241,8 +294,9 @@ public static class PresetSchema
         return errors;
     }
 
-    public static string DefaultDescription(PresetField field, string context) => field.Key switch
+    public static string DefaultDescription(PresetField field, string context, PresetKind kind = PresetKind.Custom) => field.Key switch
     {
+        "allowed_stages" or "containers" when kind == PresetKind.Addon => "Keeps any restriction from the source rule",
         "weight" => "Keeps original weight",
         "value" => "Keeps original value",
         "crafting_allowed" => "Cannot stand in for the source item in crafting",
@@ -251,12 +305,13 @@ public static class PresetSchema
         "containers" => NormalizeContext(context) == "rule" ? "No evolution filter" : "All inventories allowed",
         "timeModulators" => "Normal stage progression",
         "transformers" => "No triggered transformations",
+        "sound" or "art_object" or "effect_shader" or "color" when NormalizeContext(context) is "transformer" or "modulator" => "Uses the stage setting",
         "sound" => "No added world sound",
         "art_object" => "No added world art effect",
         "effect_shader" => "No added world shader",
         "color" => "No added world tint",
         "FormEditorID" when NormalizeContext(context) == "stage" => "Source item at stage 0; generated item at later FOOD or MISC stages",
-        "FormEditorID" when NormalizeContext(context) == "effect" => "Clears the corresponding existing effect",
+        "FormEditorID" when NormalizeContext(context) == "effect" => "Zeroes the corresponding effect's magnitude and duration",
         _ => field.Required ? "Choose a value to complete this field" : "Not set"
     };
 
@@ -292,6 +347,7 @@ public static class PresetSchema
         }
         foreach (var field in GetFields(context, kind))
         {
+            if (context == "effect" && InactiveReason(field, value, context, category, partial: partial) is not null) continue;
             var child = value.Get(field.Key);
             if (child is null || child.IsNull)
             {
@@ -321,7 +377,7 @@ public static class PresetSchema
             }
         }
         if (context == "rule" && kind != PresetKind.Addon) ValidateStages(value, category, partial, path, errors);
-        if (context == "effect" && !partial && HasText(value.Get("FormEditorID")))
+        if (context == "effect" && !partial && HasText(value.Get("FormEditorID")) && !IsZeroForm(value.Get("FormEditorID")!))
         {
             foreach (var key in new[] { "magnitude", "duration" })
                 if (value.Get(key) is not { IsNull: false }) errors.Add(At(path, $"{key} is required when a magic effect is selected."));
@@ -336,7 +392,9 @@ public static class PresetSchema
         switch (field.Kind)
         {
             case FieldKind.Form:
-                if (field.Required && text.Length == 0 && !partial) errors.Add($"{label}: choose an item.");
+                if (field.Required && (text.Length == 0 || IsZeroForm(value)) && !partial) errors.Add($"{label}: choose an item.");
+                else if (context == "stage" && field.Key == "FormEditorID" && IsZeroForm(value))
+                    errors.Add($"{label}: clear this field instead of using a zero identifier.");
                 break;
             case FieldKind.Number:
                 if (!TryNumber(text, out var number)) errors.Add($"{label}: enter a number.");
