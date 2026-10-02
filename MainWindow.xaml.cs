@@ -15,11 +15,25 @@ public partial class MainWindow : Window
     private PresetFile? selectedPreset;
     private bool selectingPreset;
     private bool loading;
+    private bool wasMaximized;
 
-    public MainWindow(string? dataFolder)
+    public MainWindow(string? dataFolder, string? placementPath = null)
     {
         InitializeComponent();
-        Closing += (_, e) => e.Cancel = !Workspace.CanLeave();
+        if (WindowPlacement.Load(placementPath) is { } placement)
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            SourceInitialized += (_, _) => placement.Restore(this);
+        }
+        StateChanged += (_, _) =>
+        {
+            if (WindowState != WindowState.Minimized) wasMaximized = WindowState == WindowState.Maximized;
+        };
+        Closing += (_, e) =>
+        {
+            e.Cancel = !Workspace.CanLeave();
+            if (!e.Cancel) SavePlacement(placementPath);
+        };
         Workspace.Opened += () => { PresetList.SelectedItem = null; selectedPreset = null; PresetBrowser.Visibility = Visibility.Collapsed; };
         Workspace.BrowseRequested += () =>
         {
@@ -32,6 +46,13 @@ public partial class MainWindow : Window
             ReloadButton.Visibility = Visibility.Visible;
             Loaded += async (_, _) => await LoadData();
         }
+    }
+
+    private void SavePlacement(string? path)
+    {
+        try { WindowPlacement.Capture(this, wasMaximized)?.Save(path); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { Trace.TraceWarning("Could not remember window placement: " + error.Message); }
     }
 
     private async void Browse_Click(object sender, RoutedEventArgs e)

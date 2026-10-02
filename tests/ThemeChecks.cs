@@ -45,6 +45,7 @@ internal static class ThemeChecks
             CheckCancel(app);
             CheckScale(app);
             LayoutChecks.Run();
+            WindowPlacementChecks.Run(app);
         }
         finally
         {

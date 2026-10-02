@@ -57,6 +57,8 @@ internal static class LayoutChecks
             var name = Field<TextBox>(editor, "name");
             var client = (FrameworkElement)main.Content;
             var issues = Field<Expander>(workspace, "issues");
+            Require(main.MinWidth == 0 && main.MinHeight == 0,
+                "The main window must not impose an editor-specific minimum size.");
 
             foreach (var size in new[] { new Size(1050, 650), new Size(1400, 900) })
             {
@@ -110,6 +112,28 @@ internal static class LayoutChecks
                     editor.BlockName == "Cooking beef at " + size.Width,
                     "Leaving focus mode must restore the overview without resetting the active edit.");
             }
+
+            var windowViewport = Field<ScrollViewer>(main, "WindowViewport");
+            foreach (var size in new[] { new Size(600, 400), new Size(320, 240) })
+            {
+                Measure(client, size);
+                Require(windowViewport.ScrollableWidth > 0 && windowViewport.ScrollableHeight > 0,
+                    $"At {size}, content that no longer fits must remain reachable through scrolling.");
+                Require(viewport.ActualHeight > 200 && viewport.ActualWidth >= 400,
+                    "Shrinking the outer window must preserve a usable editor inside the scrollable content.");
+                CheckHeaderBounds(client);
+                CheckWorkspaceToolbar(workspace, client);
+                windowViewport.ScrollToRightEnd();
+                windowViewport.ScrollToBottom();
+                Measure(client, size);
+                Require(Math.Abs(windowViewport.HorizontalOffset - windowViewport.ScrollableWidth) < 1 &&
+                    Math.Abs(windowViewport.VerticalOffset - windowViewport.ScrollableHeight) < 1,
+                    "Both far edges of a compact window's content must be reachable.");
+            }
+            Measure(client, new Size(1400, 900));
+            Require(windowViewport.ScrollableWidth == 0 && windowViewport.ScrollableHeight == 0 &&
+                ReferenceEquals(editor, Field<ValueEditorControl>(workspace, "editor")) && editor.BlockName == "Cooking beef at 1400",
+                "Enlarging the window must restore its normal layout without outer scrollbars or losing the edit.");
         }
         finally
         {
@@ -141,7 +165,7 @@ internal static class LayoutChecks
 
     private static void CheckHeaderBounds(FrameworkElement client)
     {
-        var overlay = ((Panel)client).Children.OfType<DockPanel>().Single();
+        var overlay = (DockPanel)Descendants<Menu>(client).Single(menu => menu.Name == "ToolsMenu").Parent;
         var toolbarBounds = overlay.TransformToAncestor(client).TransformBounds(new Rect(overlay.RenderSize));
         foreach (var tab in Descendants<TabItem>(client))
         {
