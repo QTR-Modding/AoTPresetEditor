@@ -42,7 +42,7 @@ public sealed class GroupPickerWindow : Window
         var columns = new Grid();
         columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 160, MaxWidth = 280 });
         columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
-        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2.4, GridUnitType.Star), MinWidth = 360 });
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2.4, GridUnitType.Star) });
         var left = new DockPanel { Margin = new Thickness(0, 0, 6, 0) };
         search.Margin = new Thickness(0, 0, 0, 10); search.ToolTip = "Search group names";
         DockPanel.SetDock(search, Dock.Top); left.Children.Add(search); left.Children.Add(groupList);

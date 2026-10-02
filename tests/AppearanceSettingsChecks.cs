@@ -15,7 +15,7 @@ internal static class AppearanceSettingsChecks
             Require(AppearanceSettings.DefaultPath == Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "AoTPresetEditor", "appearance.json"), "Appearance settings use the wrong per-user location.");
 
-            var settings = new AppearanceSettings(EditorTheme.Light, EditorAccent.Purple);
+            var settings = new AppearanceSettings(EditorTheme.Light, EditorAccent.Purple, 85);
             settings.Save(path);
             Require(AppearanceSettings.Load(path) == settings, "Appearance settings did not round-trip.");
             var bytes = File.ReadAllBytes(path);
@@ -30,6 +30,15 @@ internal static class AppearanceSettingsChecks
             }
             File.WriteAllText(path, "{\"Accent\":\"Teal\"}");
             Require(AppearanceSettings.Load(path) == new AppearanceSettings(Accent: EditorAccent.Teal), "An omitted theme did not retain its default.");
+            File.WriteAllText(path, "{\"Theme\":\"Light\",\"Accent\":\"Purple\"}");
+            Require(AppearanceSettings.Load(path) == new AppearanceSettings(EditorTheme.Light, EditorAccent.Purple),
+                "Settings saved before interface scaling must retain their theme and use 100% scale.");
+            foreach (var invalidScale in new[] { -1, 0, 90, 999 })
+            {
+                File.WriteAllText(path, $"{{\"Theme\":\"Light\",\"Scale\":{invalidScale}}}");
+                Require(AppearanceSettings.Load(path) == new AppearanceSettings(EditorTheme.Light),
+                    "An unsupported scale must fall back to 100% without discarding the theme.");
+            }
 
             settings.Save(path);
             bytes = File.ReadAllBytes(path);

@@ -46,6 +46,8 @@ public partial class App : Application
         };
 #pragma warning restore WPF0001
         ApplyButtonAccent();
+        var scale = (double)settings.Scale / AppearanceSettings.DefaultScale;
+        Resources["InterfaceScaleTransform"] = new ScaleTransform(scale, scale);
     }
 
     private void ApplyButtonAccent()

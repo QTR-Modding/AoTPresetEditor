@@ -8,8 +8,12 @@ namespace AoTPresetEditor;
 public enum EditorTheme { Dark, Light, System }
 public enum EditorAccent { System, Blue, Teal, Purple, Amber }
 
-public sealed record AppearanceSettings(EditorTheme Theme = EditorTheme.Dark, EditorAccent Accent = EditorAccent.System)
+public sealed record AppearanceSettings(EditorTheme Theme = EditorTheme.Dark, EditorAccent Accent = EditorAccent.System,
+    int Scale = AppearanceSettings.DefaultScale)
 {
+    public const int DefaultScale = 100;
+    public static IReadOnlyList<int> ScaleChoices { get; } = [75, 85, DefaultScale, 115, 125, 150];
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -28,7 +32,8 @@ public sealed record AppearanceSettings(EditorTheme Theme = EditorTheme.Dark, Ed
     {
         try
         {
-            return JsonSerializer.Deserialize<AppearanceSettings>(File.ReadAllText(path ?? DefaultPath), JsonOptions) ?? new();
+            var settings = JsonSerializer.Deserialize<AppearanceSettings>(File.ReadAllText(path ?? DefaultPath), JsonOptions) ?? new();
+            return ScaleChoices.Contains(settings.Scale) ? settings : settings with { Scale = DefaultScale };
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {

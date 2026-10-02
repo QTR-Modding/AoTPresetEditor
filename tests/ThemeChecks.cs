@@ -43,6 +43,7 @@ internal static class ThemeChecks
             CheckSelection(main);
             CheckAccent(app, primary);
             CheckCancel(app);
+            CheckScale(app);
             LayoutChecks.Run();
         }
         finally
@@ -102,14 +103,113 @@ internal static class ThemeChecks
 
     private static void CheckCancel(App app)
     {
-        var original = new AppearanceSettings(EditorTheme.Dark, EditorAccent.Teal);
+        var original = new AppearanceSettings(EditorTheme.Dark, EditorAccent.Teal, 85);
         app.ApplyAppearance(original);
         var dialog = new AppearanceWindow(app);
         Field<ComboBox>(dialog, "themes").SelectedIndex = (int)EditorTheme.Light;
         Field<ComboBox>(dialog, "accents").SelectedIndex = (int)EditorAccent.Purple;
-        Require(app.Appearance == new AppearanceSettings(EditorTheme.Light, EditorAccent.Purple), "Appearance controls did not preview their values.");
+        Field<ComboBox>(dialog, "scale").SelectedItem = "150%";
+        Require(app.Appearance == new AppearanceSettings(EditorTheme.Light, EditorAccent.Purple, 150), "Appearance controls did not preview their values.");
         dialog.Close();
         Require(app.Appearance == original, "Closing Appearance without saving did not undo its preview.");
+    }
+
+    private static void CheckScale(App app)
+    {
+        app.ApplyAppearance(new());
+        var main = new MainWindow(null);
+        var picker = new FormPickerWindow(Forms);
+        var mainClient = ScaledClient(main);
+        var pickerClient = ScaledClient(picker);
+        var available = new Size(1050, 650);
+        try
+        {
+            Measure(mainClient.Host, available);
+            Measure(pickerClient.Host, available);
+            var originalMain = mainClient.Client.RenderSize;
+            var originalPicker = pickerClient.Client.RenderSize;
+            app.ApplyAppearance(new(Scale: 75));
+            Measure(mainClient.Host, available);
+            Measure(pickerClient.Host, available);
+            Require(mainClient.Client.ActualHeight > originalMain.Height * 1.25 &&
+                mainClient.Client.ActualWidth > originalMain.Width * 1.25,
+                $"Reducing interface scale must increase the existing editor's usable content area: {originalMain} -> {mainClient.Client.RenderSize}; transform {((FrameworkElement)mainClient.Host.Child).LayoutTransform.Value}.");
+            Require(pickerClient.Client.ActualHeight > originalPicker.Height * 1.25 &&
+                pickerClient.Client.ActualWidth > originalPicker.Width * 1.25,
+                "Existing form pickers must follow interface scale.");
+
+            var groups = new GroupPickerWindow([], Forms);
+            var groupClient = ScaledClient(groups);
+            try
+            {
+                Measure(groupClient.Host, available);
+                Require(groupClient.Client.ActualHeight > available.Height * 1.25,
+                    "Dialogs opened after a scale change must use that scale.");
+                app.ApplyAppearance(new(Scale: 150));
+                Measure(groupClient.Host, new Size(groups.MinWidth, groups.MinHeight));
+                var members = Field<DataGrid>(groups, "members");
+                var membersBounds = members.TransformToAncestor(groupClient.Host).TransformBounds(new Rect(members.RenderSize));
+                Require(membersBounds.Right <= groupClient.Host.ActualWidth && membersBounds.Bottom <= groupClient.Host.ActualHeight,
+                    "The group member list must fit at the window's minimum size with 150% scale.");
+                app.ApplyAppearance(new(Scale: 75));
+            }
+            finally { groups.Close(); }
+
+            var appearance = new AppearanceWindow(app);
+            var appearanceClient = ScaledClient(appearance);
+            try
+            {
+                Field<ComboBox>(appearance, "scale").SelectedItem = "150%";
+                Measure(mainClient.Host, available);
+                Require(mainClient.Client.ActualHeight < originalMain.Height * 0.75,
+                    "The Appearance dialog must preview scale in the existing editor.");
+                Measure(appearanceClient.Host, new Size(460, 600));
+                var save = LogicalChildren<Button>(appearanceClient.Client).Single(button => Equals(button.Content, "Save"));
+                var saveBounds = save.TransformToAncestor(appearanceClient.Host).TransformBounds(new Rect(save.RenderSize));
+                Require(saveBounds.Width > 0 && saveBounds.Height > 0 && saveBounds.Left >= 0 && saveBounds.Top >= 0 &&
+                    saveBounds.Right <= appearanceClient.Host.ActualWidth && saveBounds.Bottom <= appearanceClient.Host.ActualHeight,
+                    "Appearance's Save button must remain visible at 150% scale in a constrained window.");
+            }
+            finally { appearance.Close(); }
+            Measure(mainClient.Host, available);
+            Require(app.Appearance.Scale == 75 && mainClient.Client.ActualHeight > originalMain.Height * 1.25,
+                "Cancel must restore the previous scale and the existing editor's layout.");
+        }
+        finally
+        {
+            main.Close();
+            picker.Close();
+            app.ApplyAppearance(new());
+        }
+    }
+
+    private static (FrameworkElement Client, Border Host) ScaledClient(Window window)
+    {
+        window.ApplyTemplate();
+        Require(window.ContentTemplate is not null, "App windows must use the shared scaling template.");
+        var client = (FrameworkElement)window.Content;
+        window.Content = null;
+        var host = new Border { DataContext = client, Child = (UIElement)window.ContentTemplate!.LoadContent() };
+        // Keep resource invalidation rooted in its Window while measuring the actual content template offscreen.
+        window.ContentTemplate = null;
+        window.Content = host;
+        return (client, host);
+    }
+
+    private static void Measure(FrameworkElement content, Size available)
+    {
+        content.Measure(available);
+        content.Arrange(new Rect(available));
+        content.UpdateLayout();
+    }
+
+    private static IEnumerable<T> LogicalChildren<T>(DependencyObject parent) where T : DependencyObject
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(parent).OfType<DependencyObject>())
+        {
+            if (child is T match) yield return match;
+            foreach (var descendant in LogicalChildren<T>(child)) yield return descendant;
+        }
     }
 
     private static T Field<T>(object instance, string name) =>

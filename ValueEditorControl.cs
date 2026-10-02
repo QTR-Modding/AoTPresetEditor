@@ -697,9 +697,11 @@ public sealed class ValueEditorControl : UserControl
     {
         Capture();
         var dialog = new Window { Owner = Window.GetWindow(this), Title = "Reuse settings", Width = 500, Height = 420, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        var panel = new StackPanel { Margin = new Thickness(20) }; panel.Children.Add(EditorControls.Text("Choose a named block", true));
+        var panel = new DockPanel { Margin = new Thickness(20) };
+        var heading = EditorControls.Text("Choose a named block", true);
+        DockPanel.SetDock(heading, Dock.Top); panel.Children.Add(heading);
         var available = AvailableDefinitions().ToArray();
-        var choices = new ListBox { MinHeight = 170, MaxHeight = 240 };
+        var choices = new ListBox();
         foreach (var definition in available)
         {
             var description = new StackPanel();
@@ -707,7 +709,6 @@ public sealed class ValueEditorControl : UserControl
             description.Children.Add(Help(presentation.Summary(presentation.EffectiveValue(definition) ?? definition.Value, definition.Context)));
             choices.Items.Add(new ListBoxItem { Content = description, Tag = definition });
         }
-        panel.Children.Add(choices);
         var use = EditorControls.Button("Use", () =>
         {
             if ((choices.SelectedItem as ListBoxItem)?.Tag is not PresetBlock chosen) return;
@@ -715,7 +716,9 @@ public sealed class ValueEditorControl : UserControl
             dialog.DialogResult = true;
         });
         use.Visibility = Visibility.Collapsed; choices.SelectionChanged += (_, _) => use.Visibility = choices.SelectedItem is not null ? Visibility.Visible : Visibility.Collapsed;
-        EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false)); dialog.Content = panel; dialog.ShowDialog();
+        var footer = EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false));
+        DockPanel.SetDock(footer, Dock.Bottom); panel.Children.Add(choices);
+        dialog.Content = panel; dialog.ShowDialog();
     }
     private IEnumerable<PresetBlock> AvailableDefinitions()
     {

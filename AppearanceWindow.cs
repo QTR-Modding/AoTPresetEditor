@@ -9,6 +9,7 @@ public sealed class AppearanceWindow : Window
     private readonly AppearanceSettings original;
     private readonly ComboBox themes = new();
     private readonly ComboBox accents = new();
+    private readonly ComboBox scale = new();
     private readonly TextBlock status = EditorControls.Text("");
     private bool saved;
 
@@ -18,9 +19,14 @@ public sealed class AppearanceWindow : Window
         original = app.Appearance;
         Title = "Appearance";
         Width = 460; SizeToContent = SizeToContent.Height; ResizeMode = ResizeMode.NoResize;
+        MaxHeight = SystemParameters.WorkArea.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(StyleProperty, typeof(Window));
-        var panel = new StackPanel { Margin = new Thickness(22) };
+        var layout = new Grid { Margin = new Thickness(22) };
+        layout.RowDefinitions.Add(new RowDefinition());
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var panel = new StackPanel();
+        layout.Children.Add(new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         panel.Children.Add(EditorControls.Text("Appearance", true));
         panel.Children.Add(EditorControls.Text("Theme"));
         themes.ItemsSource = new[] { "Dark", "Light", "Follow Windows" };
@@ -32,23 +38,32 @@ public sealed class AppearanceWindow : Window
         accents.SelectedIndex = (int)original.Accent;
         accents.Margin = new Thickness(0, 0, 0, 16);
         panel.Children.Add(accents);
+        panel.Children.Add(EditorControls.Text("Interface scale"));
+        scale.ItemsSource = AppearanceSettings.ScaleChoices.Select(value => $"{value}%").ToArray();
+        scale.SelectedItem = $"{original.Scale}%";
+        scale.Margin = new Thickness(0, 0, 0, 8);
+        panel.Children.Add(scale);
+        panel.Children.Add(EditorControls.Text("Lower values fit more content. 100% uses your Windows display scale."));
         panel.Children.Add(EditorControls.Text("Changes preview immediately. Save keeps your choices for the next launch."));
         status.SetResourceReference(TextBlock.ForegroundProperty, "SystemFillColorCriticalBrush");
         panel.Children.Add(status);
         var save = EditorControls.Button("Save", Save);
         save.SetResourceReference(StyleProperty, "PrimaryButton");
-        EditorControls.Footer(panel, save, EditorControls.Button("Cancel", Close));
-        Content = panel;
+        var footer = EditorControls.Footer(layout, save, EditorControls.Button("Cancel", Close));
+        Grid.SetRow(footer, 1);
+        Content = layout;
         themes.SelectionChanged += (_, _) => Preview();
         accents.SelectionChanged += (_, _) => Preview();
+        scale.SelectionChanged += (_, _) => Preview();
         Closed += (_, _) => { if (!saved) app.ApplyAppearance(original); };
     }
 
-    private AppearanceSettings Selection => new((EditorTheme)themes.SelectedIndex, (EditorAccent)accents.SelectedIndex);
+    private AppearanceSettings Selection => new((EditorTheme)themes.SelectedIndex, (EditorAccent)accents.SelectedIndex,
+        AppearanceSettings.ScaleChoices[scale.SelectedIndex]);
 
     private void Preview()
     {
-        if (themes.SelectedIndex >= 0 && accents.SelectedIndex >= 0) app.ApplyAppearance(Selection);
+        if (themes.SelectedIndex >= 0 && accents.SelectedIndex >= 0 && scale.SelectedIndex >= 0) app.ApplyAppearance(Selection);
     }
 
     private void Save()
