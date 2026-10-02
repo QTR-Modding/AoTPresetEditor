@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace AoTPresetEditor;
@@ -10,15 +11,19 @@ namespace AoTPresetEditor;
 public sealed class PresetWorkspace : UserControl
 {
     public event Action? Opened;
+    public event Action? BrowseRequested;
     private static readonly string[] Categories = ["FOOD", "INGR", "MEDC", "POSN", "ARMO", "WEAP", "BOOK", "SCRL", "SLGM", "MISC"];
-    private static readonly (string Name, string Context)[] Contents =
+    private static readonly (string Name, string Context, string ListContext, string Example)[] Contents =
     [
-        ("Rule settings", "rule"), ("Stage", "Stage"), ("Stages", "Stages"),
-        ("Transformation", "Transformer"), ("Transformations", "Transformers"),
-        ("Time modifier", "TimeModulator"), ("Time modifiers", "TimeModulators"),
-        ("Magic effect", "MagicEffect"), ("Magic effects", "MagicEffects"), ("Single value", "Value"), ("List of values", "Values"),
-        ("Other settings", "Mapping")
+        ("Rule", "rule", "Rules", "For example, the items and behaviour used by several food rules."),
+        ("Stage", "Stage", "Stages", "For example, one stale stage, or a sequence from fresh to rotten."),
+        ("Transformation", "Transformer", "Transformers", "For example, one fire-triggered change, or several changes in priority order."),
+        ("Time modifier", "TimeModulator", "TimeModulators", "For example, one preservation trigger, or several modifiers in priority order."),
+        ("Magic effect", "MagicEffect", "MagicEffects", "For example, one restore-health effect, or a food item's set of effects."),
+        ("Value", "Value", "Values", "For example, a shared duration, form, or list of forms."),
+        ("Other settings", "Mapping", "Values", "A named collection of settings with custom keys.")
     ];
+    private static readonly string[] CategoryNames = ["Food", "Ingredients", "Medicine", "Poisons", "Armor", "Weapons", "Books", "Scrolls", "Soul gems", "Miscellaneous items"];
     private readonly TextBlock title = EditorControls.Text("Open or create a preset", true);
     private readonly TextBlock state = EditorControls.Text("Choose a file from the list, or create a new preset.");
     private readonly TextBlock location = EditorControls.Text("");
@@ -29,6 +34,16 @@ public sealed class PresetWorkspace : UserControl
     private readonly Button yaml;
     private readonly Button up;
     private readonly Button down;
+    private readonly Button draftSave;
+    private readonly ContentControl details = new();
+    private readonly StackPanel issueList = new();
+    private readonly Expander issues = new() { Header = "Review issues", MaxHeight = 150 };
+    private readonly DispatcherTimer editTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
+    private ValueEditorControl? editor;
+    private string? editingId;
+    private bool editorDirty;
+    private bool rendering;
+    private PresetPresentation? presentation;
     private PresetDocument? document;
     private PresetValidationResult? validation;
     private IReadOnlyList<FormRow> forms = [];
@@ -37,6 +52,7 @@ public sealed class PresetWorkspace : UserControl
     private string? exportRoot;
     private string? openedPath;
     private string? openedHash;
+    private string? draftPath;
     private bool dirty;
     private CancellationTokenSource? checking;
     private Window Host => Window.GetWindow(this);
@@ -48,9 +64,12 @@ public sealed class PresetWorkspace : UserControl
         var toolbar = new WrapPanel { Margin = new Thickness(0, 0, 0, 18) };
         toolbar.Children.Add(EditorControls.Button("New preset...", New));
         toolbar.Children.Add(EditorControls.Button("Open file...", OpenFile));
+        toolbar.Children.Add(EditorControls.Button("Installed presets", () => BrowseRequested?.Invoke()));
+        draftSave = EditorControls.Button("Save draft...", () => SaveDraft());
         save = EditorControls.Button("Save to mod...", Save);
         yaml = EditorControls.Button("View YAML...", ShowYaml);
-        toolbar.Children.Add(save); toolbar.Children.Add(yaml);
+        toolbar.Children.Add(draftSave); toolbar.Children.Add(save); toolbar.Children.Add(yaml);
+        save.SetResourceReference(StyleProperty, "PrimaryButton");
         header.Children.Add(toolbar); header.Children.Add(title); header.Children.Add(location); header.Children.Add(state);
         addActions.Children.Add(EditorControls.Button("Add rule", () => Add(BlockKind.Rule)));
         addActions.Children.Add(EditorControls.Button("Add shared settings", () => Add(BlockKind.Shared)));
@@ -58,29 +77,74 @@ public sealed class PresetWorkspace : UserControl
         header.Children.Add(addActions);
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
         var actions = new WrapPanel();
-        var edit = EditorControls.Button("Open block...", Edit);
         var remove = EditorControls.Button("Delete block", Remove);
         up = EditorControls.Button("Move up", () => Move(-1));
         down = EditorControls.Button("Move down", () => Move(1));
-        actions.Children.Add(edit); actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
+        actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
         blockActions.Children.Add(actions);
-        var help = EditorControls.Text("Open a block to edit its fields. Rule order controls priority; shared settings and templates keep their own definitions.");
+        var help = EditorControls.Text("Select a rule to edit it. Earlier rules take priority. Shared settings and templates can be used by several rules.");
         help.Margin = new Thickness(0, 14, 0, 0); help.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); blockActions.Children.Add(help);
-        DockPanel.SetDock(blockActions, Dock.Bottom); layout.Children.Add(blockActions);
-        blocks.SelectionChanged += (_, _) => UpdateActions();
-        blocks.MouseDoubleClick += (_, _) => Edit();
-        layout.Children.Add(blocks); Content = layout;
+        issues.Content = new ScrollViewer { Content = issueList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        DockPanel.SetDock(issues, Dock.Bottom); layout.Children.Add(issues);
+        var columns = new Grid();
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310), MinWidth = 230 });
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(10) });
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 400 });
+        var left = new DockPanel();
+        DockPanel.SetDock(blockActions, Dock.Bottom); left.Children.Add(blockActions); left.Children.Add(blocks);
+        columns.Children.Add(left);
+        var splitter = new GridSplitter { Width = 5, HorizontalAlignment = HorizontalAlignment.Center };
+        splitter.SetResourceReference(BackgroundProperty, "DividerStrokeColorDefaultBrush");
+        Grid.SetColumn(splitter, 1); columns.Children.Add(splitter);
+        details.Margin = new Thickness(12, 8, 0, 0);
+        var editorScroll = new ScrollViewer { Content = details, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        Grid.SetColumn(editorScroll, 2); columns.Children.Add(editorScroll);
+        blocks.SelectionChanged += (_, _) => { if (!rendering) SelectBlock(); };
+        editTimer.Tick += async (_, _) => { editTimer.Stop(); if (CommitEditor()) await Refresh(SelectedId); };
+        Unloaded += (_, _) => { editTimer.Stop(); checking?.Cancel(); };
+        layout.Children.Add(columns); Content = layout;
+        ShowWelcome();
         UpdateActions();
     }
 
-    public void SetCatalog(IReadOnlyList<FormRow> catalog, IReadOnlyList<FormGroupDefinition> formGroups)
+    private string? SelectedId => (blocks.SelectedItem as ListBoxItem)?.Tag as string;
+
+    private void ShowWelcome()
+    {
+        var welcome = new StackPanel { Margin = new Thickness(15) };
+        welcome.Children.Add(EditorControls.Text("Build a preset", true));
+        welcome.Children.Add(EditorControls.Text("Start with a rule: choose the items it affects, then define how they change."));
+        welcome.Children.Add(EditorControls.Text("Shared settings reuse the same values. Templates reuse a structure with values you supply for each use."));
+        details.Content = welcome;
+    }
+
+    public async void SetCatalog(IReadOnlyList<FormRow> catalog, IReadOnlyList<FormGroupDefinition> formGroups)
     {
         forms = catalog;
         groups = formGroups;
+        presentation = null;
+        if (document is not null && CommitEditor())
+        {
+            var selected = SelectedId;
+            ResetEditor();
+            await Refresh(selected);
+        }
     }
 
-    public bool CanLeave() => !dirty || MessageBox.Show(Host, "Discard unsaved changes to this preset?", "Unsaved preset",
-        MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK;
+    public bool CanLeave()
+    {
+        if (!dirty) return true;
+        var dialog = new Window { Owner = Host, Title = "Unsaved changes", Width = 530, SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        var panel = new StackPanel { Margin = new Thickness(22) };
+        panel.Children.Add(EditorControls.Text("Save your work before leaving?", true));
+        panel.Children.Add(EditorControls.Text("A draft keeps unfinished settings and new form groups. It does not change your installed preset."));
+        EditorControls.Footer(panel, EditorControls.Button("Save draft...", () => { if (SaveDraft()) dialog.DialogResult = true; }),
+            EditorControls.Button("Discard", () => dialog.DialogResult = true), EditorControls.Button("Cancel", () => dialog.DialogResult = false));
+        dialog.Content = panel;
+        return dialog.ShowDialog() == true;
+    }
 
     public async Task<bool> Open(PresetFile file)
     {
@@ -97,9 +161,10 @@ public sealed class PresetWorkspace : UserControl
             }
             var source = await File.ReadAllTextAsync(file.FullPath);
             var parsed = PresetDocument.Parse(source, category, kind);
+            ResetEditor();
             document = parsed; filename = Path.GetFileNameWithoutExtension(file.FullPath);
             openedPath = file.FullPath; openedHash = Hash(Encoding.UTF8.GetBytes(source));
-            exportRoot = null; dirty = false;
+            exportRoot = null; draftPath = null; dirty = false;
             location.Text = "Opened from: " + file.FullPath;
             Opened?.Invoke();
             await Refresh();
@@ -110,8 +175,22 @@ public sealed class PresetWorkspace : UserControl
 
     private async void OpenFile()
     {
-        var picker = new OpenFileDialog { Title = "Open AoT preset", Filter = "YAML preset (*.yml;*.yaml)|*.yml;*.yaml" };
+        var picker = new OpenFileDialog { Title = "Open AoT preset or draft", Filter = "Presets and drafts|*.yml;*.yaml;*.aotdraft|YAML presets|*.yml;*.yaml|Editor drafts|*.aotdraft" };
         if (picker.ShowDialog(Host) != true) return;
+        if (Path.GetExtension(picker.FileName).Equals(".aotdraft", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!CanLeave()) return;
+            try
+            {
+                var parsed = PresetDocument.FromDraft(await File.ReadAllTextAsync(picker.FileName));
+                ResetEditor(); document = parsed; filename = Path.GetFileNameWithoutExtension(picker.FileName);
+                draftPath = picker.FileName; openedPath = null; openedHash = null; exportRoot = null; dirty = false;
+                location.Text = "Draft: " + draftPath;
+                Opened?.Invoke(); await Refresh();
+            }
+            catch (Exception error) { MessageBox.Show(Host, error.Message, "Cannot open draft", MessageBoxButton.OK, MessageBoxImage.Error); }
+            return;
+        }
         var relative = picker.FileName;
         var marker = "AlchemyOfTime" + Path.DirectorySeparatorChar;
         var start = relative.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
@@ -124,10 +203,10 @@ public sealed class PresetWorkspace : UserControl
         if (!CanLeave()) return;
         var options = ChoosePreset("New preset", "New preset", "FOOD", PresetKind.Custom);
         if (options is null) return;
-        filename = options.Value.Name;
+        ResetEditor(); filename = options.Value.Name;
         document = PresetDocument.Create(options.Value.Category, options.Value.Kind);
         openedPath = null; openedHash = null;
-        exportRoot = null; dirty = true;
+        exportRoot = null; draftPath = null; dirty = true;
         location.Text = "Not saved";
         Opened?.Invoke();
         await Refresh();
@@ -138,10 +217,18 @@ public sealed class PresetWorkspace : UserControl
         var dialog = new Window { Title = dialogTitle, Owner = Host, Width = 500, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(22) };
         panel.Children.Add(EditorControls.Text("Preset name")); var name = new TextBox { Text = initialName }; panel.Children.Add(name);
-        panel.Children.Add(EditorControls.Text("Item type")); var types = new ComboBox { ItemsSource = Categories, SelectedItem = Categories.Contains(category) ? category : "FOOD" }; panel.Children.Add(types);
+        panel.Children.Add(EditorControls.Text("Item type"));
+        var types = new ComboBox { ItemsSource = CategoryNames, SelectedIndex = Math.Max(0, Array.IndexOf(Categories, category)) }; panel.Children.Add(types);
         panel.Children.Add(EditorControls.Text("Preset kind"));
         var kinds = new ComboBox { ItemsSource = new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon }, SelectedItem = kind == PresetKind.Other ? PresetKind.Custom : kind }; panel.Children.Add(kinds);
-        panel.Children.Add(EditorControls.Text("Default supplies a module's fallback rule. Custom defines rules for selected items. Addon adds triggers and filters to items covered by source rules."));
+        var kindHelp = EditorControls.Text(""); panel.Children.Add(kindHelp);
+        void ExplainKind() => kindHelp.Text = (PresetKind)kinds.SelectedItem switch
+        {
+            PresetKind.Default => "The fallback rule for this item type. Items with a custom rule use that rule instead.",
+            PresetKind.Custom => "Rules for items you choose. Define their stages and what they become.",
+            _ => "Add transformations, time modifiers, or filters to selected items. AoT uses their custom or default source rule."
+        };
+        kinds.SelectionChanged += (_, _) => ExplainKind(); ExplainKind();
         var error = EditorControls.Text(""); panel.Children.Add(error);
         EditorControls.Footer(panel, EditorControls.Button("Continue", () =>
         {
@@ -149,17 +236,24 @@ public sealed class PresetWorkspace : UserControl
             dialog.DialogResult = true;
         }), EditorControls.Button("Cancel", () => dialog.DialogResult = false));
         dialog.Content = panel;
-        return dialog.ShowDialog() == true ? (name.Text.Trim(), (string)types.SelectedItem, (PresetKind)kinds.SelectedItem) : null;
+        return dialog.ShowDialog() == true ? (name.Text.Trim(), Categories[types.SelectedIndex], (PresetKind)kinds.SelectedItem) : null;
     }
 
     private async void Add(BlockKind kind)
     {
-        if (document is null) return;
+        if (document is null || !CommitEditor()) return;
         var dialog = new Window { Owner = Host, Title = "Add " + KindLabel(kind), Width = 490, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(22) };
         panel.Children.Add(EditorControls.Text("Name")); var name = new TextBox(); panel.Children.Add(name);
-        var type = new ComboBox { ItemsSource = Contents.Select(choice => choice.Name), SelectedIndex = kind == BlockKind.Shared ? 3 : 0 };
-        if (kind != BlockKind.Rule) { panel.Children.Add(EditorControls.Text("Contents")); panel.Children.Add(type); }
+        var type = new ComboBox { ItemsSource = Contents.Select(choice => choice.Name), SelectedIndex = kind == BlockKind.Shared ? 2 : 0 };
+        var shape = new ComboBox { ItemsSource = new[] { "One entry", "A list" }, SelectedIndex = 0 };
+        var example = EditorControls.Text(Contents[type.SelectedIndex].Example);
+        if (kind != BlockKind.Rule)
+        {
+            panel.Children.Add(EditorControls.Text("What will this contain?")); panel.Children.Add(type);
+            panel.Children.Add(shape); panel.Children.Add(example);
+            type.SelectionChanged += (_, _) => example.Text = Contents[type.SelectedIndex].Example;
+        }
         var error = EditorControls.Text(""); panel.Children.Add(error);
         EditorControls.Footer(panel, EditorControls.Button("Create", () =>
         {
@@ -168,55 +262,89 @@ public sealed class PresetWorkspace : UserControl
         }), EditorControls.Button("Cancel", () => dialog.DialogResult = false));
         dialog.Content = panel;
         if (dialog.ShowDialog() != true) return;
-        var context = kind == BlockKind.Rule ? PresetDocument.RuleContext(document.Kind) : Contents[type.SelectedIndex].Context;
+        ResetEditor();
+        var choice = Contents[type.SelectedIndex];
+        var context = kind == BlockKind.Rule ? PresetDocument.RuleContext(document.Kind) : shape.SelectedIndex == 1 ? choice.ListContext : choice.Context;
         var added = document.Add(kind, name.Text.Trim(), context);
         var anchor = added.Value.Anchor;
         added.Value = ValueEditorWindow.NewValue(context);
         added.Value.Anchor = anchor;
         dirty = true;
         await Refresh(added.Id);
-        Edit();
     }
 
-    private async void Edit()
+    private void ResetEditor()
     {
-        if (document is null || blocks.SelectedItem is not ListBoxItem { Tag: string id }) return;
+        editTimer.Stop(); checking?.Cancel();
+        editor = null; editingId = null; editorDirty = false;
+        validation = null; details.Content = null;
+    }
+
+    private async void SelectBlock()
+    {
+        var id = SelectedId;
+        if (id == editingId) return;
+        var needsValidation = editorDirty;
+        if (!CommitEditor()) { RenderBlocks(editingId); return; }
+        if (document is null || id is null) { editor = null; editingId = null; ShowWelcome(); UpdateActions(); return; }
         var draft = document.Clone();
         var block = draft.Blocks.First(entry => entry.Id == id);
-        if (block.Kind == BlockKind.Shared && block.Value.Anchor.Length == 0) block.Value.Anchor = block.Key;
-        var editor = new ValueEditorWindow(draft, forms, block.Value, block.Context, KindLabel(block.Kind),
+        editor = new ValueEditorControl(draft, forms, block.Value, block.Context, KindLabel(block.Kind),
             block.Kind == BlockKind.Template, blockName: block.Name,
-            issues: validation?.Errors.GetValueOrDefault(block.Id), groups: groups) { Owner = Host };
-        if (editor.ShowDialog() != true) return;
+            issues: validation?.Errors.GetValueOrDefault(block.Id), groups: groups);
+        editingId = id; editorDirty = false;
+        editor.Changed += EditorChanged;
+        details.Content = editor;
+        if (presentation is not null) editor.UpdatePresentation(presentation, presentation.EffectiveValue(document.Blocks.First(entry => entry.Id == id)));
+        UpdateActions();
+        if (needsValidation) await Refresh(id);
+    }
+
+    private void EditorChanged(object? sender, EventArgs e)
+    {
+        if (!ReferenceEquals(sender, editor)) return;
+        editorDirty = true; dirty = true; validation = null; checking?.Cancel();
+        title.Text = filename + " *"; state.Text = "Unsaved changes · Checking after edit...";
+        UpdateActions(); editTimer.Stop(); editTimer.Start();
+    }
+
+    private bool CommitEditor()
+    {
+        editTimer.Stop();
+        if (!editorDirty || editor is null || editingId is null) return true;
+        editor.Capture();
         var updated = editor.Document;
         var previous = updated.Clone();
-        block = updated.Blocks.First(entry => entry.Id == id);
-        block.Name = editor.BlockName; block.Value = editor.Value;
+        var block = updated.Blocks.First(entry => entry.Id == editingId);
+        block.Name = editor.BlockName; block.Value = editor.Value.Clone();
         try { updated.RebindTemplateCalls(previous); }
         catch (Exception error)
         {
             MessageBox.Show(Host, error.Message, "Cannot apply template changes", MessageBoxButton.OK, MessageBoxImage.Error);
-            return;
+            return false;
         }
         document = updated;
-        dirty = true;
-        await Refresh(id);
+        editorDirty = false; dirty = true;
+        return true;
     }
 
     private async void Remove()
     {
-        if (document is null || blocks.SelectedItem is not ListBoxItem { Tag: string id }) return;
+        if (document is null || !CommitEditor() || blocks.SelectedItem is not ListBoxItem { Tag: string id }) return;
         var block = document.Blocks.First(entry => entry.Id == id);
         if (MessageBox.Show(Host, $"Delete '{block.Name}'? Uses of this block will need a replacement.", "Delete block", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
-        document.Remove(block); dirty = true; await Refresh();
+        ResetEditor(); document.Remove(block); dirty = true; await Refresh();
     }
 
     private async void Move(int direction)
     {
-        if (document is null || blocks.SelectedItem is not ListBoxItem { Tag: string id }) return;
+        if (document is null || !CommitEditor() || blocks.SelectedItem is not ListBoxItem { Tag: string id }) return;
         var index = document.Blocks.FindIndex(entry => entry.Id == id);
-        if (index + direction < 0 || index + direction >= document.Blocks.Count) return;
-        (document.Blocks[index], document.Blocks[index + direction]) = (document.Blocks[index + direction], document.Blocks[index]);
+        var next = index + direction;
+        while (next >= 0 && next < document.Blocks.Count && document.Blocks[next].Kind != document.Blocks[index].Kind) next += direction;
+        if (next < 0 || next >= document.Blocks.Count) return;
+        ResetEditor();
+        (document.Blocks[index], document.Blocks[next]) = (document.Blocks[next], document.Blocks[index]);
         dirty = true; await Refresh(id);
     }
 
@@ -227,41 +355,101 @@ public sealed class PresetWorkspace : UserControl
         validation = null;
         title.Text = filename + (dirty ? " *" : "");
         state.Text = document.Category + " / " + document.Kind + " - Checking preset...";
+        UpdatePresentation();
         RenderBlocks(selection); UpdateActions();
+        SelectBlock();
         using var request = new CancellationTokenSource(); checking = request;
         try
         {
             var result = await PresetValidation.Check(document.Clone(), request.Token);
             request.Token.ThrowIfCancellationRequested();
             validation = result;
+            UpdatePresentation(result.Expanded);
             var errorCount = result.FileErrors.Count + result.Errors.Values.Sum(errors => errors.Count);
-            state.Text = document.Category + " / " + document.Kind + (result.IsValid ? " - \u2713 Preset structure valid" : $" - \u2717 {errorCount} issues to resolve");
-            if (result.FileErrors.Count > 0) state.Text += Environment.NewLine + string.Join(Environment.NewLine, result.FileErrors);
-            state.ToolTip = "Checks AoT fields, YAML templates and shared settings. Trigger behavior and form availability still depend on the installed game configuration.";
-            var selectedNow = (blocks.SelectedItem as ListBoxItem)?.Tag as string;
+            state.Text = document.Category + " / " + document.Kind + (result.IsValid ? " · ✓ Ready to save to a mod" : $" · {errorCount} details to complete or fix") + (dirty ? " · Unsaved changes" : "");
+            state.ToolTip = "Checks fields, templates and shared settings. Test the exported preset in game to verify its behaviour.";
+            var selectedNow = SelectedId;
             RenderBlocks(selectedNow); UpdateActions();
+            RenderIssues();
+            if (editor is not null && editingId is not null && presentation is not null)
+            {
+                var block = document.Blocks.First(entry => entry.Id == editingId);
+                editor.UpdatePresentation(presentation, presentation.EffectiveValue(block));
+            }
         }
         catch (OperationCanceledException) { }
         finally { if (ReferenceEquals(checking, request)) checking = null; }
     }
 
+    private void UpdatePresentation(string? expanded = null)
+    {
+        if (document is null) return;
+        if (presentation is null) presentation = new PresetPresentation(document, forms, groups, expanded);
+        else presentation.Update(document, expanded);
+    }
+
+    private void RenderIssues()
+    {
+        issueList.Children.Clear();
+        if (validation is null || document is null) return;
+        foreach (var error in validation.FileErrors) issueList.Children.Add(EditorControls.Text(error));
+        foreach (var block in document.Blocks)
+            foreach (var error in validation.Errors.GetValueOrDefault(block.Id) ?? [])
+            {
+                var button = EditorControls.Button(block.Name + ": " + error, () =>
+                {
+                    var item = blocks.Items.OfType<ListBoxItem>().FirstOrDefault(item => Equals(item.Tag, block.Id));
+                    blocks.SelectedItem = item;
+                    editor?.FocusIssue(error);
+                });
+                button.HorizontalAlignment = HorizontalAlignment.Left;
+                issueList.Children.Add(button);
+            }
+        issues.Header = $"Review issues ({issueList.Children.Count})";
+        issues.Visibility = issueList.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private void RenderBlocks(string? selected)
     {
-        blocks.Items.Clear();
-        if (document is null) return;
-        foreach (var block in document.Blocks)
+        rendering = true;
+        try
         {
-            var errors = validation?.Errors.GetValueOrDefault(block.Id) ?? [];
-            var status = validation is null ? "\u2022" : errors.Count > 0 || validation.FileErrors.Count > 0 ? "\u2717" : "\u2713";
-            var row = new DockPanel { Margin = new Thickness(12), MinHeight = 44 };
-            var mark = EditorControls.Text(status); mark.FontSize = 22; mark.Width = 36; DockPanel.SetDock(mark, Dock.Left); row.Children.Add(mark);
-            var kind = EditorControls.Text(KindLabel(block.Kind)); kind.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); DockPanel.SetDock(kind, Dock.Right); row.Children.Add(kind);
-            row.Children.Add(EditorControls.Text(block.Name));
-            var item = new ListBoxItem { Content = row, Tag = block.Id, HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                ToolTip = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : "Open to edit" };
-            blocks.Items.Add(item);
-            if (block.Id == selected) blocks.SelectedItem = item;
+            blocks.Items.Clear();
+            if (document is null) return;
+            foreach (var kind in new[] { BlockKind.Rule, BlockKind.Shared, BlockKind.Template })
+            {
+                var entries = document.Blocks.Where(block => block.Kind == kind).ToArray();
+                if (entries.Length == 0) continue;
+                var heading = EditorControls.Text((kind == BlockKind.Rule ? "Rules" : kind == BlockKind.Template ? "Templates" : "Shared settings") + $" ({entries.Length})");
+                heading.FontWeight = FontWeights.SemiBold;
+                blocks.Items.Add(new ListBoxItem { Content = heading, IsHitTestVisible = false, Focusable = false, Margin = new Thickness(0, 12, 0, 0) });
+                foreach (var block in entries)
+                {
+                    var errors = validation?.Errors.GetValueOrDefault(block.Id) ?? [];
+                    var incomplete = errors.Count > 0 && errors.All(error => error.Contains("required", StringComparison.OrdinalIgnoreCase) || error.Contains("unset", StringComparison.OrdinalIgnoreCase));
+                    var status = validation is null ? "•" : errors.Count > 0 ? incomplete ? "○" : "!" : validation.FileErrors.Count > 0 ? "•" : "✓";
+                    var row = new DockPanel { Margin = new Thickness(6, 8, 6, 8), MinHeight = 44 };
+                    var mark = EditorControls.Text(status); mark.FontSize = 20; mark.Width = 27; DockPanel.SetDock(mark, Dock.Left); row.Children.Add(mark);
+                    var text = new StackPanel();
+                    var name = EditorControls.Text(block.Name); name.FontWeight = FontWeights.SemiBold; text.Children.Add(name);
+                    var description = presentation?.RuleSummary(block) ?? "";
+                    if (block.Kind != BlockKind.Rule && presentation is not null)
+                    {
+                        var uses = presentation.Uses(block);
+                        description += Environment.NewLine + (uses.Count == 0 ? "No uses yet" : "Used by " + string.Join(", ", uses.Take(3).Select(use => use.Name)) + (uses.Count > 3 ? $" +{uses.Count - 3}" : ""));
+                    }
+                    var summary = EditorControls.Text(description);
+                    summary.FontSize = 12; summary.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); text.Children.Add(summary);
+                    row.Children.Add(text);
+                    var item = new ListBoxItem { Content = row, Tag = block.Id, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                        ToolTip = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : "Select to edit these settings" };
+                    blocks.Items.Add(item);
+                    if (block.Id == selected) blocks.SelectedItem = item;
+                }
+            }
+            if (blocks.SelectedItem is null) blocks.SelectedItem = blocks.Items.OfType<ListBoxItem>().FirstOrDefault(item => item.Tag is string);
         }
+        finally { rendering = false; }
     }
 
     private void UpdateActions()
@@ -272,22 +460,37 @@ public sealed class PresetWorkspace : UserControl
             (document.Kind != PresetKind.Default || !document.Blocks.Any(block => block.Kind == BlockKind.Rule));
         ((Button)addActions.Children[0]).Visibility = canAddRule ? Visibility.Visible : Visibility.Collapsed;
         save.Visibility = yaml.Visibility = validation?.IsValid == true ? Visibility.Visible : Visibility.Collapsed;
-        var selectedIndex = blocks.SelectedIndex;
-        blockActions.Visibility = selectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
+        draftSave.Visibility = document is not null ? Visibility.Visible : Visibility.Collapsed;
+        var selected = document?.Blocks.FirstOrDefault(block => block.Id == SelectedId);
+        var siblings = document?.Blocks.Where(block => block.Kind == selected?.Kind).ToArray() ?? [];
+        var selectedIndex = Array.IndexOf(siblings, selected);
+        blockActions.Visibility = selected is not null ? Visibility.Visible : Visibility.Collapsed;
         up.Visibility = selectedIndex > 0 ? Visibility.Visible : Visibility.Collapsed;
-        down.Visibility = selectedIndex >= 0 && selectedIndex < blocks.Items.Count - 1 ? Visibility.Visible : Visibility.Collapsed;
+        down.Visibility = selectedIndex >= 0 && selectedIndex < siblings.Length - 1 ? Visibility.Visible : Visibility.Collapsed;
+        if (validation is null) issues.Visibility = Visibility.Collapsed;
     }
 
     private void ShowYaml()
     {
         if (validation?.IsValid != true) return;
-        var window = new Window { Owner = Host, Title = filename + " - YAML", Width = 1100, Height = 800, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        var tabs = new TabControl();
-        foreach (var (label, text) in new[] { ("Preset", validation.Source), ("Expanded rules", validation.Expanded) })
-            tabs.Items.Add(new TabItem { Header = label, Content = new TextBox { Text = text, IsReadOnly = true, AcceptsReturn = true,
-                FontFamily = new System.Windows.Media.FontFamily("Consolas"), FontSize = 13, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top } });
-        window.Content = tabs; window.ShowDialog();
+        new YamlPreviewWindow(filename, validation.Source, validation.Expanded) { Owner = Host }.ShowDialog();
+    }
+
+    private bool SaveDraft()
+    {
+        if (document is null || !CommitEditor()) return false;
+        var picker = new SaveFileDialog { Title = "Save editor draft", Filter = "AoT editor draft (*.aotdraft)|*.aotdraft",
+            DefaultExt = ".aotdraft", FileName = draftPath ?? filename + ".aotdraft", AddExtension = true };
+        if (picker.ShowDialog(Host) != true) return false;
+        try
+        {
+            PresetExport.Save(picker.FileName, document.ToDraft(), [], Path.GetDirectoryName(picker.FileName)!);
+            draftPath = picker.FileName; dirty = false; title.Text = filename;
+            location.Text = "Draft saved: " + draftPath + " · Installed preset unchanged";
+            _ = Refresh(SelectedId);
+            return true;
+        }
+        catch (Exception error) { MessageBox.Show(Host, error.Message, "Cannot save draft", MessageBoxButton.OK, MessageBoxImage.Error); return false; }
     }
 
     private void Save()
@@ -319,6 +522,7 @@ public sealed class PresetWorkspace : UserControl
             openedPath = path; openedHash = Hash(Encoding.UTF8.GetBytes(validation.Source));
             location.Text = "Saved to: " + path;
             title.Text = filename;
+            state.Text = document.Category + " / " + document.Kind + " · ✓ Saved to mod";
         }
         catch (Exception error) { MessageBox.Show(Host, error.Message, "Cannot save preset", MessageBoxButton.OK, MessageBoxImage.Error); }
     }

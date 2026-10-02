@@ -23,6 +23,7 @@ public sealed class PresetValue
     public List<PresetValue> Items { get; } = [];
     public List<string> Comments { get; } = [];
     public List<string> TrailingComments { get; } = [];
+    public string InlineComment { get; set; } = "";
     public bool IsNull => Kind == ValueKind.Scalar && (Tag == "tag:yaml.org,2002:null" ||
         (Style == ScalarStyle.Plain && Tag.Length == 0 && (Text.Length == 0 || Text is "~" or "null" or "Null" or "NULL")));
 
@@ -35,7 +36,7 @@ public sealed class PresetValue
     public bool Remove(string key) => Fields.Remove(key);
     public PresetValue Clone()
     {
-        var clone = new PresetValue { Kind = Kind, Text = Text, Anchor = Anchor, Tag = Tag, Style = Style, Flow = Flow };
+        var clone = new PresetValue { Kind = Kind, Text = Text, Anchor = Anchor, Tag = Tag, Style = Style, Flow = Flow, InlineComment = InlineComment };
         foreach (var field in Fields) clone.Fields.Add(field.Key, field.Value.Clone());
         clone.Items.AddRange(Items.Select(item => item.Clone()));
         clone.Comments.AddRange(Comments);
@@ -302,6 +303,33 @@ public sealed class PresetDocument
         clone.ruleTrailingComments = [.. ruleTrailingComments];
         clone.templateTrailingComments = [.. templateTrailingComments];
         return clone;
+    }
+
+    private sealed record DraftData(int Version, PresetDocument Document, List<string> RuleComments,
+        List<string> TemplateComments, List<string> RuleTrailingComments, List<string> TemplateTrailingComments);
+    private static readonly JsonSerializerOptions DraftOptions = new()
+    {
+        PreferredObjectCreationHandling = System.Text.Json.Serialization.JsonObjectCreationHandling.Populate,
+        WriteIndented = true,
+        MaxDepth = 256
+    };
+    private const int DraftVersion = 1;
+
+    public string ToDraft() => JsonSerializer.Serialize(new DraftData(DraftVersion, this, ruleComments,
+        templateComments, ruleTrailingComments, templateTrailingComments), DraftOptions);
+
+    public static PresetDocument FromDraft(string source)
+    {
+        var draft = JsonSerializer.Deserialize<DraftData>(source, DraftOptions)
+            ?? throw new InvalidDataException("The draft is empty.");
+        if (draft.Version != DraftVersion || draft.Document is null)
+            throw new InvalidDataException("This draft version is not supported.");
+        var document = draft.Document;
+        document.ruleComments = draft.RuleComments ?? [];
+        document.templateComments = draft.TemplateComments ?? [];
+        document.ruleTrailingComments = draft.RuleTrailingComments ?? [];
+        document.templateTrailingComments = draft.TemplateTrailingComments ?? [];
+        return document;
     }
     public void RebindTemplateCalls(PresetDocument previous)
     {

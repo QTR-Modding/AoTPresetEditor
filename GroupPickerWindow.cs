@@ -20,17 +20,17 @@ public sealed class GroupPickerWindow : Window
     public FormGroupDefinition? SelectedGroup { get; private set; }
     public IReadOnlyList<FormGroupDefinition> CreatedGroups { get; private set; } = [];
 
-    public GroupPickerWindow(IReadOnlyList<FormGroupDefinition> groups, IReadOnlyList<FormRow> forms, FormSelection? constraint = null)
+    public GroupPickerWindow(IReadOnlyList<FormGroupDefinition> groups, IReadOnlyList<FormRow> forms, FormSelection? constraint = null, string? purpose = null)
     {
         this.groups = [.. groups];
         this.forms = forms;
         this.constraint = constraint;
-        Title = "Choose a form group"; Width = 1080; Height = 660; MinWidth = 780; MinHeight = 450;
+        Title = purpose ?? "Choose a form group"; Width = 1080; Height = 660; MinWidth = 780; MinHeight = 450;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(StyleProperty, typeof(Window));
         var layout = new DockPanel { Margin = new Thickness(22) };
         var heading = new StackPanel();
-        heading.Children.Add(EditorControls.Text("Form groups", true));
+        heading.Children.Add(EditorControls.Text(purpose ?? "Form groups", true));
         heading.Children.Add(EditorControls.Text("Choose an existing group, or create a reusable list of forms."));
         DockPanel.SetDock(heading, Dock.Top); layout.Children.Add(heading);
         var footer = new StackPanel();
@@ -82,7 +82,8 @@ public sealed class GroupPickerWindow : Window
         description.Text = constraint is null
             ? $"{group.Members.Count} members; {resolved} matched in the loaded catalog."
             : $"{group.Members.Count} members; {applicable} known members applicable to this field.";
-        if (resolved != rows.Count) description.Text += " Unmatched identifiers are preserved.";
+        if (resolved != rows.Count) description.Text += $" {rows.Count - resolved} not found in this profile; their identifiers are kept.";
+        if (resolved != applicable) description.Text += $" {resolved - applicable} cannot be used for this field.";
         source.Text = group.SourcePath ?? "New group - saved with this preset.";
     }
 
@@ -104,20 +105,22 @@ public sealed class GroupPickerWindow : Window
         public string Name => Form?.Name is { Length: > 0 } name ? name : Form?.EditorId ?? "";
         public string Type => Form?.Type ?? "";
         public string Plugin => Form?.Plugin ?? "";
+        public string Status => Form is null ? "Not found" : Applicable ? "Available" : "Not applicable";
     }
 
     internal static IReadOnlyList<MemberRow> MemberRows(IReadOnlyList<string> identifiers, IReadOnlyList<FormRow> forms, FormSelection? constraint)
     {
-        var requested = identifiers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var requested = identifiers.Concat(identifiers.Select(PresetPresentation.NormalizeIdentifier)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var matched = new Dictionary<string, FormRow>(StringComparer.OrdinalIgnoreCase);
         foreach (var form in forms)
         {
-            if (requested.Contains(form.Identifier)) matched.TryAdd(form.Identifier, form);
+            var identifier = PresetPresentation.NormalizeIdentifier(form.Identifier);
+            if (requested.Contains(identifier)) matched.TryAdd(identifier, form);
             if (form.EditorId.Length != 0 && requested.Contains(form.EditorId)) matched.TryAdd(form.EditorId, form);
         }
         return identifiers.Select(identifier =>
         {
-            var form = matched.GetValueOrDefault(identifier);
+            var form = matched.GetValueOrDefault(PresetPresentation.NormalizeIdentifier(identifier)) ?? matched.GetValueOrDefault(identifier);
             return new MemberRow(identifier, form, form is not null && (constraint?.Matches(form) ?? true));
         }).ToArray();
     }
@@ -132,7 +135,7 @@ public sealed class GroupPickerWindow : Window
         };
         foreach (var (title, property, width) in new[]
         {
-            ("Name", nameof(MemberRow.Name), 180d), ("Identifier", nameof(MemberRow.Identifier), 240d),
+            ("Status", nameof(MemberRow.Status), 125d), ("Name", nameof(MemberRow.Name), 180d), ("Identifier", nameof(MemberRow.Identifier), 240d),
             ("Type", nameof(MemberRow.Type), 105d), ("Plugin", nameof(MemberRow.Plugin), 170d)
         }) grid.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(property), Width = width });
         return grid;
@@ -179,7 +182,7 @@ public sealed class GroupEditorWindow : Window
 
     private void AddForms()
     {
-        var picker = new FormPickerWindow(forms, multiple: true, selection: constraint) { Owner = this };
+        var picker = new FormPickerWindow(forms, multiple: true, selection: constraint, purpose: "Choose group members") { Owner = this };
         if (picker.ShowDialog() != true) return;
         foreach (var form in picker.SelectedForms)
             if (!identifiers.Contains(form.Identifier, StringComparer.OrdinalIgnoreCase)) identifiers.Add(form.Identifier);

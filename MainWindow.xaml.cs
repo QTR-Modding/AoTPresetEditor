@@ -20,7 +20,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Closing += (_, e) => e.Cancel = !Workspace.CanLeave();
-        Workspace.Opened += () => { PresetList.SelectedItem = null; selectedPreset = null; };
+        Workspace.Opened += () => { PresetList.SelectedItem = null; selectedPreset = null; PresetBrowser.IsExpanded = false; };
+        Workspace.BrowseRequested += () => PresetBrowser.IsExpanded = !PresetBrowser.IsExpanded;
         if (dataFolder is not null)
         {
             DataPath.Text = dataFolder;

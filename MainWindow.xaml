@@ -19,19 +19,22 @@
   </DockPanel>
   <TabControl Grid.Row="2">
    <TabItem Header="Presets">
-    <Grid Margin="16">
-     <Grid.ColumnDefinitions><ColumnDefinition Width="270" MinWidth="180"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-     <DockPanel>
-      <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
-       <TextBlock Text="Preset type" Margin="0,0,0,5"/>
-       <ComboBox x:Name="PresetCategories" SelectionChanged="PresetFilter_Changed" AutomationProperties.Name="Preset type"/>
-       <TextBlock Text="Preset kind" Margin="0,10,0,5"/>
-       <ComboBox x:Name="PresetKinds" SelectionChanged="PresetFilter_Changed" AutomationProperties.Name="Preset kind"/>
-      </StackPanel>
-      <TextBox x:Name="PresetSearch" DockPanel.Dock="Top" Margin="0,0,0,8" TextChanged="PresetFilter_Changed" AutomationProperties.Name="Search presets" ToolTip="Filter preset paths"/><ListBox x:Name="PresetList" DisplayMemberPath="RelativePath" SelectionChanged="Preset_Selected" ScrollViewer.HorizontalScrollBarVisibility="Auto"/></DockPanel>
-     <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center" Background="{DynamicResource DividerStrokeColorDefaultBrush}"/>
-     <local:PresetWorkspace x:Name="Workspace" Grid.Column="2"/>
-    </Grid>
+    <DockPanel Margin="12">
+     <Expander x:Name="PresetBrowser" Header="Installed presets" DockPanel.Dock="Top" IsExpanded="True" Margin="0,0,0,12">
+      <DockPanel Height="210" Margin="8">
+       <StackPanel DockPanel.Dock="Left" Width="220" Margin="0,0,16,0">
+        <TextBlock Text="Item type" Margin="0,0,0,5"/>
+        <ComboBox x:Name="PresetCategories" SelectionChanged="PresetFilter_Changed" AutomationProperties.Name="Preset type"/>
+        <TextBlock Text="Preset kind" Margin="0,10,0,5"/>
+        <ComboBox x:Name="PresetKinds" SelectionChanged="PresetFilter_Changed" AutomationProperties.Name="Preset kind"/>
+        <TextBlock Text="Search files" Margin="0,10,0,5"/>
+        <TextBox x:Name="PresetSearch" TextChanged="PresetFilter_Changed" AutomationProperties.Name="Search presets" ToolTip="Filter preset paths"/>
+       </StackPanel>
+       <ListBox x:Name="PresetList" DisplayMemberPath="RelativePath" SelectionChanged="Preset_Selected" ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+      </DockPanel>
+     </Expander>
+     <local:PresetWorkspace x:Name="Workspace"/>
+    </DockPanel>
    </TabItem>
    <TabItem Header="Load order"><DockPanel Margin="16"><TextBlock x:Name="LoadOrderInfo" DockPanel.Dock="Top" Margin="0,0,0,12" TextWrapping="Wrap"/><ListBox x:Name="LoadOrderList" FontFamily="Consolas"/></DockPanel></TabItem>
   </TabControl>

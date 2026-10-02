@@ -25,7 +25,11 @@ internal static class Program
             Check("Template and anchor round trip", TemplateRoundTrip);
             Check("Empty, null, zero and false values", ScalarSemantics);
             Check("Inline flow comments", FlowComments);
+            Check("YAML comment placement and section formatting", YamlFormattingChecks.Run);
+            Check("YAML preview highlighting and folding", YamlPreviewChecks.Run);
             Check("Names and clone isolation", NamesAndClone);
+            Check("Unfinished preset drafts", PresetDraftChecks.Run);
+            Check("Preset summaries and contextual pickers", PresetPresentationChecks.Run);
             Check("Forward authoring and rule priority", ForwardAuthoring);
             Check("Default root merge", DefaultMerge);
             Check("AoT schema boundary values", SchemaBoundaries);

@@ -26,12 +26,15 @@ The editor starts in Dark mode. **Appearance** offers Dark, Light, or Follow Win
 
 ## Edit a preset
 
-1. The editor opens on **Presets**. Choose **New preset**, and select an item type and Default, Custom, or Addon. You can also open an installed preset from the list.
-2. Choose **Add rule**, **Add shared settings**, or **Add template** and give the block a name. Shared settings provide reusable values. Templates provide reusable settings with parameters that vary between uses.
-3. Open a named block to edit its fields. **Set** adds a value, **Edit** changes it, and **Clear** leaves it unset. **Choose form** searches your profile's forms, limited to the types accepted by that field. Item selectors also respect the preset's category where AoT requires it.
-4. Within a template, **Use parameter** gives a field a parameter name. When using that template, the editor provides a field for each parameter. **Shared settings and overrides** combines reusable settings with fields set on the current block.
-5. Apply changes to return to the overview. Incomplete blocks remain editable. A cross marks problems; open the block to see them. A tick means its structure passes validation.
-6. Once valid, **View YAML** shows the preset and its expanded rules. **Save to mod** asks for a destination mod folder and writes the correct `SKSE/Plugins/AlchemyOfTime/<type>/...` path inside it. Choose that mod's top-level folder.
+1. Choose **New preset**, an item type, and a preset kind. **Custom** defines stages for selected items, **Addon** adds triggers or filters, and **Default** supplies the fallback rule for an item type. **Installed presets** opens the file browser.
+2. Choose **Add rule** and give it a name. The left list shows rules and their affected items and results. Select one to edit its settings alongside the list. Required and configured settings appear first; expand the other sections to see optional settings.
+3. Enter values directly. **Choose forms** searches your profile, limited to forms accepted by that field. Select a stage or transformation to edit it below its list. Move transformations up or down to set their priority; the first matching trigger wins.
+4. **Add shared settings** creates named values that several rules can reuse. **Add template** creates a reusable structure with parameters that vary between uses. Choose the content type, then **One entry** or **A list**. Within a template, **Reuse a value > Use parameter** names a field's parameter. Each use provides its own arguments.
+5. Inherited fields show their resulting values and source after validation. **Override here** changes a field for this use. Editing the shared definition changes all its uses; the editor lists the affected blocks.
+6. Validation updates as you edit. **Review issues** lists problems; selecting one opens its rule and focuses the relevant field. **Save draft** keeps unfinished work and new form groups in an `.aotdraft` file. Reopen it with **Open file** to continue.
+7. Once valid, **Save to mod** writes the preset and new groups into the correct `SKSE/Plugins/AlchemyOfTime/<type>/...` path. Choose the mod's top-level folder. Your installed files change only on this action.
+
+**View YAML** opens a read-only code viewer with syntax colors, folding, search, copy, and text zoom. **Preset YAML** shows what will be saved. **Expanded rules** shows the values after applying shared settings and template arguments. The editor's naming metadata is folded at the top of the source; copying includes it.
 
 Existing templates, anchors, and rule order are retained. Saving normalizes YAML formatting and comment placement. The editor stores block names in a leading comment that AoT ignores. Original files are changed only when you explicitly select their mod folder and confirm replacement.
 
@@ -40,8 +43,8 @@ Validation checks AoT field requirements, values, stage numbering, templates, an
 ## Use form groups
 
 1. Open a trigger's **Trigger** field and choose **Choose form group**. Select a group to inspect its members, then **Choose group** to use its name in the preset. The list includes groups from the active MO2 profile.
-2. To make one, choose **New group**, enter a name, and use **Add forms** to select its members. **Create group** returns to the list. Choose that group and apply your field and block changes.
-3. **Save to mod** writes new groups to `SKSE/Plugins/AlchemyOfTime/formGroups/<name>.txt` alongside the preset. Canceling the field or block discards groups created within it. Existing group files are read-only in the editor.
+2. To make one, choose **New group**, enter a name, and use **Add forms** to select its members. **Create group** returns to the list. Choose that group to use it in your current field. Member status identifies unavailable forms and forms that do not apply to that field.
+3. **Save to mod** writes new groups to `SKSE/Plugins/AlchemyOfTime/formGroups/<name>.txt` alongside the preset. **Save draft** keeps them for later. Canceling a picker or a separate editing dialog discards changes made within that dialog. Existing group files are read-only in the editor.
 
 Groups are lists of literal form identifiers. AoT accepts them in addon **Applies to**, rule **Evolution filter**, and trigger **Trigger** and **Inventory filter** fields. Custom **Applies to** accepts item identifiers or name words instead. The group chooser preserves unresolved members, including identifiers from optional mods.
 

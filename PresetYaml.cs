@@ -13,40 +13,51 @@ public static class PresetYaml
     {
         var parser = new Parser(new Scanner(new StringReader(yaml), skipComments: false));
         var events = new List<ParsingEvent>();
-        while (parser.MoveNext()) if (parser.Current is { } current) events.Add(current);
-        var reader = new ValueReader(events);
-        return reader.ReadDocument();
+        var comments = new List<Comment>();
+        while (parser.MoveNext())
+        {
+            if (parser.Current is Comment comment) comments.Add(comment);
+            else if (parser.Current is { } current) events.Add(current);
+        }
+        return new ValueReader(events, comments).ReadDocument();
     }
 
-    private sealed class ValueReader(List<ParsingEvent> events)
+    private sealed class ValueReader(List<ParsingEvent> events, List<Comment> comments)
     {
         private int position;
+        private readonly List<NodeSpan> spans = [];
         private ParsingEvent? Current => position < events.Count ? events[position] : null;
-        private List<string> ReadComments()
+        private sealed class NodeSpan(PresetValue value, Mark start, Mark end)
         {
-            List<string> comments = [];
-            while (Current is Comment comment) { comments.Add(comment.Value); position++; }
-            return comments;
+            public PresetValue Value { get; } = value;
+            public Mark Start { get; set; } = start;
+            public Mark End { get; } = end;
+            public long Column { get; set; } = start.Column;
         }
+
         public PresetValue ReadDocument()
         {
             if (Current is StreamStart) position++;
-            var comments = ReadComments();
-            if (Current is StreamEnd or null) { var empty = PresetValue.Map(); empty.Comments.AddRange(comments); return empty; }
+            if (Current is StreamEnd or null)
+            {
+                var empty = PresetValue.Map();
+                empty.Comments.AddRange(comments.Select(comment => comment.Value));
+                return empty;
+            }
             if (Current is not DocumentStart) throw new InvalidDataException("Expected a YAML document.");
             position++;
             var value = ReadValue(0);
-            value.Comments.InsertRange(0, comments);
-            value.TrailingComments.AddRange(ReadComments());
             if (Current is DocumentEnd) position++;
-            value.TrailingComments.AddRange(ReadComments());
             if (Current is not (StreamEnd or null)) throw new InvalidDataException("A preset file must contain one YAML document.");
+            AttachComments(value);
             return value;
         }
+
         private PresetValue ReadValue(int depth)
         {
             if (depth > MaximumDepth) throw new InvalidDataException("YAML nesting is too deep.");
-            var comments = ReadComments();
+            var start = Current?.Start ?? Mark.Empty;
+            var end = Current?.End ?? Mark.Empty;
             PresetValue value;
             switch (Current)
             {
@@ -67,22 +78,18 @@ public static class PresetYaml
                     value.Tag = mapping.Tag.IsEmpty ? "" : mapping.Tag.Value;
                     value.Flow = mapping.Style == MappingStyle.Flow;
                     position++;
-                    while (true)
+                    while (Current is not MappingEnd)
                     {
-                        var beforeKey = ReadComments();
-                        if (Current is MappingEnd)
-                        {
-                            value.TrailingComments.AddRange(beforeKey);
-                            position++;
-                            break;
-                        }
-                        var key = ReadValue(depth + 1);
-                        if (key.Kind != ValueKind.Scalar || key.Anchor.Length > 0 || key.Tag.Length > 0)
+                        if (Current is not Scalar key || !key.Anchor.IsEmpty || !key.Tag.IsEmpty)
                             throw new InvalidDataException("Preset setting names must be plain text keys.");
+                        position++;
                         var child = ReadValue(depth + 1);
-                        child.Comments.InsertRange(0, beforeKey.Concat(key.Comments));
-                        if (!value.Fields.TryAdd(key.Text, child)) throw new InvalidDataException($"Duplicate setting '{key.Text}'.");
+                        spans[^1].Start = key.Start;
+                        spans[^1].Column = key.Start.Column;
+                        if (!value.Fields.TryAdd(key.Value, child)) throw new InvalidDataException($"Duplicate setting '{key.Value}'.");
                     }
+                    end = Current.End;
+                    position++;
                     break;
                 case SequenceStart sequence:
                     value = PresetValue.List();
@@ -90,24 +97,50 @@ public static class PresetYaml
                     value.Tag = sequence.Tag.IsEmpty ? "" : sequence.Tag.Value;
                     value.Flow = sequence.Style == SequenceStyle.Flow;
                     position++;
-                    while (true)
+                    while (Current is not SequenceEnd)
                     {
-                        var beforeItem = ReadComments();
-                        if (Current is SequenceEnd)
-                        {
-                            value.TrailingComments.AddRange(beforeItem);
-                            position++;
-                            break;
-                        }
-                        var child = ReadValue(depth + 1);
-                        child.Comments.InsertRange(0, beforeItem);
-                        value.Items.Add(child);
+                        value.Items.Add(ReadValue(depth + 1));
+                        if (!value.Flow) spans[^1].Column = sequence.Start.Column;
                     }
+                    end = Current.End;
+                    position++;
                     break;
                 default: throw new InvalidDataException("Expected a YAML setting value.");
             }
-            value.Comments.InsertRange(0, comments);
+            spans.Add(new NodeSpan(value, start, end));
             return value;
+        }
+
+        private void AttachComments(PresetValue root)
+        {
+            foreach (var comment in comments)
+            {
+                if (comment.End.Index <= spans[^1].Start.Index)
+                {
+                    root.Comments.Add(comment.Value);
+                    continue;
+                }
+                var previous = comment.IsInline ? spans
+                    .Where(span => span.End.Line == comment.Start.Line && span.End.Index <= comment.Start.Index)
+                    .OrderByDescending(span => span.End.Index).ThenBy(span => span.Start.Index).FirstOrDefault() : null;
+                if (previous is not null)
+                {
+                    previous.Value.InlineComment = comment.Value;
+                    continue;
+                }
+                var header = comment.IsInline ? spans.Where(span => span.Start.Line == comment.Start.Line &&
+                    span.Start.Index <= comment.Start.Index && span.End.Index > comment.Start.Index)
+                    .OrderByDescending(span => span.Start.Index).FirstOrDefault() : null;
+                if (header is not null)
+                {
+                    header.Value.Comments.Add(comment.Value);
+                    continue;
+                }
+                var next = spans.Where(span => span.Value != root && span.Start.Index >= comment.End.Index && span.Column <= comment.Start.Column)
+                    .OrderBy(span => span.Start.Index).ThenBy(span => span.Column).FirstOrDefault();
+                if (next is not null) next.Value.Comments.Add(comment.Value);
+                else root.TrailingComments.Add(comment.Value);
+            }
         }
     }
 
@@ -120,12 +153,14 @@ public static class PresetYaml
         EmitValue(emitter, value, flow, true, 0);
         emitter.Emit(new DocumentEnd(true));
         emitter.Emit(new StreamEnd());
-        return writer.ToString();
+        return flow ? writer.ToString() : SpaceSections(writer.ToString());
     }
+
     private static void EmitComments(IEmitter emitter, IEnumerable<string> comments)
     {
         foreach (var comment in comments) emitter.Emit(new Comment(comment, false));
     }
+
     private static void EmitValue(IEmitter emitter, PresetValue value, bool flow, bool comments, int depth)
     {
         if (depth > MaximumDepth) throw new InvalidDataException("YAML nesting is too deep.");
@@ -158,7 +193,46 @@ public static class PresetYaml
                 emitter.Emit(new SequenceEnd());
                 break;
         }
+        if (value.InlineComment.Length > 0) emitter.Emit(new Comment(value.InlineComment, true));
         if (value.Kind is ValueKind.Scalar or ValueKind.Alias) EmitComments(emitter, value.TrailingComments);
+    }
+
+    private static string SpaceSections(string yaml)
+    {
+        var lines = yaml.Replace("\r\n", "\n").Split('\n');
+        var sections = new HashSet<int>();
+        var parser = new Parser(new StringReader(yaml));
+        var depth = 0;
+        var isRootKey = true;
+        var rootKeyLine = 0;
+        while (parser.MoveNext())
+        {
+            switch (parser.Current)
+            {
+                case MappingStart or SequenceStart:
+                    if (depth == 1)
+                    {
+                        var line = rootKeyLine;
+                        while (line > 0 && lines[line - 1].StartsWith('#')) line--;
+                        if (line > 0) sections.Add(line);
+                        isRootKey = true;
+                    }
+                    depth++;
+                    break;
+                case MappingEnd or SequenceEnd:
+                    depth--;
+                    break;
+                case Scalar scalar when depth == 1:
+                    if (isRootKey) rootKeyLine = (int)scalar.Start.Line - 1;
+                    isRootKey = !isRootKey;
+                    break;
+                case AnchorAlias when depth == 1:
+                    isRootKey = true;
+                    break;
+            }
+        }
+        return string.Join(Environment.NewLine, lines.SelectMany((line, index) =>
+            sections.Contains(index) && lines[index - 1].Length > 0 ? new[] { "", line } : new[] { line }));
     }
 }
 

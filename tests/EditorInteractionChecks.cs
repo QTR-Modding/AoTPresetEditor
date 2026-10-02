@@ -20,6 +20,7 @@ internal static class EditorInteractionChecks
         TypedChildControls();
         ListEditing();
         DraftIsolation();
+        InlineEditing();
         OverviewActions();
     }
 
@@ -112,8 +113,7 @@ internal static class EditorInteractionChecks
         Require(TemplateCall.TryParse(call.Value.Text, out var callName, out var arguments) &&
             arguments.Select(value => value.Text).SequenceEqual(["FoodBeefF", "FoodCookedBeef"]),
             "Returning from a reordered definition must bind the open call to the new parameter order immediately.");
-        Require(Field<StackPanel>(call, "content").Children.OfType<DockPanel>()
-            .SelectMany(row => row.Children.OfType<TextBlock>()).Any(text => text.Text == "frozen: FoodBeefF"),
+        Require(Descendants<TextBox>(call.Editor).Any(text => text.Text == "FoodBeefF"),
             "The open call must display each argument beside its actual parameter after a nested definition edit.");
 
         var argumentField = PresetSchema.GetParameterField(changed.Blocks.Single(block => block.Id == template.Id), "frozen", changed)!;
@@ -195,7 +195,7 @@ internal static class EditorInteractionChecks
         scalar.Comments.Add("A shared value.");
         scalar.TrailingComments.Add("End of shared value.");
         var conversion = new ValueEditorWindow(document, Forms, scalar, "Value", "Shared number");
-        Click(Field<StackPanel>(conversion, "content").Children.OfType<Button>().Single(button => Equals(button.Content, "Use a list of values...")));
+        Click(Descendants<Button>(conversion.Editor).Single(button => Equals(button.Content, "Use a list of values...")));
         Require(conversion.Value.Kind == ValueKind.Sequence && conversion.Value.Anchor == "sharedNumber", "Converting to a list must retain the shared definition.");
         Require(conversion.Value.Items.Single().Anchor.Length == 0, "The wrapped scalar must not duplicate the shared anchor.");
         Require(conversion.Value.Comments.Count == 1 && conversion.Value.Items.Single().Comments.Count == 0 && conversion.Value.TrailingComments.Count == 1,
@@ -251,9 +251,95 @@ internal static class EditorInteractionChecks
         Require(((Button)actions.Children[0]).Visibility == Visibility.Collapsed, "A preset with a shared rule list must hide the unavailable Add rule action.");
     }
 
-    private static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;
+    private static void InlineEditing()
+    {
+        var document = PresetDocument.Parse("""
+            cooking: &cooking
+              FormEditorID: Fire
+              duration: 1
+            formsLists:
+            - forms: FoodBeef
+              transformers:
+              - FormEditorID: Fire
+                finalFormEditorID: FoodCookedBeef
+                duration: 1
+              - FormEditorID: Frost
+                finalFormEditorID: FoodBeefF
+                duration: 2
+            """, "FOOD", PresetKind.Addon);
+        var rule = document.Blocks.Single(block => block.Kind == BlockKind.Rule);
+        var editor = new ValueEditorControl(document, Forms, rule.Value, "AddonRule", "Rule");
+        var changes = 0;
+        editor.Changed += (_, _) => changes++;
+        var duration = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "duration");
+        var entry = Field<StackPanel>(duration, "content").Children.OfType<TextBox>().Single();
+        entry.Text = "3";
+        Require(editor.Value.Get("transformers")!.Items[0].Get("duration")!.Text == "3",
+            "An inline duration edit must reach the containing rule without opening or applying another window.");
+        Require(rule.Value.Get("transformers")!.Items[0].Get("duration")!.Text == "1", "Inline edits must remain isolated from their input document.");
+        var afterChange = changes;
+        editor.Capture();
+        editor.UpdatePresentation(new PresetPresentation(document, Forms), editor.Value.Clone());
+        Require(changes == afterChange && ReferenceEquals(entry, Field<StackPanel>(duration, "content").Children.OfType<TextBox>().Single()),
+            "Capturing and refreshing summaries must preserve the input control and must not report another edit.");
+        Require(editor.FocusIssue("Transformers 2: Duration (game hours): enter a number."), "A list issue must have an editing target.");
+        var listEditor = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "transformers");
+        Require(Field<ListBox>(listEditor, "entryList").SelectedIndex == 1, "An issue for the second transformation must select the second entry.");
+        var secondDuration = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "duration");
+        Require(secondDuration.Value.Text == "2", "Issue navigation must show the requested transformation's own values.");
+
+        var empty = new ValueEditorControl(document, Forms, PresetValue.Map(), "Transformer", "Transformation");
+        var missingDuration = Descendants<ValueEditorControl>(empty).Single(child => Field<PresetField?>(child, "field")?.Key == "duration");
+        Require(Field<StackPanel>(missingDuration, "content").Children.OfType<TextBox>().Single().Text.Length == 0,
+            "A missing required value must not display a default that has never been set.");
+
+        var independent = new ValueEditorControl(document, Forms, rule.Value.Get("transformers")!.Items[0], "Transformer", "Transformation");
+        independent.UpdatePresentation(new PresetPresentation(document, Forms), independent.Value.Clone());
+        var durationCard = Field<StackPanel>(independent, "content").Children.OfType<Border>()
+            .Single(card => Descendants<TextBlock>(card).Any(text => text.Text == "Duration (game hours)"));
+        Click(Descendants<Button>(durationCard).Single(button => Equals(button.Content, "Clear")));
+        Require(independent.Value.Get("duration") is null, "Clearing a field must remain safe while the previous expansion is still displayed.");
+
+        var alias = new ValueEditorControl(document, Forms, PresetValue.Alias("cooking"), "Transformer", "Shared use");
+        var copy = Descendants<Button>(alias).Single(button => Equals(button.Content, "Make independent copy for this use"));
+        Require(copy.Visibility == Visibility.Collapsed, "An unresolved reference must not offer an unavailable copy.");
+        alias.UpdatePresentation(new PresetPresentation(document, Forms), document.Blocks.Single(block => block.Key == "cooking").Value.Clone());
+        Require(copy.Visibility == Visibility.Visible, "A resolved reference must expose the independent-copy action without rebuilding inputs.");
+
+        var imported = PresetDocument.Parse("""
+            cooking:
+              duration: 1
+            other: &cooking 2
+            formsLists: []
+            """, "FOOD", PresetKind.Addon);
+        var reuse = new ValueEditorControl(imported, Forms, PresetValue.Map(), "Transformer", "Transformation");
+        var shared = reuse.Document.Blocks.Single(block => block.Key == "cooking");
+        Invoke(reuse, "UseDefinition", shared);
+        Require(reuse.Value.Kind == ValueKind.Alias && reuse.Value.Text == shared.Value.Anchor && shared.Value.Anchor == "cooking2",
+            "Reusing an imported definition must create an available shared anchor without colliding with existing anchors.");
+        Require(imported.Blocks.Single(block => block.Key == "cooking").Value.Anchor.Length == 0,
+            "Choosing a shared definition must leave the original document untouched until its draft is applied.");
+    }
+
+    private static T Field<T>(object owner, string name)
+    {
+        if (owner is ValueEditorWindow window) owner = window.Editor;
+        return (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;
+    }
     private static void SetField(object owner, string name, object value) => owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(owner, value);
-    private static object? Invoke(object owner, string name, params object?[] arguments) => owner.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!.Invoke(owner, arguments);
+    private static object? Invoke(object owner, string name, params object?[] arguments)
+    {
+        if (owner is ValueEditorWindow window) owner = window.Editor;
+        return owner.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!.Invoke(owner, arguments);
+    }
+    private static IEnumerable<T> Descendants<T>(DependencyObject parent) where T : DependencyObject
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(parent).OfType<DependencyObject>())
+        {
+            if (child is T match) yield return match;
+            foreach (var descendant in Descendants<T>(child)) yield return descendant;
+        }
+    }
     private static void Search(object window, string text) { Field<TextBox>(window, "search").Text = text; Invoke(window, "FilterForms"); }
     private static void Click(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }

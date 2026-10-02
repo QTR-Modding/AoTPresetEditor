@@ -221,6 +221,45 @@ public static class PresetSchema
     public static IReadOnlyList<string> Validate(PresetValue value, string context, string category, bool partial = false) =>
         Validate(value, context, category, ContextKind(context, PresetKind.Custom), partial);
 
+    public static IReadOnlyList<string> ValidateField(PresetValue value, PresetField field, string context,
+        string category, PresetKind kind, bool partial = false)
+    {
+        var errors = new List<string>();
+        if (partial && IsReference(value)) return errors;
+        if (field.Kind == FieldKind.ObjectList)
+        {
+            if (value.Kind != ValueKind.Sequence) errors.Add("Expected a list.");
+            else
+            {
+                if (field.Required && value.Items.Count == 0 && !partial) errors.Add("Add at least one entry.");
+                for (var index = 0; index < value.Items.Count; index++)
+                    ValidateValue(value.Items[index], field.ChildContext, category, kind, partial, $"Entry {index + 1}", errors);
+            }
+        }
+        else if (field.Kind is FieldKind.FormList or FieldKind.IntegerList) ValidateList(value, field, partial, field.Label, errors);
+        else ValidateScalar(value, field, partial, NormalizeContext(context), field.Label, errors);
+        return errors;
+    }
+
+    public static string DefaultDescription(PresetField field, string context) => field.Key switch
+    {
+        "weight" => "Keeps original weight",
+        "value" => "Keeps original value",
+        "crafting_allowed" => "Cannot stand in for the source item in crafting",
+        "mgeffect" => "Keeps original magic effects",
+        "allowed_stages" => "Applies to every stage",
+        "containers" => NormalizeContext(context) == "rule" ? "No evolution filter" : "All inventories allowed",
+        "timeModulators" => "Normal stage progression",
+        "transformers" => "No triggered transformations",
+        "sound" => "No added world sound",
+        "art_object" => "No added world art effect",
+        "effect_shader" => "No added world shader",
+        "color" => "No added world tint",
+        "FormEditorID" when NormalizeContext(context) == "stage" => "Source item at stage 0; generated item at later FOOD or MISC stages",
+        "FormEditorID" when NormalizeContext(context) == "effect" => "Clears the corresponding existing effect",
+        _ => field.Required ? "Choose a value to complete this field" : "Not set"
+    };
+
     public static IReadOnlyList<string> Validate(PresetValue value, string context, string category, PresetKind kind, bool partial = false)
     {
         var errors = new List<string>();
@@ -413,7 +452,7 @@ public static class PresetSchema
     private static string At(string path, string text) => path.Length == 0 ? text : $"{path}: {text}";
     private static PresetKind ContextKind(string context, PresetKind fallback) => context.ToLowerInvariant() switch
     { "defaultrule" or "defaultrules" => PresetKind.Default, "customrule" or "customrules" => PresetKind.Custom, "addonrule" or "addonrules" => PresetKind.Addon, _ => fallback };
-    private static string NormalizeContext(string context) => context.ToLowerInvariant() switch
+    internal static string NormalizeContext(string context) => context.ToLowerInvariant() switch
     {
         "defaultrule" or "customrule" or "addonrule" => "rule", "defaultrules" or "customrules" or "addonrules" => "rules", "timemodulator" => "modulator", "timemodulators" => "modulators",
         "magiceffect" => "effect", "magiceffects" => "effects", _ => context.ToLowerInvariant()

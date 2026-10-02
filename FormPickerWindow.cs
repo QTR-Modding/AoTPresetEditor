@@ -16,6 +16,7 @@ public sealed class FormPickerWindow : Window
     private readonly IReadOnlyList<FormRow> forms;
     private readonly bool multiple;
     private readonly bool browseOnly;
+    private readonly string purpose;
     private readonly TextBox search = new();
     private readonly ComboBox types = new();
     private readonly ComboBox plugins = new();
@@ -31,7 +32,7 @@ public sealed class FormPickerWindow : Window
     public IReadOnlyList<FormRow> SelectedForms { get; private set; } = [];
 
     public FormPickerWindow(IReadOnlyList<FormRow> forms, IReadOnlyCollection<string>? allowedTypes = null, bool multiple = false,
-        FormSelection? selection = null, bool browseOnly = false)
+        FormSelection? selection = null, bool browseOnly = false, string? purpose = null)
     {
         this.forms = allowedTypes is { Count: > 0 } || selection is not null
             ? forms.Where(form => (allowedTypes is not { Count: > 0 } || allowedTypes.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
@@ -39,7 +40,8 @@ public sealed class FormPickerWindow : Window
             : forms;
         this.multiple = multiple;
         this.browseOnly = browseOnly;
-        Title = browseOnly ? "Form browser" : multiple ? "Choose forms" : "Choose a form";
+        this.purpose = purpose ?? (browseOnly ? "Form browser" : multiple ? "Choose forms" : "Choose a form");
+        Title = this.purpose;
         if (browseOnly) choose.Content = "Copy identifier";
         Width = 1120; Height = 700; MinWidth = 800; MinHeight = 460;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -68,9 +70,16 @@ public sealed class FormPickerWindow : Window
         var layout = new Grid { Margin = new Thickness(20) };
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
+        var header = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
+        header.Children.Add(new TextBlock { Text = purpose, FontSize = 22, FontWeight = FontWeights.SemiBold });
+        var hint = new TextBlock { Text = browseOnly ? "Explore the active profile's forms and copy an identifier."
+            : "Choose from the forms available for this field in the active profile.", Margin = new Thickness(0, 4, 0, 0) };
+        hint.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        header.Children.Add(hint); layout.Children.Add(header);
         var filters = new Grid();
         filters.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
         filters.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -78,12 +87,12 @@ public sealed class FormPickerWindow : Window
         AddFilter(filters, "Search name, EditorID, ID, or plugin", search, 0);
         AddFilter(filters, "Type", types, 1);
         AddFilter(filters, "Plugin", plugins, 2);
-        layout.Children.Add(filters);
+        Grid.SetRow(filters, 1); layout.Children.Add(filters);
 
         count.Margin = new Thickness(0, 12, 0, 8);
-        Grid.SetRow(count, 1); layout.Children.Add(count);
+        Grid.SetRow(count, 2); layout.Children.Add(count);
         ConfigureGrid();
-        Grid.SetRow(results, 2); layout.Children.Add(results);
+        Grid.SetRow(results, 3); layout.Children.Add(results);
 
         var footer = new Grid { Margin = new Thickness(0, 12, 0, 0) };
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -99,7 +108,7 @@ public sealed class FormPickerWindow : Window
         buttons.Children.Add(new Button { Content = browseOnly ? "Close" : "Cancel", IsCancel = true });
         buttons.Children.Add(choose);
         Grid.SetColumn(buttons, 1); footer.Children.Add(buttons);
-        Grid.SetRow(footer, 3); layout.Children.Add(footer);
+        Grid.SetRow(footer, 4); layout.Children.Add(footer);
         return layout;
     }
 
@@ -125,6 +134,7 @@ public sealed class FormPickerWindow : Window
         results.GridLinesVisibility = DataGridGridLinesVisibility.Horizontal;
         AddColumn("Name", nameof(FormRow.Name), 220);
         AddColumn("EditorID", nameof(FormRow.EditorId), 230);
+        AddColumn("Identifier", nameof(FormRow.Identifier), 210);
         AddColumn("Type", nameof(FormRow.Type), 120);
         AddColumn("Defined in", nameof(FormRow.Plugin), 180);
         AddColumn("Winning plugin", nameof(FormRow.Winner), 180);
@@ -194,7 +204,7 @@ public sealed class FormPickerWindow : Window
         choose.Visibility = clear.Visibility = selected.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         selection.Text = multiple
             ? $"{selected.Count:N0} selected. Ctrl/Shift selects multiple forms; selections stay when filtering."
-            : selected.FirstOrDefault()?.Identifier ?? "Choose a form from the list.";
+            : selected.FirstOrDefault() is { } form ? $"{(form.Name.Length == 0 ? form.EditorId : form.Name)} · {form.Identifier}" : "Choose a form from the list.";
     }
 
     private void Results_DoubleClick(object sender, MouseButtonEventArgs args)
