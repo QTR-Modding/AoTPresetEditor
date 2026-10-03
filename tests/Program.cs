@@ -37,13 +37,17 @@ internal static class Program
             Check("Missing and circular aliases", InvalidAliases);
             Check("Template arguments and parameter order", TemplateArguments);
             Check("Template edits preserve argument meaning", RebindArguments);
+            Check("Behavior variables and ordered uses", BehaviorFamilyChecks.Run);
             Check("Detached template argument binding", DetachedTemplateChecks.Run);
             Check("New optional arguments require a choice", UnsetArguments);
             Check("Duplicate keys and multiple documents", InvalidYaml);
             Check("Editor interactions", EditorInteractionChecks.Run);
+            Check("Behavior editing and variation controls", BehaviorEditorChecks.Run);
+            Check("Behavior workspace and mixed editing", BehaviorWorkspaceChecks.Run);
             Check("Form group files and draft isolation", FormGroupChecks.Run);
             Check("Form applicability", FormSelectionChecks.Run);
             Check("Preset and companion export rollback", PresetExportChecks.Run);
+            Check("Mixed behavior projects and export rollback", PresetProjectChecks.Run);
             Check("Template field constraints and group dialog drafts", SchemaPickerChecks.Run);
             Check("Appearance preference persistence", AppearanceSettingsChecks.Run);
             if (args.Length > 1) Check("Installed preset round trips", () => PresetDirectory(args[1]));

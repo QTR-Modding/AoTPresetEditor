@@ -17,6 +17,9 @@ public sealed class ValueEditorControl : UserControl
     private readonly IReadOnlyList<FormRow> forms;
     private readonly IReadOnlyList<FormGroupDefinition> groups;
     private readonly bool parametersAllowed;
+    private readonly bool behaviorMode;
+    private readonly bool allowVariations;
+    private IReadOnlyList<FormRow>? sourceForms;
     private readonly string context;
     private readonly string title;
     private readonly PresetField? field;
@@ -39,21 +42,27 @@ public sealed class ValueEditorControl : UserControl
     private bool refreshing;
     public PresetValue Value { get; private set; }
     public PresetDocument Document => root.document;
-    private bool IsDefinition => parametersAllowed || Document.Blocks.Any(block => block.Id == root.blockId && block.Kind == BlockKind.Shared);
+    private bool IsDefinition => !root.behaviorMode && (parametersAllowed || Document.Blocks.Any(block => block.Id == root.blockId && block.Kind == BlockKind.Shared));
     public string BlockName => name?.Text.Trim() ?? "";
     public event EventHandler? Changed;
+    public event Action<IReadOnlyList<string>, PresetField>? VariationRequested;
 
     public ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed = false, PresetField? field = null, string? blockName = null,
-        IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null)
-        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null) { }
+        IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null, bool behaviorMode = false, bool allowVariations = true,
+        IReadOnlyList<FormRow>? sourceForms = null)
+        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms) { }
 
     private ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed, PresetField? field, string? blockName,
-        IReadOnlyList<FormGroupDefinition> groups, ValueEditorControl? parent, Action<PresetValue>? replace)
+        IReadOnlyList<FormGroupDefinition> groups, ValueEditorControl? parent, Action<PresetValue>? replace, bool behaviorMode = false, bool allowVariations = true,
+        IReadOnlyList<FormRow>? sourceForms = null)
     {
         this.parent = parent;
         root = parent?.root ?? this;
+        this.behaviorMode = parent?.behaviorMode ?? behaviorMode;
+        this.allowVariations = parent?.allowVariations ?? allowVariations;
+        this.sourceForms = parent?.sourceForms ?? sourceForms;
         blockId = parent is null ? document.Blocks.FirstOrDefault(block => ReferenceEquals(block.Value, value))?.Id : root.blockId;
         this.document = parent is null ? document.Clone() : root.document;
         this.forms = forms; this.groups = groups; this.context = context; this.title = title;
@@ -86,11 +95,13 @@ public sealed class ValueEditorControl : UserControl
         foreach (var child in children) child.Editor.Capture();
     }
 
+    public void UpdateSourceForms(IReadOnlyList<FormRow>? sourceForms) => root.sourceForms = sourceForms;
+
     public void UpdatePresentation(PresetPresentation updated, PresetValue? effectiveRoot = null)
     {
         presentation = updated; effective = effectiveRoot; RefreshFeedback();
         if (resolvedPreview is not null) resolvedPreview.Text = effective is null ? "Complete the preset to preview the resulting settings."
-            : presentation.Summary(effective, context);
+            : presentation.Summary(effective, context, behaviorMode);
         if (independentCopy is not null) independentCopy.Visibility = effective is null ? Visibility.Collapsed : Visibility.Visible;
         if (resolvedSection is not null) resolvedSection.Visibility = effective is null ? Visibility.Collapsed : Visibility.Visible;
         if (resolvedDetails is not null)
@@ -147,7 +158,7 @@ public sealed class ValueEditorControl : UserControl
     private void Render()
     {
         refreshing = true; capture = () => { }; refreshSummary = () => { }; children.Clear(); fields.Clear(); content.Children.Clear(); resolvedPreview = null; resolvedDetails = null; resolvedSection = null; independentCopy = null; entryList = null; revealEntry = null; valueOptions = null;
-        if (parametersAllowed && name is not null)
+        if (parametersAllowed && name is not null && !behaviorMode)
         {
             var parameters = TemplateCall.FindParameters(Value, Document);
             content.Children.Add(Help(parameters.Count == 0 ? "Use a parameter on a field that should vary between uses."
@@ -156,14 +167,14 @@ public sealed class ValueEditorControl : UserControl
         if (Value.Kind == ValueKind.Alias)
         {
             var source = Document.Blocks.FirstOrDefault(block => block.Value.Anchor == Value.Text);
-            content.Children.Add(EditorControls.Text("Uses shared settings: " + (source?.Name ?? Value.Text)));
+            content.Children.Add(EditorControls.Text("Uses common settings: " + (source?.Name ?? Value.Text)));
             AddResolvedPreview(); AddReferenceActions(source);
         }
         else if (parametersAllowed && Value.Kind == ValueKind.Scalar && Value.Text.StartsWith('$') && TemplateCall.IsName(Value.Text[1..]))
         {
-            content.Children.Add(EditorControls.Text("Parameter: " + Value.Text[1..]));
-            content.Children.Add(Help("Each use of this template supplies this value."));
-            content.Children.Add(EditorControls.Button("Use a fixed value", () => SetValue(NewValue(context, field))));
+            content.Children.Add(EditorControls.Text(behaviorMode ? "Varies per item" : "Parameter: " + Value.Text[1..]));
+            content.Children.Add(Help(behaviorMode ? "Choose each value in Variations." : "Each use of this template supplies this value."));
+            if (!behaviorMode) content.Children.Add(EditorControls.Button("Use a fixed value", () => SetValue(NewValue(context, field))));
         }
         else if (IsCall(Value, out var template, out var args)) RenderCall(template!, args);
         else if (Value.Kind == ValueKind.Mapping) RenderMap();
@@ -172,15 +183,15 @@ public sealed class ValueEditorControl : UserControl
         var reuse = valueOptions ?? new WrapPanel();
         reuse.Margin = new Thickness(0, 3, 0, 4);
         if (AvailableDefinitions().Any())
-            reuse.Children.Add(EditorControls.Button("Use shared settings or template...", ChooseReference));
-        if (parametersAllowed) reuse.Children.Add(EditorControls.Button("Use parameter...", ChooseParameter));
+            reuse.Children.Add(EditorControls.Button(behaviorMode ? "Reuse settings..." : "Use shared settings or template...", ChooseReference));
+        if (parametersAllowed && !behaviorMode) reuse.Children.Add(EditorControls.Button("Use parameter...", ChooseParameter));
         if (reuse.Children.Count > 0) content.Children.Add(new Expander { Header = valueOptions is null ? "Reuse a value" : "More options", Content = reuse });
         refreshing = false; RefreshFeedback();
     }
 
     private void AddResolvedPreview()
     {
-        resolvedPreview = Help(effective is null ? "Complete the preset to preview the resulting settings." : presentation.Summary(effective, context));
+        resolvedPreview = Help(effective is null ? "Complete the preset to preview the resulting settings." : presentation.Summary(effective, context, behaviorMode));
         content.Children.Add(resolvedPreview);
         resolvedDetails = new StackPanel();
         if (effective is not null) DescribeResolved(effective, context, resolvedDetails);
@@ -202,9 +213,9 @@ public sealed class ValueEditorControl : UserControl
                 {
                     var nested = new StackPanel { Margin = new Thickness(12, 0, 0, 0) };
                     DescribeResolved(child, descriptor?.ChildContext ?? PresetSchema.InferContext(key, child), nested);
-                    target.Children.Add(new Expander { Header = label + ": " + presentation.Summary(child, descriptor?.ChildContext ?? ""), Content = nested });
+                    target.Children.Add(new Expander { Header = label + ": " + presentation.Summary(child, descriptor?.ChildContext ?? "", behaviorMode), Content = nested });
                 }
-                else target.Children.Add(Help(label + ": " + presentation.Summary(child, descriptor?.ChildContext ?? "")));
+                else target.Children.Add(Help(label + ": " + presentation.Summary(child, descriptor?.ChildContext ?? "", behaviorMode)));
             }
         }
         else if (value.Kind == ValueKind.Sequence)
@@ -212,13 +223,13 @@ public sealed class ValueEditorControl : UserControl
             for (var index = 0; index < value.Items.Count; index++)
             {
                 var item = value.Items[index];
-                if (item.Kind != ValueKind.Mapping) { target.Children.Add(Help($"{index + 1}. " + presentation.Summary(item, valueContext))); continue; }
+                if (item.Kind != ValueKind.Mapping) { target.Children.Add(Help($"{index + 1}. " + presentation.Summary(item, valueContext, behaviorMode))); continue; }
                 var nested = new StackPanel { Margin = new Thickness(12, 0, 0, 0) };
                 DescribeResolved(item, valueContext, nested);
-                target.Children.Add(new Expander { Header = $"{index + 1}. " + presentation.Summary(item, valueContext), Content = nested });
+                target.Children.Add(new Expander { Header = $"{index + 1}. " + presentation.Summary(item, valueContext, behaviorMode), Content = nested });
             }
         }
-        else target.Children.Add(Help(presentation.Summary(value, valueContext)));
+        else target.Children.Add(Help(presentation.Summary(value, valueContext, behaviorMode)));
     }
 
     private bool IsCall(PresetValue value, out PresetBlock? template, out List<PresetValue> args)
@@ -234,7 +245,7 @@ public sealed class ValueEditorControl : UserControl
         {
             var uses = presentation.Uses(source);
             content.Children.Add(Help("Editing this definition changes every use" + (uses.Count == 0 ? "." : ": " + string.Join(", ", uses.Take(4).Select(block => block.Name)) + (uses.Count > 4 ? $" and {uses.Count - 4} more." : "."))));
-            content.Children.Add(EditorControls.Button("Edit shared definition...", () => EditDefinition(source)));
+            content.Children.Add(EditorControls.Button(behaviorMode ? "Edit common settings..." : "Edit shared definition...", () => EditDefinition(source)));
         }
         independentCopy = EditorControls.Button("Make independent copy for this use", () => { if (effective is not null) SetValue(effective.Clone()); });
         independentCopy.Visibility = effective is null ? Visibility.Collapsed : Visibility.Visible;
@@ -250,9 +261,9 @@ public sealed class ValueEditorControl : UserControl
     private void EditDefinition(PresetBlock source)
     {
         root.Capture();
-        var view = new ValueEditorWindow(Document, forms, source.Value, source.Context, "Shared definition: " + source.Name,
+        var view = new ValueEditorWindow(Document, forms, source.Value, source.Context, "Common settings: " + source.Name,
             source.Kind == BlockKind.Template, source.Kind == BlockKind.Shared && source.Value.Kind != ValueKind.Mapping ? field : null,
-            groups: groups) { Owner = Window.GetWindow(this) };
+            groups: groups, behaviorMode: behaviorMode) { Owner = Window.GetWindow(this) };
         if (view.ShowDialog() != true) return;
         var updated = view.Document; var previous = updated.Clone(); updated.Blocks.First(block => block.Id == source.Id).Value = view.Value;
         try { updated.RebindTemplateCalls(previous); root.AdoptDocument(updated); root.Render(); root.NotifyChanged(); }
@@ -261,7 +272,7 @@ public sealed class ValueEditorControl : UserControl
 
     private void RenderCall(PresetBlock template, List<PresetValue> args)
     {
-        content.Children.Add(EditorControls.Text("Template: " + template.Name)); content.Children.Add(Help("These arguments affect this use only."));
+        content.Children.Add(EditorControls.Text((behaviorMode ? "Behavior: " : "Template: ") + template.Name)); content.Children.Add(Help("These values affect this use only."));
         var parameters = TemplateCall.FindParameters(template.Value, Document); var suppliedArguments = args.Count;
         for (var index = 0; index < parameters.Count; index++)
         {
@@ -277,7 +288,7 @@ public sealed class ValueEditorControl : UserControl
             });
             content.Children.Add(editor);
         }
-        if (suppliedArguments != parameters.Count) content.Children.Add(Help($"This use has {suppliedArguments} arguments; the template needs {parameters.Count}. Fill the missing values."));
+        if (suppliedArguments != parameters.Count) content.Children.Add(Help(behaviorMode ? "Fill the missing values for this item." : $"This use has {suppliedArguments} arguments; the template needs {parameters.Count}. Fill the missing values."));
         AddResolvedPreview(); AddReferenceActions(template);
     }
 
@@ -301,7 +312,7 @@ public sealed class ValueEditorControl : UserControl
         if (inherited is null && !AvailableDefinitions().Any()) return;
         var panelReuse = new StackPanel();
         panelReuse.Children.Add(Help(inherited is null ? "Reuse fields from a named definition. Values entered here take precedence."
-            : "From " + presentation.ReferenceLabel(inherited) + ". Values entered here take precedence."));
+            : "From " + presentation.ReferenceLabel(inherited, behaviorMode) + ". Values entered here take precedence."));
         var actions = new WrapPanel();
         actions.Children.Add(EditorControls.Button(inherited is null ? "Add..." : "Change...", () =>
         {
@@ -320,7 +331,7 @@ public sealed class ValueEditorControl : UserControl
             }
         }
         panelReuse.Children.Add(actions);
-        content.Children.Add(new Expander { Header = "Shared settings", IsExpanded = inherited is not null, Content = panelReuse, Margin = new Thickness(0, 10, 0, 0) });
+        content.Children.Add(new Expander { Header = "Common settings", IsExpanded = inherited is not null, Content = panelReuse, Margin = new Thickness(0, 10, 0, 0) });
     }
 
     private static string FieldSection(PresetField descriptor) => descriptor.Key switch
@@ -337,6 +348,18 @@ public sealed class ValueEditorControl : UserControl
         var label = EditorControls.Text(descriptor.Label); label.FontWeight = FontWeights.SemiBold;
         label.Margin = new Thickness(0, 0, 8, 2); label.VerticalAlignment = VerticalAlignment.Center;
         var actions = new WrapPanel();
+        if (behaviorMode && allowVariations && descriptor.Key != "<<" && !(parametersAllowed && current?.Kind == ValueKind.Scalar &&
+            current.Text.StartsWith('$') && TemplateCall.IsName(current.Text[1..])))
+        {
+            var options = new Button { Content = "⋯", Padding = new Thickness(8, 3, 8, 3), ToolTip = "Field options" };
+            AutomationProperties.SetName(options, "Options for " + descriptor.Label);
+            var menu = new ContextMenu();
+            var vary = new MenuItem { Header = "Vary per item" };
+            vary.Click += (_, _) => RequestVariation(descriptor);
+            menu.Items.Add(vary); options.ContextMenu = menu;
+            options.Click += (_, _) => { menu.PlacementTarget = options; menu.IsOpen = true; };
+            actions.Children.Add(options);
+        }
         var explanation = Help(PresetSchema.FieldHelp(descriptor, context, Document.Kind));
         explanation.Visibility = Visibility.Collapsed;
         if (current is not null && (!descriptor.Required || Value.Get("<<") is not null)) actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Clear" : "Use inherited value", () =>
@@ -387,6 +410,31 @@ public sealed class ValueEditorControl : UserControl
         target.Children.Add(card);
     }
 
+    private void RequestVariation(PresetField descriptor)
+    {
+        root.Capture();
+        if (Value.Get(descriptor.Key) is null)
+            Value.Set(descriptor.Key, effective?.Get(descriptor.Key)?.Clone() ?? NewValue(descriptor.ChildContext, descriptor));
+        var path = new List<string>();
+        if (!FindPath(root.Value, Value, path)) return;
+        path.Add(descriptor.Key);
+        root.VariationRequested?.Invoke(path, descriptor);
+    }
+
+    private static bool FindPath(PresetValue node, PresetValue target, List<string> path)
+    {
+        if (ReferenceEquals(node, target)) return true;
+        var children = node.Kind == ValueKind.Mapping ? node.Fields.AsEnumerable()
+            : node.Items.Select((value, index) => new KeyValuePair<string, PresetValue>(index.ToString(System.Globalization.CultureInfo.InvariantCulture), value));
+        foreach (var (key, child) in children)
+        {
+            path.Add(key);
+            if (FindPath(child, target, path)) return true;
+            path.RemoveAt(path.Count - 1);
+        }
+        return false;
+    }
+
     private void ReplaceField(PresetField descriptor, Panel target, PresetValue? replacement)
     {
         if (replacement is null) Value.Remove(descriptor.Key); else Value.Set(descriptor.Key, replacement);
@@ -420,9 +468,11 @@ public sealed class ValueEditorControl : UserControl
                 errors = PresetSchema.ValidateField(own, view.Field, context, Document.Category, Document.Kind,
                     partial: parametersAllowed || Value.Get("<<") is not null || IsReference(own));
                 text = errors.Count > 0 ? string.Join(Environment.NewLine, errors)
-                    : own.Kind == ValueKind.Scalar && view.Field.Kind is FieldKind.Form or FieldKind.FormList ? presentation.FormLabel(own.Text, true) : "";
+                    : own.Kind == ValueKind.Scalar && view.Field.Kind is FieldKind.Form or FieldKind.FormList
+                        ? behaviorMode && parametersAllowed && own.Text.StartsWith('$')
+                            ? presentation.Summary(own, view.Field.ChildContext, behaviorMode, parametersAllowed) : presentation.FormLabel(own.Text, true) : "";
             }
-            else if (inherited is not null && Value.Get("<<") is { } source) text = presentation.Summary(inherited, view.Field.ChildContext) + " · from " + presentation.ReferenceLabel(source);
+            else if (inherited is not null && Value.Get("<<") is { } source) text = presentation.Summary(inherited, view.Field.ChildContext, behaviorMode) + " · from " + presentation.ReferenceLabel(source, behaviorMode);
             else if (Value.Get("<<") is not null && effective is null) text = "Inherited value will appear after validation.";
             else text = (view.Field.Required ? "Incomplete: " : "") + PresetSchema.DefaultDescription(view.Field, context, Document.Kind);
             view.Status.Text = text; view.Status.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -473,7 +523,8 @@ public sealed class ValueEditorControl : UserControl
         refreshSummary = () =>
         {
             for (var index = 0; index < Math.Min(Value.Items.Count, list.Items.Count); index++)
-                ((TextBlock)((ListBoxItem)list.Items[index]).Content).Text = ListEntrySummary(effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count ? effective.Items[index] : Value.Items[index], index);
+                ((TextBlock)((ListBoxItem)list.Items[index]).Content).Text = effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count
+                    ? ListEntrySummary(effective.Items[index], index, resolved: true) : ListEntrySummary(Value.Items[index], index);
             if (!compact && list.SelectedIndex >= 0 && details.Children.OfType<TextBlock>().FirstOrDefault() is { } caption)
                 caption.Text = ItemHeading(list.SelectedIndex);
         };
@@ -564,12 +615,16 @@ public sealed class ValueEditorControl : UserControl
 
     private string ItemHeading(int index)
     {
-        var item = effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count ? effective.Items[index] : Value.Items[index];
-        return ItemContext().Equals("stage", StringComparison.OrdinalIgnoreCase) ? "Stage " + (item.Get("no")?.Text ?? "?") : ItemLabel() + " " + (index + 1);
+        var resolved = effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count;
+        var item = resolved ? effective!.Items[index] : Value.Items[index];
+        return ItemContext().Equals("stage", StringComparison.OrdinalIgnoreCase)
+            ? "Stage " + (item.Get("no") is { } number ? presentation.Summary(number, behaviorMode: behaviorMode, parametersAllowed: parametersAllowed && !resolved) : "?")
+            : ItemLabel() + " " + (index + 1);
     }
 
-    private string ListEntrySummary(PresetValue item, int index) =>
-        (ItemContext().Equals("stage", StringComparison.OrdinalIgnoreCase) ? "" : $"{index + 1}. ") + presentation.Summary(item, ItemContext());
+    private string ListEntrySummary(PresetValue item, int index, bool resolved = false) =>
+        (ItemContext().Equals("stage", StringComparison.OrdinalIgnoreCase) ? "" : $"{index + 1}. ") +
+        presentation.Summary(item, ItemContext(), behaviorMode, parametersAllowed && !resolved);
     private PresetValue NewListItem()
     {
         var child = ItemContext(); if (context == "Inheritance") return PresetValue.Map();
@@ -653,21 +708,18 @@ public sealed class ValueEditorControl : UserControl
 
     private FormSelection FormSelection()
     {
-        var types = field?.FormTypes;
+        var sources = new HashSet<FormRow>();
         var excluded = new HashSet<FormRow>();
         if (field?.MatchSourceType == true && !IsDefinition)
         {
+            sources.UnionWith(root.sourceForms ?? []);
             var rule = this;
             while (rule is not null && PresetSchema.NormalizeContext(rule.context) != "rule") rule = rule.parent;
             if (rule is not null)
             {
                 var authored = rule.Value.Get("owners") ?? rule.Value.Get("forms");
                 var source = authored is not null && !IsReference(authored) ? rule.Value : rule.effective ?? rule.Value;
-                foreach (var form in presentation.SourceForms(source).Where(new FormSelection(Category: Document.Category).Matches))
-                {
-                    excluded.Add(form);
-                    types = types is null ? [form.Type] : types.Where(type => type.Equals(form.Type, StringComparison.OrdinalIgnoreCase)).ToArray();
-                }
+                sources.UnionWith(presentation.SourceForms(source).Where(new FormSelection(Category: Document.Category).Matches));
                 var currentStage = this;
                 while (currentStage is not null && PresetSchema.NormalizeContext(currentStage.context) != "stage") currentStage = currentStage.parent;
                 var stages = rule.Value.Get("stages");
@@ -679,8 +731,7 @@ public sealed class ValueEditorControl : UserControl
                             presentation.ResolveForm(item.Text) is { } form) excluded.Add(form);
             }
         }
-        return new(types, field?.MatchPresetCategory == true ? Document.Category : null,
-            field?.TriggerOnly == true, field?.BoundObjectOnly == true, excluded);
+        return AoTPresetEditor.FormSelection.ForField(field, Document.Category, sources, excluded);
     }
     private void AdoptDocument(PresetDocument updated)
     {
@@ -705,8 +756,10 @@ public sealed class ValueEditorControl : UserControl
         foreach (var definition in available)
         {
             var description = new StackPanel();
-            description.Children.Add(EditorControls.Text(definition.Name + (definition.Kind == BlockKind.Template ? " · Template" : " · Shared settings")));
-            description.Children.Add(Help(presentation.Summary(presentation.EffectiveValue(definition) ?? definition.Value, definition.Context)));
+            description.Children.Add(EditorControls.Text(definition.Name + (behaviorMode ? "" : definition.Kind == BlockKind.Template ? " · Template" : " · Shared settings")));
+            var resolved = presentation.EffectiveValue(definition);
+            description.Children.Add(Help(presentation.Summary(resolved ?? definition.Value, definition.Context, behaviorMode,
+                parametersAllowed: resolved is null && definition.Kind == BlockKind.Template)));
             choices.Items.Add(new ListBoxItem { Content = description, Tag = definition });
         }
         var use = EditorControls.Button("Use", () =>

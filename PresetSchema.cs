@@ -134,9 +134,9 @@ public static class PresetSchema
     {
         var help = field.Help;
         if (kind == PresetKind.Addon && field.Key is "containers" or "allowed_stages")
-            help += " Addons combine this list with the source rule's existing list; an empty addon list does not clear that restriction.";
+            help += " Additional behavior combines this list with the existing progression's restriction. An empty list does not clear that restriction.";
         if (kind == PresetKind.Default && NormalizeContext(context) == "stage" && field.Key == "duration")
-            help += " A default rule whose stage 0 lasts 9999 hours or more (including .inf) only starts for items with matching addon settings.";
+            help += " Fallback aging whose stage 0 lasts 9999 hours or more (including .inf) only starts for items with matching reactions or preservation settings.";
         return help;
     }
 

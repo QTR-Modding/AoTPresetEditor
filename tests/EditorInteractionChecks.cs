@@ -319,21 +319,32 @@ internal static class EditorInteractionChecks
     private static void OverviewActions()
     {
         var workspace = new PresetWorkspace();
-        var actions = Field<StackPanel>(workspace, "addActions");
-        Require(actions.Visibility == Visibility.Collapsed, "An empty workspace must hide block editing actions.");
+        var actions = Field<Button>(workspace, "addBehavior");
+        Require(actions.Visibility == Visibility.Collapsed, "An unopened workspace must hide behavior editing actions.");
+        var project = new PresetProject { Name = "Several behaviors" };
+        SetField(workspace, "project", project);
+        Invoke(workspace, "UpdateActions");
+        Require(actions.Visibility == Visibility.Visible && actions.Content is "Add behavior...",
+            "A new project must offer its first behavior without exposing YAML block types.");
         var document = PresetDocument.Create("FOOD", PresetKind.Default);
+        var entry = project.Add(document, "Fallback");
+        SetField(workspace, "activeEntry", entry);
         SetField(workspace, "document", document);
         Invoke(workspace, "UpdateActions");
-        Require(actions.Visibility == Visibility.Visible && ((Button)actions.Children[0]).Visibility == Visibility.Visible,
-            "An empty default preset must show the action for its first rule.");
+        Require(actions.Visibility == Visibility.Visible,
+            "A project with an empty fallback document must offer its first behavior.");
         document.Add(BlockKind.Rule, "Default", "DefaultRule");
         Invoke(workspace, "UpdateActions");
-        Require(((Button)actions.Children[0]).Visibility == Visibility.Collapsed, "A default preset must hide the unavailable second-rule action.");
+        Require(actions.Visibility == Visibility.Visible && actions.IsEnabled,
+            "A completed fallback must still allow adding other behaviors or item categories to the project.");
         document = PresetDocument.Create("FOOD", PresetKind.Addon);
         document.Blocks.Add(new PresetBlock { Kind = BlockKind.Rule, Key = "formsLists", Value = PresetValue.Alias("sharedRules") });
+        entry = project.Add(document, "Shared cooking");
+        SetField(workspace, "activeEntry", entry);
         SetField(workspace, "document", document);
         Invoke(workspace, "UpdateActions");
-        Require(((Button)actions.Children[0]).Visibility == Visibility.Collapsed, "A preset with a shared rule list must hide the unavailable Add rule action.");
+        Require(actions.Visibility == Visibility.Visible && actions.IsEnabled,
+            "An imported shared rule list must still allow new behaviors in another generated document.");
     }
 
     private static void TriggerStageIssueNavigation()

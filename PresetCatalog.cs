@@ -8,6 +8,7 @@ public enum PresetKind { Default, Custom, Addon, Other }
 
 public sealed record PresetFile(string FullPath, string RelativePath)
 {
+    public string DisplayName => Path.GetFileNameWithoutExtension(FullPath) + " · " + Category;
     public string Category
     {
         get

@@ -17,13 +17,13 @@ public sealed class ValueEditorWindow : Window
 
     public ValueEditorWindow(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed = false, PresetField? field = null, string? blockName = null,
-        IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null)
+        IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null, bool behaviorMode = false)
     {
         SetResourceReference(StyleProperty, typeof(Window));
         Title = blockName is null ? title : blockName + " - " + title;
         MinWidth = 620; MinHeight = 450; WindowStartupLocation = WindowStartupLocation.CenterOwner;
         EditorControls.FitToOwner(this);
-        Editor = new ValueEditorControl(document, forms, value, context, title, parametersAllowed, field, blockName, issues, groups);
+        Editor = new ValueEditorControl(document, forms, value, context, title, parametersAllowed, field, blockName, issues, groups, behaviorMode, allowVariations: false);
         blockId = document.Blocks.FirstOrDefault(block => ReferenceEquals(block.Value, value))?.Id;
         presentation = new PresetPresentation(Editor.Document, forms, groups);
         previewTimer.Tick += async (_, _) => { previewTimer.Stop(); await RefreshPreview(); };

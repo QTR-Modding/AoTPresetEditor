@@ -35,12 +35,16 @@ internal static class LayoutChecks
             var errors = PresetSchema.Validate(rule.Value, rule.Context, document.Category, document.Kind);
             Require(errors.Count == (scenario == "Valid" ? 0 : 1), "The incomplete layout fixture must contain one real missing-field error.");
             var validation = new PresetValidationResult(document.ToYaml(), document.ToYaml(), new() { [rule.Id] = errors }, []);
+            var project = new PresetProject { Name = "Cooking over fire" };
+            var entry = project.Add(document, project.Name);
+            SetField(workspace, "project", project);
+            SetField(workspace, "activeEntry", entry);
             SetField(workspace, "document", document);
             SetField(workspace, "filename", "Cooking over fire");
             Field<TextBlock>(workspace, "title").Text = "Cooking over fire";
             Field<TextBlock>(workspace, "state").Text = document.Category + " / " + document.Kind +
                 (validation.IsValid ? " · ✓ Ready to save to a mod" : " · 1 details to complete or fix");
-            SetField(workspace, "validation", validation);
+            SetValidation(workspace, entry, validation);
             Invoke(workspace, "UpdatePresentation", document.ToYaml());
             Invoke(workspace, "RenderBlocks", rule.Id);
             Invoke(workspace, "SelectBlock");
@@ -53,7 +57,7 @@ internal static class LayoutChecks
                 "Opening a preset should release the installed-browser area for editing.");
             var viewport = Descendants<ScrollViewer>(workspace).Single(view => view.Name == "EditorViewport");
             var sidebar = Descendants<DockPanel>(workspace).Single(panel => panel.Name == "BlockSidebar");
-            var editor = Field<ValueEditorControl>(workspace, "editor");
+            var editor = Field<BehaviorEditorControl>(workspace, "editor");
             var name = Field<TextBox>(editor, "name");
             var client = (FrameworkElement)main.Content;
             var issues = Field<Expander>(workspace, "issues");
@@ -62,7 +66,7 @@ internal static class LayoutChecks
 
             foreach (var size in new[] { new Size(1050, 650), new Size(1400, 900) })
             {
-                SetField(workspace, "validation", validation);
+                SetValidation(workspace, entry, validation);
                 Invoke(workspace, "UpdateActions"); Invoke(workspace, "RenderIssues");
                 Field<TextBlock>(workspace, "state").Text = document.Category + " / " + document.Kind +
                     (validation.IsValid ? " · ✓ Ready to save to a mod" : " · 1 details to complete or fix");
@@ -96,19 +100,19 @@ internal static class LayoutChecks
                         "The Review issues toolbar action must also close an open issue list.");
                 }
                 name.Text = "Cooking beef at " + size.Width;
-                SetField(workspace, "validation", validation);
+                SetValidation(workspace, entry, validation);
                 Invoke(workspace, "UpdateActions"); Invoke(workspace, "RenderIssues");
                 Invoke(workspace, "ToggleFocusMode");
                 Measure(client, size);
                 Require(viewport.ActualWidth >= workspace.ActualWidth * 0.90,
                     $"At {size}, focus mode gives the editor only {viewport.ActualWidth:F0}px of {workspace.ActualWidth:F0}px available width.");
-                Require(sidebar.Visibility == Visibility.Collapsed && ReferenceEquals(editor, Field<ValueEditorControl>(workspace, "editor")) &&
+                Require(sidebar.Visibility == Visibility.Collapsed && ReferenceEquals(editor, Field<BehaviorEditorControl>(workspace, "editor")) &&
                     editor.BlockName == "Cooking beef at " + size.Width,
                     "Focus mode must preserve the selected editor instance and the unfinished edit.");
                 Console.WriteLine($"LAYOUT {scenario} {size.Width:F0}x{size.Height:F0}: editor {editingSize.Width:F0}x{editingSize.Height:F0}; focus width {viewport.ActualWidth:F0}.");
                 Invoke(workspace, "ToggleFocusMode");
                 Measure(client, size);
-                Require(sidebar.Visibility == Visibility.Visible && ReferenceEquals(editor, Field<ValueEditorControl>(workspace, "editor")) &&
+                Require(sidebar.Visibility == Visibility.Visible && ReferenceEquals(editor, Field<BehaviorEditorControl>(workspace, "editor")) &&
                     editor.BlockName == "Cooking beef at " + size.Width,
                     "Leaving focus mode must restore the overview without resetting the active edit.");
             }
@@ -132,7 +136,7 @@ internal static class LayoutChecks
             }
             Measure(client, new Size(1400, 900));
             Require(windowViewport.ScrollableWidth == 0 && windowViewport.ScrollableHeight == 0 &&
-                ReferenceEquals(editor, Field<ValueEditorControl>(workspace, "editor")) && editor.BlockName == "Cooking beef at 1400",
+                ReferenceEquals(editor, Field<BehaviorEditorControl>(workspace, "editor")) && editor.BlockName == "Cooking beef at 1400",
                 "Enlarging the window must restore its normal layout without outer scrollbars or losing the edit.");
         }
         finally
@@ -142,6 +146,12 @@ internal static class LayoutChecks
             SetField(workspace, "dirty", false);
             main.Close();
         }
+    }
+
+    private static void SetValidation(PresetWorkspace workspace, PresetProjectEntry entry, PresetValidationResult validation)
+    {
+        SetField(workspace, "validation", validation);
+        Field<Dictionary<string, PresetValidationResult>>(workspace, "validations")[entry.Id] = validation;
     }
 
     private static void CheckWorkspaceToolbar(PresetWorkspace workspace, FrameworkElement client)

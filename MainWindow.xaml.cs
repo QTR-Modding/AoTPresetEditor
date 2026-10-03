@@ -9,7 +9,6 @@ namespace AoTPresetEditor;
 public partial class MainWindow : Window
 {
     private const string AllPresetCategories = "All types";
-    private const string AllPresetKinds = "All kinds";
     private IReadOnlyList<FormRow> forms = [];
     private IReadOnlyList<PresetFile> presets = [];
     private PresetFile? selectedPreset;
@@ -120,16 +119,18 @@ public partial class MainWindow : Window
     private void UpdatePresetFilters()
     {
         var selectedCategory = PresetCategories.SelectedItem as string;
-        var selectedKind = PresetKinds.SelectedItem;
+        var selectedKind = (PresetKinds.SelectedItem as KeyValuePair<PresetKind?, string>?)?.Key;
         var categories = new[] { AllPresetCategories }
             .Concat(presets.Select(p => p.Category).Distinct(StringComparer.OrdinalIgnoreCase)
                 .Order(StringComparer.OrdinalIgnoreCase)).ToArray();
-        var kinds = new object[] { AllPresetKinds }.Concat(presets.Select(p => p.Kind).Distinct().Order().Cast<object>()).ToArray();
+        var kinds = new[] { new KeyValuePair<PresetKind?, string>(null, "All behaviors") }.Concat(presets.Select(p => p.Kind).Distinct().Order()
+            .Select(kind => new KeyValuePair<PresetKind?, string>(kind, kind switch
+            { PresetKind.Default => "Fallback aging", PresetKind.Custom => "Item aging", PresetKind.Addon => "Reactions and preservation", _ => "Other" }))).ToArray();
         PresetCategories.ItemsSource = categories;
         PresetKinds.ItemsSource = kinds;
         PresetCategories.SelectedItem = categories.FirstOrDefault(category =>
             string.Equals(category, selectedCategory, StringComparison.OrdinalIgnoreCase)) ?? AllPresetCategories;
-        PresetKinds.SelectedItem = kinds.Contains(selectedKind) ? selectedKind : AllPresetKinds;
+        PresetKinds.SelectedItem = kinds.FirstOrDefault(item => item.Key == selectedKind);
         FilterPresets();
     }
 
@@ -137,9 +138,7 @@ public partial class MainWindow : Window
     {
         var category = PresetCategories.SelectedItem as string;
         var allCategories = category is null or AllPresetCategories;
-        var kind = PresetKinds.SelectedItem as PresetKind?;
-        PresetList.DisplayMemberPath = allCategories ? nameof(PresetFile.RelativePath)
-            : kind is null ? nameof(PresetFile.CategoryPath) : nameof(PresetFile.RulePath);
+        var kind = (PresetKinds.SelectedItem as KeyValuePair<PresetKind?, string>?)?.Key;
         PresetList.ItemsSource = presets.Where(p =>
             (allCategories || string.Equals(p.Category, category, StringComparison.OrdinalIgnoreCase)) &&
             (kind is null || p.Kind == kind) &&

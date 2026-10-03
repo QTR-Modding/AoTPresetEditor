@@ -37,6 +37,7 @@ public sealed class PresetPresentation
     }
 
     public PresetValue? EffectiveValue(PresetBlock block) => EffectiveValue(block.Value);
+    public PresetValue? EffectiveValue(string blockId) => document.Blocks.FirstOrDefault(block => block.Id == blockId) is { } block ? EffectiveValue(block) : null;
     public PresetValue? EffectiveValue(PresetValue value) => effective.GetValueOrDefault(value);
 
     public FormRow? ResolveForm(string identifier) => forms.GetValueOrDefault(NormalizeIdentifier(identifier)) ?? forms.GetValueOrDefault(identifier);
@@ -68,16 +69,16 @@ public sealed class PresetPresentation
         return includeIdentifier && name != identifier ? $"{name} ({identifier})" : name;
     }
 
-    public string RuleSummary(PresetBlock block) => Summary(EffectiveValue(block) ?? block.Value, block.Context);
+    public string RuleSummary(PresetBlock block, bool behaviorMode = false) => Summary(EffectiveValue(block) ?? block.Value, block.Context, behaviorMode);
 
-    public string ReferenceLabel(PresetValue value)
+    public string ReferenceLabel(PresetValue value, bool behaviorMode = false)
     {
         if (value.Kind == ValueKind.Alias)
-            return "Shared: " + (document.Blocks.FirstOrDefault(block => PresetDocument.Descendants(block.Value)
+            return (behaviorMode ? "Common settings: " : "Shared: ") + (document.Blocks.FirstOrDefault(block => PresetDocument.Descendants(block.Value)
                 .Any(node => node.Anchor == value.Text))?.Name ?? value.Text);
         if (IsCall(value, out var name, out _))
-            return "Template: " + (document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name)?.Name ?? name);
-        if (value.Kind == ValueKind.Sequence) return string.Join(", ", value.Items.Select(ReferenceLabel).Where(label => label.Length != 0));
+            return (behaviorMode ? "Behavior: " : "Template: ") + (document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name)?.Name ?? name);
+        if (value.Kind == ValueKind.Sequence) return string.Join(", ", value.Items.Select(item => ReferenceLabel(item, behaviorMode)).Where(label => label.Length != 0));
         return "";
     }
 
@@ -85,15 +86,15 @@ public sealed class PresetPresentation
         .Where(block => block.Id != definition.Id && DependsOn(block.Id, definition.Id, []))
         .ToArray();
 
-    public string Summary(PresetValue value, string context = "")
+    public string Summary(PresetValue value, string context = "", bool behaviorMode = false, bool parametersAllowed = false)
     {
         if (value.IsUnsetArgument) return "Choose a value";
-        if (value.Kind == ValueKind.Alias) return ReferenceLabel(value);
+        if (value.Kind == ValueKind.Alias) return ReferenceLabel(value, behaviorMode);
         if (value.Kind == ValueKind.Scalar)
         {
             if (IsCall(value, out _, out var arguments))
-                return ReferenceLabel(value) + (arguments.Count == 0 ? "" : " · " + ListLabels(arguments));
-            return value.IsNull ? "Empty" : FormLabel(value.Text);
+                return ReferenceLabel(value, behaviorMode) + (arguments.Count == 0 ? "" : " · " + ListLabels(arguments, behaviorMode, parametersAllowed));
+            return value.IsNull ? "Empty" : FormLabel(ValueText(value, behaviorMode, parametersAllowed));
         }
         if (value.Kind == ValueKind.Sequence)
         {
@@ -102,58 +103,71 @@ public sealed class PresetPresentation
                 "stages" => "stages", "transformers" => "transformations", "timemodulators" or "modulators" => "time modifiers",
                 "effects" or "magiceffects" => "effects", "rules" => "rules", _ => "entries"
             };
-            return value.Items.Count == 0 ? "No " + noun : $"{value.Items.Count} {noun}: " + ListLabels(value.Items);
+            return value.Items.Count == 0 ? "No " + noun : $"{value.Items.Count} {noun}: " + ListLabels(value.Items, behaviorMode, parametersAllowed);
         }
         var normalized = PresetSchema.NormalizeContext(context.Length == 0 ? PresetSchema.InferContext("", value) : context);
         return normalized switch
         {
-            "rule" => SummarizeRule(value),
-            "stage" => Join("Stage " + (value.Get("no")?.Text ?? "?"), value.Get("name")?.Text ?? "",
-                Duration(value.Get("duration"), "game hour")),
-            "transformer" => Join(value.Get("FormEditorID") is { } trigger ? "Trigger: " + ListLabels(trigger) : "Choose a trigger",
-                value.Get("finalFormEditorID") is { } result ? "Produces " + ListLabels(result) : "Choose a result item", Duration(value.Get("duration"), "game hour")),
-            "modulator" => Join(value.Get("FormEditorID") is { } trigger ? "Trigger: " + ListLabels(trigger) : "Choose a trigger",
-                value.Get("magnitude") is { } multiplier ? multiplier.Text == "0" ? "Progress paused" : "Time multiplier: " + multiplier.Text : "Choose a time multiplier"),
-            "effect" => SummarizeEffect(value),
+            "rule" => SummarizeRule(value, behaviorMode, parametersAllowed),
+            "stage" => Join("Stage " + (value.Get("no") is { } number ? ValueText(number, behaviorMode, parametersAllowed) : "?"),
+                value.Get("name") is { } name ? ValueText(name, behaviorMode, parametersAllowed) : "",
+                Duration(value.Get("duration"), "game hour", behaviorMode, parametersAllowed)),
+            "transformer" => Join(value.Get("FormEditorID") is { } trigger ? "Trigger: " + ListLabels(trigger, behaviorMode, parametersAllowed) : "Choose a trigger",
+                value.Get("finalFormEditorID") is { } result ? "Produces " + ListLabels(result, behaviorMode, parametersAllowed) : "Choose a result item",
+                Duration(value.Get("duration"), "game hour", behaviorMode, parametersAllowed)),
+            "modulator" => Join(value.Get("FormEditorID") is { } trigger ? "Trigger: " + ListLabels(trigger, behaviorMode, parametersAllowed) : "Choose a trigger",
+                value.Get("magnitude") is { } multiplier ? multiplier.Text == "0" ? "Progress paused" : "Time multiplier: " + ValueText(multiplier, behaviorMode, parametersAllowed) : "Choose a time multiplier"),
+            "effect" => SummarizeEffect(value, behaviorMode, parametersAllowed),
             _ => value.Fields.Count == 0 ? "No settings" : string.Join(", ", value.Fields.Keys.Take(4)) + (value.Fields.Count > 4 ? $" +{value.Fields.Count - 4}" : "")
         };
     }
 
-    private string SummarizeEffect(PresetValue value)
+    private string SummarizeEffect(PresetValue value, bool behaviorMode, bool parametersAllowed)
     {
         var magnitudeField = PresetSchema.GetFields("effect", document.Kind).Single(field => field.Key == "magnitude");
         if (PresetSchema.InactiveReason(magnitudeField, value, "effect", document.Category) is not null)
             return "Zeroes the existing effect slot";
-        return Join(value.Get("FormEditorID") is { IsNull: false } effect ? ListLabels(effect) : "Inherited effect",
-            value.Get("magnitude") is { } magnitude ? "Magnitude " + magnitude.Text : "", Duration(value.Get("duration"), "second"));
+        return Join(value.Get("FormEditorID") is { IsNull: false } effect ? ListLabels(effect, behaviorMode, parametersAllowed) : "Inherited effect",
+            value.Get("magnitude") is { } magnitude ? "Magnitude " + ValueText(magnitude, behaviorMode, parametersAllowed) : "",
+            Duration(value.Get("duration"), "second", behaviorMode, parametersAllowed));
     }
 
-    private string SummarizeRule(PresetValue value)
+    private string SummarizeRule(PresetValue value, bool behaviorMode, bool parametersAllowed)
     {
         var items = value.Get("owners") ?? value.Get("forms");
         var target = value.Get("finalFormEditorID");
         var transformers = value.Get("transformers");
         var results = transformers?.Kind == ValueKind.Sequence
             ? transformers.Items.Select(item => item.Get("finalFormEditorID")).OfType<PresetValue>()
-                .Select(ListLabels).Distinct(StringComparer.Ordinal).ToArray() : [];
-        var label = items is null ? document.Kind == PresetKind.Default ? "Default item progression" : "Choose affected items" : ListLabels(items);
-        if (target is not null) label += " → " + ListLabels(target);
+                .Select(item => ListLabels(item, behaviorMode, parametersAllowed)).Distinct(StringComparer.Ordinal).ToArray() : [];
+        var label = items is null ? document.Kind == PresetKind.Default ? "Default item progression" : "Choose affected items" : ListLabels(items, behaviorMode, parametersAllowed);
+        if (target is not null) label += " → " + ListLabels(target, behaviorMode, parametersAllowed);
         else if (results.Length == 1) label += " → " + results[0];
         return Join(label, Count(value.Get("stages"), "stage", "stages"), Count(transformers, "transformation", "transformations"),
             Count(value.Get("timeModulators"), "time modifier", "time modifiers"));
     }
 
-    private string ListLabels(PresetValue value) => value.Kind == ValueKind.Sequence ? ListLabels(value.Items) : Summary(value);
-    private string ListLabels(IReadOnlyList<PresetValue> values) => string.Join(", ", values.Take(3).Select(value => Summary(value))) +
+    private string ListLabels(PresetValue value, bool behaviorMode, bool parametersAllowed) => value.Kind == ValueKind.Sequence
+        ? ListLabels(value.Items, behaviorMode, parametersAllowed) : Summary(value, behaviorMode: behaviorMode, parametersAllowed: parametersAllowed);
+    private string ListLabels(IReadOnlyList<PresetValue> values, bool behaviorMode, bool parametersAllowed) =>
+        string.Join(", ", values.Take(3).Select(value => Summary(value, behaviorMode: behaviorMode, parametersAllowed: parametersAllowed))) +
         (values.Count > 3 ? $" +{values.Count - 3}" : "");
     private static string Count(PresetValue? value, string singular, string plural) => value?.Kind == ValueKind.Sequence
         ? value.Items.Count == 0 ? "" : $"{value.Items.Count} {(value.Items.Count == 1 ? singular : plural)}" : "";
-    private static string Duration(PresetValue? value, string unit)
+    private static string Duration(PresetValue? value, string unit, bool behaviorMode, bool parametersAllowed)
     {
         if (value is null) return "";
+        if (behaviorMode && parametersAllowed && value.Text.StartsWith('$') && TemplateCall.IsName(value.Text[1..])) return "Varies per item";
         if (value.Text.Equals(".inf", StringComparison.OrdinalIgnoreCase)) return "No time limit";
         var singular = double.TryParse(value.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) && number == 1;
         return value.Text + " " + unit + (singular ? "" : "s");
+    }
+
+    private static string ValueText(PresetValue value, bool behaviorMode, bool parametersAllowed)
+    {
+        if (!behaviorMode || !parametersAllowed) return value.Text;
+        if (value.Text.StartsWith("$$", StringComparison.Ordinal)) return value.Text[1..];
+        return value.Text.StartsWith('$') && TemplateCall.IsName(value.Text[1..]) ? "Varies per item" : value.Text;
     }
     private static string Join(params string[] parts) => string.Join(" · ", parts.Where(part => part.Length != 0));
     private static bool IsCall(PresetValue value, out string name, out List<PresetValue> arguments)

@@ -3,6 +3,8 @@ using System.Text;
 
 namespace AoTPresetEditor;
 
+public sealed record PresetOutput(string Path, string Source);
+
 public static class PresetExport
 {
     private sealed class ExportFile(string path, byte[] content, bool preset)
@@ -17,21 +19,27 @@ public static class PresetExport
         public bool KeepBackup { get; set; }
     }
 
-    public static void Save(string presetPath, string source, IReadOnlyList<FormGroupDefinition> pendingGroups, string modFolder)
+    public static void Save(string presetPath, string source, IReadOnlyList<FormGroupDefinition> pendingGroups, string modFolder) =>
+        Save([new PresetOutput(presetPath, source)], pendingGroups, modFolder);
+
+    public static void Save(IReadOnlyList<PresetOutput> outputs, IReadOnlyList<FormGroupDefinition> pendingGroups, string modFolder)
     {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(modFolder));
         if (!Directory.Exists(root)) throw new DirectoryNotFoundException("Choose an existing destination mod folder.");
-        presetPath = Path.GetFullPath(presetPath);
+        if (outputs.Count == 0) throw new InvalidDataException("Add a behavior before exporting the preset.");
         var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
-        if (!presetPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("The preset must be saved inside the selected mod folder.");
         var encoding = new UTF8Encoding(false);
         var files = pendingGroups.Select(group => new ExportFile(FormGroupCatalog.GetExportPath(root, group.Name),
             encoding.GetBytes(FormGroupCatalog.Serialize(group)), false)).ToList();
-        files.Add(new(presetPath, encoding.GetBytes(source), true));
+        foreach (var output in outputs)
+        {
+            var path = Path.GetFullPath(output.Path);
+            if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Each preset file must be saved inside the selected mod folder.");
+            files.Add(new(path, encoding.GetBytes(output.Source), true));
+        }
         if (files.Select(file => file.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != files.Count)
-            throw new InvalidDataException("Two exported files have the same name. Give each form group a different name.");
-
+            throw new InvalidDataException("Two exported files have the same name. Give each preset file and form group a different name.");
         foreach (var file in files)
         {
             if (Directory.Exists(file.Path)) throw new IOException($"A folder occupies the output file path: {file.Path}");

@@ -28,6 +28,21 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
 {
     private readonly ItemCategories category = Enum.TryParse<ItemCategories>(Category, true, out var value) ? value : ItemCategories.None;
 
+    public static FormSelection ForField(PresetField? field, string category, IReadOnlyCollection<FormRow>? sourceForms = null,
+        IReadOnlyCollection<FormRow>? excludedForms = null)
+    {
+        var types = field?.FormTypes;
+        var excluded = new HashSet<FormRow>(excludedForms ?? []);
+        if (field?.MatchSourceType == true)
+            foreach (var form in sourceForms ?? [])
+            {
+                excluded.Add(form);
+                types = types is null ? [form.Type] : types.Where(type => type.Equals(form.Type, StringComparison.OrdinalIgnoreCase)).ToArray();
+            }
+        return new(types, field?.MatchPresetCategory == true ? category : null,
+            field?.TriggerOnly == true, field?.BoundObjectOnly == true, excluded);
+    }
+
     public bool Matches(FormRow form) =>
         (Types is null || Types.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
         (string.IsNullOrEmpty(Category) || (form.Categories & category) != 0) &&
