@@ -120,7 +120,7 @@ public sealed class PresetWorkspace : UserControl
         splitter.SetResourceReference(BackgroundProperty, "DividerStrokeColorDefaultBrush");
         Grid.SetColumn(splitter, 1); columns.Children.Add(splitter);
         details.Margin = new Thickness(8, 0, 0, 0);
-        var editorScroll = new ScrollViewer { Name = "EditorViewport", Content = details, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        var editorScroll = new ScrollViewer { Name = "EditorViewport", Content = details, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Grid.SetColumn(editorScroll, 2); columns.Children.Add(editorScroll);
         blocks.SelectionChanged += (_, _) => { if (!rendering) SelectBlock(); };

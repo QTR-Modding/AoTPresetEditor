@@ -40,6 +40,9 @@ internal static class BehaviorEditorChecks
         Require(BehaviorFamily.GetArgument(editor.Document, rule.Id, parameter).Text == "3",
             "Varying a field must capture the current input first.");
         Require(Field<TabControl>(editor, "tabs").SelectedIndex == 1, "Varying a field must open its variations.");
+        Require(Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Visible &&
+            Field<TextBlock>(editor, "variationContext").Text.Contains("Duration", StringComparison.OrdinalIgnoreCase),
+            "Opening per-item editing must name the chosen field and offer a visible way back.");
         Click(Field<Button>(editor, "duplicate"));
         var duplicateId = BehaviorFamily.Find(editor.Document, rule.Id)!.Rows[1].Id;
         CellInput(editor).Text = "7";
@@ -50,7 +53,11 @@ internal static class BehaviorEditorChecks
         Click(Field<Button>(editor, "addRow"));
         var newId = BehaviorFamily.Find(editor.Document, rule.Id)!.Rows[2].Id;
         CellInput(editor).Text = "9";
-        var tabs = Field<TabControl>(editor, "tabs"); tabs.SelectedIndex = 0;
+        var tabs = Field<TabControl>(editor, "tabs");
+        Click(Field<Button>(editor, "backToSettings"));
+        Require(tabs.SelectedIndex == 0 && Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Collapsed &&
+            BehaviorFamily.GetArgument(editor.Document, newId, parameter).Text == "9",
+            "Back must return to settings and capture the unfinished row without removing its variation.");
         Input(CollectionEntry(Common(editor), "transformers", 0), "finalFormEditorID").Text = "RoastedBeef";
         Field<TextBox>(editor, "name").Text = "Roasting";
         tabs.SelectedIndex = 1;
@@ -96,6 +103,9 @@ internal static class BehaviorEditorChecks
             family.Definition.Value.Get("transformers")!.Items.All(item => item.Get("duration")!.Text == "6"),
             "Use same value for all must replace every occurrence while preserving the name.");
         Require(family.Rows.Count == 2, "Making all settings common must retain both authored uses.");
+        Require(Field<TabControl>(editor, "tabs").Items.Count == 1 &&
+            Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Collapsed,
+            "Removing the final varying field must close the empty per-item view.");
     }
 
     private static void CollectionVariations()

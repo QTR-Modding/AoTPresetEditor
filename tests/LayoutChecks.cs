@@ -56,6 +56,8 @@ internal static class LayoutChecks
             Require(Field<Expander>(main, "PresetBrowser").Visibility == Visibility.Collapsed,
                 "Opening a preset should release the installed-browser area for editing.");
             var viewport = Descendants<ScrollViewer>(workspace).Single(view => view.Name == "EditorViewport");
+            Require(viewport.VerticalScrollBarVisibility == ScrollBarVisibility.Disabled,
+                "The workspace must constrain the editor without scrolling its navigation out of view.");
             var sidebar = Descendants<DockPanel>(workspace).Single(panel => panel.Name == "BlockSidebar");
             var editor = Field<BehaviorEditorControl>(workspace, "editor");
             var name = Field<TextBox>(editor, "name");
@@ -117,6 +119,8 @@ internal static class LayoutChecks
                     "Leaving focus mode must restore the overview without resetting the active edit.");
             }
 
+            if (scenario == "Valid") CheckVariationNavigation(editor, client, viewport);
+
             var windowViewport = Field<ScrollViewer>(main, "WindowViewport");
             foreach (var size in new[] { new Size(600, 400), new Size(320, 240) })
             {
@@ -146,6 +150,50 @@ internal static class LayoutChecks
             SetField(workspace, "dirty", false);
             main.Close();
         }
+    }
+
+    private static void CheckVariationNavigation(BehaviorEditorControl editor, FrameworkElement client, ScrollViewer viewport)
+    {
+        var tabs = Field<TabControl>(editor, "tabs");
+        var common = Field<ValueEditorControl>(editor, "commonEditor");
+        var collection = Descendants<ValueEditorControl>(common)
+            .Single(control => Field<PresetField?>(control, "field")?.Key == "transformers");
+        Field<ListBox>(collection, "entryList").SelectedIndex = 0;
+        foreach (var section in Descendants<Expander>(common)) section.IsExpanded = true;
+        var commonScroll = (ScrollViewer)((TabItem)tabs.Items[0]).Content;
+        var size = new Size(1050, 650);
+        Measure(client, size);
+        commonScroll.ScrollToBottom(); Measure(client, size);
+        Require(commonScroll.VerticalOffset > 0,
+            "The navigation regression fixture must start with a scrolled settings page.");
+        var option = Descendants<Button>(collection).Single(button =>
+            System.Windows.Automation.AutomationProperties.GetName(button) == "Options for Duration (game hours)");
+        option.ContextMenu!.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Vary per item"))
+            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        Measure(client, size);
+        var back = Field<Button>(editor, "backToSettings");
+        Require(tabs.SelectedIndex == 1 && Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Visible,
+            "Varying a field from a scrolled page must open per-item editing with a return action.");
+        CheckInside(back, viewport, "The return action must remain inside the editor viewport after changing views.");
+        var variationScroll = (ScrollViewer)((TabItem)tabs.Items[1]).Content;
+        var compactSize = new Size(1050, 450);
+        Measure(client, compactSize);
+        Require(variationScroll.ScrollableHeight > 0,
+            "The navigation regression fixture must overflow the per-item page before checking its return action.");
+        variationScroll.ScrollToBottom(); Measure(client, compactSize);
+        Require(variationScroll.VerticalOffset > 0,
+            "The per-item navigation check must scroll the content before testing the fixed return action.");
+        CheckInside(back, viewport, "Scrolling per-item values must not move the return action out of view.");
+        back.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Measure(client, size);
+        Require(tabs.SelectedIndex == 0 && Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Collapsed,
+            "The return action must restore settings instead of leaving an empty or detached view.");
+    }
+
+    private static void CheckInside(FrameworkElement control, FrameworkElement viewport, string message)
+    {
+        var bounds = control.TransformToAncestor(viewport).TransformBounds(new Rect(control.RenderSize));
+        Require(bounds.Top >= 0 && bounds.Bottom <= viewport.ActualHeight &&
+            bounds.Left >= 0 && bounds.Right <= viewport.ActualWidth, message);
     }
 
     private static void SetValidation(PresetWorkspace workspace, PresetProjectEntry entry, PresetValidationResult validation)

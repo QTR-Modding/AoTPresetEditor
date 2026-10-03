@@ -17,6 +17,11 @@ public sealed class BehaviorEditorControl : UserControl
     private readonly TextBox name = new();
     private readonly ContentControl commonContent = new();
     private readonly TabControl tabs = new();
+    private readonly ScrollViewer commonScroll;
+    private readonly ScrollViewer variationScroll;
+    private readonly DockPanel variationNavigation = new() { Margin = new Thickness(0, 0, 0, 6) };
+    private readonly Button backToSettings;
+    private readonly TextBlock variationContext = EditorControls.Text("");
     private readonly DataGrid table = new();
     private readonly ComboBox fieldChoice = new() { MinWidth = 160, MaxWidth = 380 };
     private readonly Expander cellSection = new() { IsExpanded = true, Margin = new Thickness(0, 10, 0, 0) };
@@ -76,15 +81,29 @@ public sealed class BehaviorEditorControl : UserControl
         var caption = EditorControls.Text("Behavior name");
         caption.VerticalAlignment = VerticalAlignment.Center; caption.Margin = new Thickness(0, 0, 10, 0);
         DockPanel.SetDock(caption, Dock.Left); heading.Children.Add(caption); heading.Children.Add(name);
-        var layout = new StackPanel(); layout.Children.Add(heading); layout.Children.Add(tabs); Content = layout;
+        var layout = new DockPanel();
+        DockPanel.SetDock(heading, Dock.Top); layout.Children.Add(heading);
+        DockPanel.SetDock(variationNavigation, Dock.Top); layout.Children.Add(variationNavigation);
+        layout.Children.Add(tabs); Content = layout;
         BuildVariationView();
-        tabs.Items.Add(new TabItem { Header = "Common settings", Content = commonContent });
+        backToSettings = EditorControls.Button("Back to settings", () => tabs.SelectedIndex = 0);
+        backToSettings.ToolTip = "Return to the behavior's settings and keep your edits.";
+        DockPanel.SetDock(backToSettings, Dock.Left); variationNavigation.Children.Add(backToSettings);
+        DockPanel.SetDock(same, Dock.Right); variationNavigation.Children.Add(same);
+        variationContext.VerticalAlignment = VerticalAlignment.Center;
+        variationContext.Margin = new Thickness(8, 0, 8, 0); variationNavigation.Children.Add(variationContext);
+        commonScroll = new ScrollViewer { Content = commonContent, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        variationScroll = new ScrollViewer { Content = variationView, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        tabs.Items.Add(new TabItem { Header = "Common settings", Content = commonScroll });
         tabs.SelectionChanged += (_, args) =>
         {
             if (refreshing || !ReferenceEquals(args.Source, tabs)) return;
             Capture(); variationsActive = tabs.SelectedIndex == 1;
             if (variationsActive) { RefreshRows(); OpenCell(); }
             else { ClearCell(); BuildCommonEditor(); }
+            UpdateActions();
         };
         Rebuild(false);
     }
@@ -176,10 +195,10 @@ public sealed class BehaviorEditorControl : UserControl
     {
         refreshing = true; ClearCell(); BuildCommonEditor();
         var family = BehaviorFamily.Find(document, RuleId);
-        if (family?.IsTemplate == true)
+        if (family is { IsTemplate: true, Parameters.Count: > 0 })
         {
             ((TabItem)tabs.Items[0]).Header = "Common settings";
-            if (tabs.Items.Count == 1) tabs.Items.Add(new TabItem { Header = "Variations", Content = variationView });
+            if (tabs.Items.Count == 1) tabs.Items.Add(new TabItem { Header = "Variations", Content = variationScroll });
             variationsActive = showVariations; tabs.SelectedIndex = showVariations ? 1 : 0;
             RefreshRows();
         }
@@ -188,9 +207,11 @@ public sealed class BehaviorEditorControl : UserControl
             ((TabItem)tabs.Items[0]).Header = "Settings";
             variationsActive = false; tabs.SelectedIndex = 0;
             if (tabs.Items.Count > 1) { ((TabItem)tabs.Items[1]).Content = null; tabs.Items.RemoveAt(1); }
+            RefreshRows();
         }
         refreshing = false;
         if (variationsActive) SelectCell(selectRow ?? RuleId, selectParameter ?? columns.FirstOrDefault()?.Parameter);
+        UpdateActions();
     }
 
     private void MakeVariable(IReadOnlyList<string> path, PresetField field)
@@ -199,7 +220,7 @@ public sealed class BehaviorEditorControl : UserControl
         try
         {
             var parameter = BehaviorFamily.MakeVariable(document, RuleId, path);
-            Rebuild(true, RuleId, parameter); NotifyChanged();
+            Rebuild(true, RuleId, parameter); variationScroll.ScrollToTop(); NotifyChanged();
         }
         catch (Exception error) { ShowError(error, "Cannot vary this setting"); }
     }
@@ -208,7 +229,7 @@ public sealed class BehaviorEditorControl : UserControl
 
     private void BuildVariationView()
     {
-        var help = EditorControls.Text("Each row supplies the settings that differ. Select a cell to edit it below. Ctrl-click or Shift-click rows to select several.");
+        var help = EditorControls.Text("Each row is one use of this behavior. Add rows to use it with different items or values. The other settings stay shared. Select a cell to edit its value below.");
         help.FontSize = 12; variationView.Children.Add(help);
         var actions = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
         addRow = EditorControls.Button("Add row", AddRow); actions.Children.Add(addRow);
@@ -241,7 +262,8 @@ public sealed class BehaviorEditorControl : UserControl
         };
         valueActions.Children.Add(fieldChoice);
         fill = EditorControls.Button("Fill selected rows", FillSelected); valueActions.Children.Add(fill);
-        same = EditorControls.Button("Use same value for all", SameForAll); valueActions.Children.Add(same);
+        same = EditorControls.Button("Use one value for this setting", SameForAll);
+        same.ToolTip = "Remove this variation and use the selected value throughout the behavior. You will be asked before replacing different values.";
         variationView.Children.Add(valueActions); variationView.Children.Add(cellSection);
     }
 
@@ -376,6 +398,8 @@ public sealed class BehaviorEditorControl : UserControl
     private void UpdateActions()
     {
         var selected = SelectedRows(); var column = fieldChoice.SelectedItem as VariationColumn;
+        variationNavigation.Visibility = variationsActive ? Visibility.Visible : Visibility.Collapsed;
+        variationContext.Text = column is null ? "Different values per item" : "Different values: " + column.Label;
         addRow.Visibility = document.Kind != PresetKind.Default ? Visibility.Visible : Visibility.Collapsed;
         addItems.Visibility = document.Kind != PresetKind.Default && column?.Field?.Kind is FieldKind.Form or FieldKind.FormList
             ? Visibility.Visible : Visibility.Collapsed;
@@ -385,7 +409,7 @@ public sealed class BehaviorEditorControl : UserControl
         var hasValue = cellRowId is not null && column is not null &&
             !BehaviorFamily.GetArgument(document, cellRowId, column.Parameter).IsUnsetArgument;
         fill.Visibility = hasValue && selected.Length > 1 ? Visibility.Visible : Visibility.Collapsed;
-        same.Visibility = hasValue ? Visibility.Visible : Visibility.Collapsed;
+        same.Visibility = variationsActive && hasValue ? Visibility.Visible : Visibility.Collapsed;
         paste.Visibility = valueActions.Visibility = columns.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (cellRowId is not null && column is not null)
         {
@@ -481,7 +505,7 @@ public sealed class BehaviorEditorControl : UserControl
         var different = family.Rows.Count(row => PresetYaml.Write(BehaviorFamily.GetArgument(document, row.Id, column.Parameter), flow: true) != chosen);
         if (different > 0 && MessageBox.Show(Window.GetWindow(this),
             $"Use {presentation.Summary(value, column.Field?.ChildContext ?? "", behaviorMode: true)} for {column.Label} in all {family.Rows.Count} rows?\n\nThis replaces {different} differing values and moves the setting into Common settings.",
-            "Use same value for all", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
+            "Use one value for this setting", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
         try { BehaviorFamily.SameForAll(document, RuleId, column.Parameter, value); Rebuild(false); NotifyChanged(); }
         catch (Exception error) { ShowError(error, "Cannot use this value for all rows"); }
     }
