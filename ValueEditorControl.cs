@@ -26,7 +26,7 @@ public sealed class ValueEditorControl : UserControl
     private readonly StackPanel content = new();
     private readonly TextBox? name;
     private readonly List<(ValueEditorControl Editor, Func<PresetValue?, PresetValue?> Resolve)> children = [];
-    private sealed record FieldView(Border Target, UIElement Body, TextBlock Status, PresetField Field, Expander Unused);
+    private sealed record FieldView(Border Target, UIElement Body, TextBlock Label, TextBlock Status, PresetField Field, Expander Unused);
     private readonly Dictionary<string, FieldView> fields = [];
     private Action capture = () => { };
     private PresetPresentation presentation;
@@ -45,18 +45,18 @@ public sealed class ValueEditorControl : UserControl
     private bool IsDefinition => !root.behaviorMode && (parametersAllowed || Document.Blocks.Any(block => block.Id == root.blockId && block.Kind == BlockKind.Shared));
     public string BlockName => name?.Text.Trim() ?? "";
     public event EventHandler? Changed;
-    public event Action<IReadOnlyList<string>, PresetField>? VariationRequested;
+    public event Func<IReadOnlyList<string>, PresetField, bool, bool>? VariableChangeRequested;
 
     public ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed = false, PresetField? field = null, string? blockName = null,
         IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null, bool behaviorMode = false, bool allowVariations = true,
-        IReadOnlyList<FormRow>? sourceForms = null)
-        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms) { }
+        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true)
+        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms, showHeading) { }
 
     private ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed, PresetField? field, string? blockName,
         IReadOnlyList<FormGroupDefinition> groups, ValueEditorControl? parent, Action<PresetValue>? replace, bool behaviorMode = false, bool allowVariations = true,
-        IReadOnlyList<FormRow>? sourceForms = null)
+        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true)
     {
         this.parent = parent;
         root = parent?.root ?? this;
@@ -79,12 +79,22 @@ public sealed class ValueEditorControl : UserControl
                 caption.FontWeight = FontWeights.SemiBold;
                 caption.Margin = new Thickness(0, 0, 10, 0); caption.VerticalAlignment = VerticalAlignment.Center;
                 DockPanel.SetDock(caption, Dock.Left); header.Children.Add(caption);
+                if (field is { Help.Length: > 0 })
+                {
+                    var info = EditorControls.Info(field.Label, field.Help);
+                    DockPanel.SetDock(info, Dock.Left); header.Children.Add(info);
+                }
                 name = new TextBox { Text = blockName };
                 AutomationProperties.SetName(name, title + " name");
                 name.TextChanged += (_, _) => NotifyChanged(); header.Children.Add(name); layout.Children.Add(header);
             }
-            else layout.Children.Add(EditorControls.Text(title, true));
-            if (field is { Help.Length: > 0 }) layout.Children.Add(new Expander { Header = "Field help", Content = Help(field.Help), Margin = new Thickness(0, 0, 0, 6) });
+            else if (showHeading)
+            {
+                var heading = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
+                var caption = EditorControls.Text(title, true); caption.Margin = new Thickness(0); heading.Children.Add(caption);
+                if (field is { Help.Length: > 0 }) heading.Children.Add(EditorControls.Info(field.Label, field.Help));
+                layout.Children.Add(heading);
+            }
         }
         layout.Children.Add(content); Content = layout; Render();
     }
@@ -173,7 +183,7 @@ public sealed class ValueEditorControl : UserControl
         else if (parametersAllowed && Value.Kind == ValueKind.Scalar && Value.Text.StartsWith('$') && TemplateCall.IsName(Value.Text[1..]))
         {
             content.Children.Add(EditorControls.Text(behaviorMode ? "Varies per item" : "Parameter: " + Value.Text[1..]));
-            content.Children.Add(Help(behaviorMode ? "Choose each value in Variations." : "Each use of this template supplies this value."));
+            if (!behaviorMode) content.Children.Add(Help("Each use of this template supplies this value."));
             if (!behaviorMode) content.Children.Add(EditorControls.Button("Use a fixed value", () => SetValue(NewValue(context, field))));
         }
         else if (IsCall(Value, out var template, out var args)) RenderCall(template!, args);
@@ -344,43 +354,31 @@ public sealed class ValueEditorControl : UserControl
     private void RenderField(PresetField descriptor, Panel target)
     {
         var current = Value.Get(descriptor.Key); var box = new StackPanel(); var row = new DockPanel();
-        Expander? section = null;
         var label = EditorControls.Text(descriptor.Label); label.FontWeight = FontWeights.SemiBold;
-        label.Margin = new Thickness(0, 0, 8, 2); label.VerticalAlignment = VerticalAlignment.Center;
+        label.Margin = new Thickness(0); label.VerticalAlignment = VerticalAlignment.Center;
+        var caption = new WrapPanel { Margin = new Thickness(0, 0, 8, 2), VerticalAlignment = VerticalAlignment.Center };
+        caption.Children.Add(label);
+        if (descriptor.Help.Length > 0) caption.Children.Add(EditorControls.Info(descriptor.Label, PresetSchema.FieldHelp(descriptor, context, Document.Kind)));
         var actions = new WrapPanel();
-        if (behaviorMode && allowVariations && descriptor.Key != "<<" && !(parametersAllowed && current?.Kind == ValueKind.Scalar &&
-            current.Text.StartsWith('$') && TemplateCall.IsName(current.Text[1..])))
+        var variable = behaviorMode && allowVariations && IsVariable(current);
+        if (behaviorMode && allowVariations && descriptor.Key != "<<" &&
+            (current is null || !PresetDocument.Descendants(current).Any(value => value.Anchor.Length > 0)))
         {
-            var options = new Button { Content = "⋯", Padding = new Thickness(8, 3, 8, 3), ToolTip = "Field options" };
-            AutomationProperties.SetName(options, "Options for " + descriptor.Label);
-            var menu = new ContextMenu();
-            var vary = new MenuItem { Header = "Vary per item" };
-            vary.Click += (_, _) => RequestVariation(descriptor);
-            menu.Items.Add(vary); options.ContextMenu = menu;
-            options.Click += (_, _) => { menu.PlacementTarget = options; menu.IsOpen = true; };
-            actions.Children.Add(options);
+            var choice = new CheckBox { Content = "Variable", IsChecked = variable, VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 4, 0) };
+            AutomationProperties.SetName(choice, "Variable: " + descriptor.Label);
+            choice.Click += (_, _) => RequestVariable(descriptor, choice, variable);
+            actions.Children.Add(choice);
         }
-        var explanation = Help(PresetSchema.FieldHelp(descriptor, context, Document.Kind));
-        explanation.Visibility = Visibility.Collapsed;
-        if (current is not null && (!descriptor.Required || Value.Get("<<") is not null)) actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Clear" : "Use inherited value", () =>
+        if (!variable && current is not null && (!descriptor.Required || Value.Get("<<") is not null)) actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Clear" : "Use inherited value", () =>
             ReplaceField(descriptor, target, null)));
-        else if (!descriptor.Required || Value.Get("<<") is not null)
+        else if (!variable && (!descriptor.Required || Value.Get("<<") is not null))
             actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Set" : "Override here", () =>
             {
                 var replacement = effective?.Get(descriptor.Key)?.Clone() ?? NewValue(descriptor.ChildContext, descriptor); replacement.Anchor = "";
                 ReplaceField(descriptor, target, replacement);
             }));
-        var help = new Button { Content = "Help", Padding = new Thickness(8, 3, 8, 3) };
-        AutomationProperties.SetName(help, "Help for " + descriptor.Label);
-        help.Click += (_, _) =>
-        {
-            var show = explanation.Visibility != Visibility.Visible;
-            explanation.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            if (show && section is not null) section.IsExpanded = true;
-            help.Content = show ? "Hide help" : "Help";
-        };
-        if (descriptor.Help.Length > 0) actions.Children.Add(help);
-        DockPanel.SetDock(actions, Dock.Right); row.Children.Add(actions); row.Children.Add(label); box.Children.Add(row);
+        DockPanel.SetDock(actions, Dock.Right); row.Children.Add(actions); row.Children.Add(caption); box.Children.Add(row);
         var status = Help(""); box.Children.Add(status);
         if (current is not null || descriptor.Required && Value.Get("<<") is null)
         {
@@ -390,7 +388,6 @@ public sealed class ValueEditorControl : UserControl
                 value => Value.Set(descriptor.Key, value), resolved => resolved?.Get(descriptor.Key));
             box.Children.Add(child);
         }
-        box.Children.Add(explanation);
         var collection = descriptor.Kind == FieldKind.ObjectList;
         var card = new Border { Child = box, BorderThickness = collection ? new Thickness(0, 0, 0, 1) : new Thickness(1),
             CornerRadius = new CornerRadius(collection ? 0 : 5), Padding = collection ? new Thickness(0, 6, 0, 6) : new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 6) };
@@ -399,26 +396,29 @@ public sealed class ValueEditorControl : UserControl
         if (descriptor.Kind is FieldKind.ObjectList or FieldKind.FormList or FieldKind.IntegerList)
         {
             box.Children.Remove(row);
-            section = new Expander { Header = row, Content = box, IsExpanded = true };
-            card.Child = section;
+            card.Child = new Expander { Header = row, Content = box, IsExpanded = true };
         }
         var unused = new StackPanel();
         unused.Children.Add(Help(""));
         if (current is not null) unused.Children.Add(EditorControls.Button("Remove setting", () => ReplaceField(descriptor, target, null)));
-        fields[descriptor.Key] = new(card, card.Child, status, descriptor,
+        fields[descriptor.Key] = new(card, card.Child, label, status, descriptor,
             new Expander { Header = "Unused: " + descriptor.Label, Content = unused });
         target.Children.Add(card);
     }
 
-    private void RequestVariation(PresetField descriptor)
+    private bool IsVariable(PresetValue? value) => parametersAllowed && value is { Kind: ValueKind.Scalar } &&
+        value.Text.StartsWith('$') && TemplateCall.IsName(value.Text[1..]);
+
+    private void RequestVariable(PresetField descriptor, CheckBox choice, bool previous)
     {
+        var enabled = choice.IsChecked == true;
+        choice.IsChecked = previous;
+        if (enabled == previous) return;
         root.Capture();
-        if (Value.Get(descriptor.Key) is null)
-            Value.Set(descriptor.Key, effective?.Get(descriptor.Key)?.Clone() ?? NewValue(descriptor.ChildContext, descriptor));
         var path = new List<string>();
         if (!FindPath(root.Value, Value, path)) return;
         path.Add(descriptor.Key);
-        root.VariationRequested?.Invoke(path, descriptor);
+        if (root.VariableChangeRequested?.Invoke(path, descriptor, enabled) == true) choice.IsChecked = enabled;
     }
 
     private static bool FindPath(PresetValue node, PresetValue target, List<string> path)
@@ -458,6 +458,11 @@ public sealed class ValueEditorControl : UserControl
             view.Target.Visibility = inactive is not null && own is null && inherited is null ? Visibility.Collapsed : Visibility.Visible;
             if (inactive is not null)
             {
+                if (IsVariable(own))
+                {
+                    view.Target.Child = view.Body; view.Status.Text = inactive; view.Status.Visibility = Visibility.Visible;
+                    continue;
+                }
                 ((TextBlock)((StackPanel)view.Unused.Content).Children[0]).Text = inactive;
                 view.Target.Child = view.Unused;
                 continue;
@@ -478,9 +483,9 @@ public sealed class ValueEditorControl : UserControl
             view.Status.Text = text; view.Status.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
             view.Status.SetResourceReference(TextBlock.ForegroundProperty, errors.Count > 0 || own is null && inherited is null && view.Field.Required && (Value.Get("<<") is null || effective is not null)
                 ? "SystemFillColorCautionBrush" : "TextFillColorSecondaryBrush");
-            if (view.Target is Border { Child: Expander { Header: DockPanel header } })
+            if (view.Target is Border { Child: Expander { Header: DockPanel } })
             {
-                var label = header.Children.OfType<TextBlock>().Single();
+                var label = view.Label;
                 var value = own ?? inherited;
                 var incomplete = errors.Count > 0 || own is null && inherited is null && view.Field.Required;
                 label.Text = view.Field.Label + (value?.Kind == ValueKind.Sequence ? $" ({value.Items.Count})" : "") + (incomplete ? " · Needs attention" : "");

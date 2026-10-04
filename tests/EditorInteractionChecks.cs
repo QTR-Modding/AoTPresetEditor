@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
 using AoTPresetEditor;
 
 internal static class EditorInteractionChecks
@@ -25,6 +26,7 @@ internal static class EditorInteractionChecks
         InlineEditing();
         TriggerStageIssueNavigation();
         CompactFields();
+        VariableCheckboxes();
         CompactScalarLists();
         CollectionDisclosure();
         StageCreationAfterRemoval();
@@ -465,14 +467,61 @@ internal static class EditorInteractionChecks
             "A form input and its picker must share a responsive row.");
         var card = Field<StackPanel>(editor, "content").Children.OfType<Border>()
             .Single(candidate => Descendants<TextBlock>(candidate).Any(text => text.Text == "Duration (game hours)"));
-        var explanation = Descendants<TextBlock>(card).Single(text => text.Text == PresetSchema.GetFields("Transformer", PresetKind.Addon).Single(field => field.Key == "duration").Help);
-        var help = Descendants<Button>(card).Single(button => Equals(button.Content, "Help"));
-        Require(explanation.Visibility == Visibility.Collapsed, "Static field instructions should start collapsed.");
+        var explanation = PresetSchema.GetFields("Transformer", PresetKind.Addon).Single(field => field.Key == "duration").Help;
+        var help = Descendants<Button>(card).Single(button => AutomationProperties.GetName(button) == "Help for Duration (game hours)");
+        var tooltip = (ToolTip)help.ToolTip;
+        Require(help.Focusable && help.IsTabStop && AutomationProperties.GetHelpText(help) == explanation &&
+            tooltip.Content is TextBlock { TextWrapping: TextWrapping.Wrap } tooltipText && tooltipText.Text == explanation &&
+            !Descendants<TextBlock>(card).Any(text => text.Text == explanation) &&
+            !Descendants<Expander>(editor).Any(expander => Equals(expander.Header, "Field help")),
+            "Field instructions must be available through a focusable information icon without occupying the input layout.");
         Click(help);
-        Require(explanation.Visibility == Visibility.Visible && Equals(help.Content, "Hide help"), "The field's help button must reveal its instructions without relying on hover.");
-        Click(help);
-        Require(explanation.Visibility == Visibility.Collapsed && changes == 0 && editor.Value.Get("duration")!.Text == "1",
-            "Opening and closing field help must leave the preset draft unchanged.");
+        Require(tooltip.IsOpen && changes == 0 && editor.Value.Get("duration")!.Text == "1",
+            "Opening the information tooltip must leave the preset draft unchanged.");
+        tooltip.IsOpen = false;
+        var durationField = PresetSchema.GetFields("Transformer", PresetKind.Addon).Single(field => field.Key == "duration");
+        var compact = new ValueEditorControl(document, Forms, PresetValue.Scalar("2"), "Value", durationField.Label,
+            field: durationField, showHeading: false);
+        Require(Descendants<TextBox>(compact).Single().Text == "2" &&
+            !Descendants<TextBlock>(compact).Any(text => text.Text == durationField.Label) &&
+            !Descendants<Button>(compact).Any(button => AutomationProperties.GetName(button).StartsWith("Help for ", StringComparison.Ordinal)),
+            "A selected-cell editor must support an external heading and tooltip without duplicating them.");
+    }
+
+    private static void VariableCheckboxes()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Addon);
+        var value = PresetYaml.Parse("FormEditorID: Fire\nfinalFormEditorID: Cooked\nduration: 3\n");
+        var editor = new ValueEditorControl(document, Forms, value, "Transformer", "Transformation", behaviorMode: true);
+        var requested = new List<(string Path, bool Enabled)>();
+        editor.VariableChangeRequested += (path, field, enabled) =>
+        {
+            requested.Add((string.Join("/", path), enabled));
+            Require(editor.Value.Get("duration")!.Text == "7", "The variable request must capture the current value before asking for a name.");
+            return false;
+        };
+        FieldInput(editor, "duration").Text = "7";
+        var duration = Descendants<CheckBox>(FieldCard(editor, "duration")).Single();
+        Require(Equals(duration.Content, "Variable") && duration.IsChecked == false &&
+            AutomationProperties.GetName(duration) == "Variable: Duration (game hours)",
+            "Eligible fields must show a named, unchecked Variable control without a menu.");
+        duration.IsChecked = true; duration.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+        var optional = Descendants<CheckBox>(FieldCard(editor, "color")).Single();
+        optional.IsChecked = true; optional.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+        Require(requested.SequenceEqual([("duration", true), ("color", true)]) && duration.IsChecked == false && optional.IsChecked == false &&
+            editor.Value.Get("duration")!.Text == "7" && editor.Value.Get("color") is null,
+            "Cancelling variable naming must restore both checkboxes and preserve configured and absent values.");
+
+        var stage = PresetYaml.Parse("no: 0\nname: Fresh\nduration: $hours\nvalue: $price\n");
+        var named = new ValueEditorControl(document, Forms, stage, "Stage", "Stage", parametersAllowed: true, behaviorMode: true);
+        var checkedVariable = Descendants<CheckBox>(FieldCard(named, "duration")).Single();
+        Require(checkedVariable.IsChecked == true && Descendants<CheckBox>(FieldCard(named, "value")).Single().IsChecked == true,
+            "Existing variables, including currently unused settings, must keep a checked control so they can be cleared.");
+        var cleared = false;
+        named.VariableChangeRequested += (path, field, enabled) => { cleared = path.SequenceEqual(["duration"]) && !enabled; return false; };
+        checkedVariable.IsChecked = false; checkedVariable.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+        Require(cleared && checkedVariable.IsChecked == true && named.Value.Get("duration")!.Text == "$hours",
+            "A rejected removal must preserve the existing variable and checked state.");
     }
 
     private static void CompactScalarLists()

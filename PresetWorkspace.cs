@@ -37,6 +37,7 @@ public sealed class PresetWorkspace : UserControl
     private readonly MenuItem down = new() { Header = "Move down" };
     private readonly MenuItem fileDraft = new() { Header = "Save draft..." };
     private readonly Button draftSave;
+    private readonly Button reset;
     private readonly ContentControl details = new();
     private readonly StackPanel issueList = new();
     private readonly Expander issues = new() { Header = "Review issues", MaxHeight = 150 };
@@ -77,6 +78,9 @@ public sealed class PresetWorkspace : UserControl
             issues.Visibility = issues.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
         });
         DockPanel.SetDock(reviewIssues, Dock.Right); toolbar.Children.Add(reviewIssues);
+        reset = EditorControls.Button("Reset...", ResetPreset);
+        reset.ToolTip = "Clear the whole preset and start again.";
+        DockPanel.SetDock(reset, Dock.Right); toolbar.Children.Add(reset);
         var fileMenu = new Menu { VerticalAlignment = VerticalAlignment.Center };
         var file = new MenuItem { Header = "File" };
         foreach (var (label, action) in new (string, Action)[] { ("New preset...", New), ("Open file or draft...", OpenFile), ("Import into this preset...", ImportFile) })
@@ -252,12 +256,13 @@ public sealed class PresetWorkspace : UserControl
                 if (category is null) return false;
             }
             var parsed = PresetDocument.Parse(source, category, kind);
+            var simplified = SimplifyBehaviors(parsed);
             var name = Path.GetFileNameWithoutExtension(file.FullPath);
             if (import && !CommitEditor()) return false;
             if (!import || project is null) project = new PresetProject { Name = name };
             var entry = project.Add(parsed, name, file.FullPath, Hash(Encoding.UTF8.GetBytes(source)));
             ResetEditor(); activeEntry = entry; document = parsed; filename = project.Name;
-            exportRoot = null; draftPath = null; dirty = import;
+            exportRoot = null; draftPath = null; dirty = import || simplified;
             validations.Clear(); presentation = null;
             location.Text = "Opened from: " + file.FullPath;
             Opened?.Invoke(); await Refresh(parsed.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Rule)?.Id);
@@ -280,8 +285,10 @@ public sealed class PresetWorkspace : UserControl
             try
             {
                 var parsed = PresetProject.FromDraft(await File.ReadAllTextAsync(picker.FileName), Path.GetFileNameWithoutExtension(picker.FileName));
+                var simplified = false;
+                foreach (var entry in parsed.Entries) simplified |= SimplifyBehaviors(entry.Document);
                 ResetEditor(); project = parsed; activeEntry = project.Entries.FirstOrDefault(); document = activeEntry?.Document;
-                filename = project.Name; draftPath = picker.FileName; exportRoot = null; dirty = false;
+                filename = project.Name; draftPath = picker.FileName; exportRoot = null; dirty = simplified;
                 validations.Clear(); presentation = null;
                 location.Text = "Draft: " + draftPath;
                 Opened?.Invoke(); await Refresh();
@@ -309,6 +316,14 @@ public sealed class PresetWorkspace : UserControl
         return dialog.ShowDialog() == true ? Categories[types.SelectedIndex] : null;
     }
 
+    private static bool SimplifyBehaviors(PresetDocument preset)
+    {
+        var before = preset.Blocks.Count;
+        foreach (var block in preset.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray())
+            if (preset.Blocks.Contains(block)) BehaviorFamily.Normalize(preset, block.Id);
+        return preset.Blocks.Count != before;
+    }
+
     public async void New()
     {
         if (!CanLeave()) return;
@@ -323,7 +338,26 @@ public sealed class PresetWorkspace : UserControl
             dialog.DialogResult = true;
         }), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel; if (dialog.ShowDialog() != true) return;
-        ResetEditor(); filename = name.Text.Trim(); project = new PresetProject { Name = filename };
+        await StartEmptyPreset(name.Text.Trim());
+    }
+
+    private async void ResetPreset()
+    {
+        if (project is null) return;
+        var dialog = new Window { Title = "Reset preset", Owner = Host, Width = 440,
+            SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        var panel = new StackPanel { Margin = new Thickness(20) };
+        panel.Children.Add(EditorControls.Text("Clear the whole preset?", true));
+        panel.Children.Add(EditorControls.Text("This removes all behaviors, variables, and unsaved form groups from this edit. Saved files stay on disk."));
+        EditorControls.Footer(panel, EditorControls.Button("Clear preset", () => dialog.DialogResult = true),
+            EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
+        dialog.Content = panel;
+        if (dialog.ShowDialog() == true) await StartEmptyPreset(filename);
+    }
+
+    private async Task StartEmptyPreset(string presetName)
+    {
+        ResetEditor(); filename = presetName; project = new PresetProject { Name = filename };
         activeEntry = null; document = null; presentation = null; validations.Clear();
         exportRoot = null; draftPath = null; dirty = true;
         location.Text = "Not saved"; Opened?.Invoke(); await Refresh();
@@ -419,7 +453,7 @@ public sealed class PresetWorkspace : UserControl
         var block = document.Blocks.First(entry => entry.Id == id);
         var family = BehaviorFamily.Find(document, id);
         var affected = family?.Rows.ToArray() ?? [block];
-        if (MessageBox.Show(Host, $"Delete '{family?.Definition.Name ?? block.Name}'" + (affected.Length > 1 ? $" and its {affected.Length} variations?" : "?"), "Delete behavior", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
+        if (MessageBox.Show(Host, $"Delete '{family?.Definition.Name ?? block.Name}'" + (affected.Length > 1 ? $" and its {affected.Length} rows?" : "?"), "Delete behavior", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
         ResetEditor(); foreach (var row in affected) document.Remove(row);
         if (activeEntry is not null) validations.Remove(activeEntry.Id);
         dirty = true; await Refresh();
@@ -536,7 +570,7 @@ public sealed class PresetWorkspace : UserControl
                     var label = family?.Definition.Name ?? block.Name;
                     var name = EditorControls.Text(label); name.FontWeight = FontWeights.SemiBold; name.Margin = new Thickness(0, 0, 0, 3);
                     name.TextWrapping = TextWrapping.NoWrap; name.TextTrimming = TextTrimming.CharacterEllipsis; text.Children.Add(name);
-                    var description = CategoryLabel(entry.Document.Category) + " · " + (rows.Count > 1 ? $"{rows.Count} variations" : catalog.RuleSummary(block, behaviorMode: true));
+                    var description = CategoryLabel(entry.Document.Category) + " · " + (rows.Count > 1 ? $"{rows.Count} rows" : catalog.RuleSummary(block, behaviorMode: true));
                     var summary = EditorControls.Text(description); summary.FontSize = 12; summary.LineHeight = 16; summary.MaxHeight = 32; summary.Margin = new Thickness(0);
                     summary.TextTrimming = TextTrimming.CharacterEllipsis; summary.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); text.Children.Add(summary);
                     rowPanel.Children.Add(text);
@@ -562,6 +596,7 @@ public sealed class PresetWorkspace : UserControl
         yaml.Visibility = Ready ? Visibility.Visible : Visibility.Collapsed;
         fileDraft.Visibility = project is not null ? Visibility.Visible : Visibility.Collapsed;
         draftSave.Visibility = project is not null && !Ready ? Visibility.Visible : Visibility.Collapsed;
+        reset.Visibility = project is { Entries.Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
         var selected = document?.Blocks.FirstOrDefault(block => block.Id == SelectedId);
         var siblings = document?.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray() ?? [];
         var index = Array.IndexOf(siblings, selected);

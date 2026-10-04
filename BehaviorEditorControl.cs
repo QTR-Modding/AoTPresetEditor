@@ -19,15 +19,10 @@ public sealed class BehaviorEditorControl : UserControl
     private readonly TabControl tabs = new();
     private readonly ScrollViewer commonScroll;
     private readonly ScrollViewer variationScroll;
-    private readonly DockPanel variationNavigation = new() { Margin = new Thickness(0, 0, 0, 6) };
-    private readonly Button backToSettings;
-    private readonly TextBlock variationContext = EditorControls.Text("");
     private readonly DataGrid table = new();
-    private readonly ComboBox fieldChoice = new() { MinWidth = 160, MaxWidth = 380 };
-    private readonly Expander cellSection = new() { IsExpanded = true, Margin = new Thickness(0, 10, 0, 0) };
+    private readonly ContentControl cellSection = new() { Margin = new Thickness(0, 10, 0, 0) };
     private readonly TextBlock rowStatus = EditorControls.Text("");
     private readonly TextBlock cellFeedback = EditorControls.Text("");
-    private readonly WrapPanel valueActions = new();
     private readonly List<VariationColumn> columns = [];
     private readonly List<VariationRow> rows = [];
     private PresetDocument document;
@@ -41,12 +36,12 @@ public sealed class BehaviorEditorControl : UserControl
     private bool variationsActive;
     private bool refreshing;
     private Button addRow = null!;
-    private Button addItems = null!;
-    private Button duplicate = null!;
-    private Button remove = null!;
-    private Button paste = null!;
-    private Button fill = null!;
-    private Button same = null!;
+    private Button addOptions = null!;
+    private readonly ContextMenu addMenu = new();
+    private readonly MenuItem duplicate = new() { Header = "Duplicate selected rows" };
+    private readonly MenuItem remove = new() { Header = "Remove selected rows" };
+    private readonly MenuItem paste = new() { Header = "Paste cells", InputGestureText = "Ctrl+V" };
+    private readonly MenuItem fill = new() { Header = "Fill selected rows with this value" };
 
     private sealed record VariationColumn(string Parameter, string Label, PresetField? Field);
 
@@ -83,25 +78,23 @@ public sealed class BehaviorEditorControl : UserControl
         DockPanel.SetDock(caption, Dock.Left); heading.Children.Add(caption); heading.Children.Add(name);
         var layout = new DockPanel();
         DockPanel.SetDock(heading, Dock.Top); layout.Children.Add(heading);
-        DockPanel.SetDock(variationNavigation, Dock.Top); layout.Children.Add(variationNavigation);
         layout.Children.Add(tabs); Content = layout;
         BuildVariationView();
-        backToSettings = EditorControls.Button("Back to settings", () => tabs.SelectedIndex = 0);
-        backToSettings.ToolTip = "Return to the behavior's settings and keep your edits.";
-        DockPanel.SetDock(backToSettings, Dock.Left); variationNavigation.Children.Add(backToSettings);
-        DockPanel.SetDock(same, Dock.Right); variationNavigation.Children.Add(same);
-        variationContext.VerticalAlignment = VerticalAlignment.Center;
-        variationContext.Margin = new Thickness(8, 0, 8, 0); variationNavigation.Children.Add(variationContext);
         commonScroll = new ScrollViewer { Content = commonContent, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         variationScroll = new ScrollViewer { Content = variationView, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        tabs.Items.Add(new TabItem { Header = "Common settings", Content = commonScroll });
+        tabs.Items.Add(new TabItem { Header = "Settings", Content = commonScroll });
         tabs.SelectionChanged += (_, args) =>
         {
             if (refreshing || !ReferenceEquals(args.Source, tabs)) return;
             Capture(); variationsActive = tabs.SelectedIndex == 1;
-            if (variationsActive) { RefreshRows(); OpenCell(); }
+            if (variationsActive)
+            {
+                var rowId = (table.CurrentItem as VariationRow)?.Id ?? RuleId;
+                var parameter = SelectedColumn?.Parameter;
+                RefreshRows(); SelectCell(rowId, parameter);
+            }
             else { ClearCell(); BuildCommonEditor(); }
             UpdateActions();
         };
@@ -153,13 +146,13 @@ public sealed class BehaviorEditorControl : UserControl
             var normalized = NormalizeLabel(message);
             var column = message.StartsWith("Fill the missing values", StringComparison.OrdinalIgnoreCase)
                 ? columns.FirstOrDefault(candidate => BehaviorFamily.GetArgument(document, row.Id, candidate.Parameter).IsUnsetArgument)
-                : columns.OrderByDescending(candidate => candidate.Label.Length)
-                    .FirstOrDefault(candidate => normalized.Contains(NormalizeLabel(candidate.Label), StringComparison.Ordinal));
-            column ??= columns.FirstOrDefault(candidate => normalized.Contains(NormalizeLabel(candidate.Label.Split(" / ")[^1]), StringComparison.Ordinal));
+                : columns.FirstOrDefault(candidate => ParameterLabel(family.Definition.Value, family.Definition.Context, candidate.Parameter) is { } label &&
+                    normalized.Contains(NormalizeLabel(label.Split(" / ")[^1]), StringComparison.Ordinal));
+            column ??= columns.FirstOrDefault(candidate => (" " + normalized + " ").Contains(" " + NormalizeLabel(candidate.Label) + " ", StringComparison.Ordinal));
             if (column is not null)
             {
                 tabs.SelectedIndex = 1; SelectCell(row.Id, column.Parameter);
-                cellSection.IsExpanded = true; cellSection.BringIntoView();
+                cellSection.BringIntoView();
                 if (cellEditor?.FocusIssue(message) != true) cellEditor?.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
                 return true;
             }
@@ -176,17 +169,17 @@ public sealed class BehaviorEditorControl : UserControl
         var family = BehaviorFamily.Find(document, RuleId);
         var definition = family?.Definition ?? Rule(); commonId = definition.Id;
         commonEditor = new ValueEditorControl(document, forms, definition.Value, definition.Context,
-            family?.IsTemplate == true ? "Common settings" : "Settings", parametersAllowed: family?.IsTemplate == true,
-            groups: groups, behaviorMode: true, allowVariations: family is not null, sourceForms: CommonSources());
+            "Settings", parametersAllowed: family?.IsTemplate == true,
+            groups: groups, behaviorMode: true, allowVariations: family is not null, sourceForms: CommonSources(), showHeading: false);
         document = commonEditor.Document;
         commonEditor.Changed += (_, _) => { if (!refreshing) NotifyChanged(); };
-        commonEditor.VariationRequested += MakeVariable;
+        commonEditor.VariableChangeRequested += ChangeVariable;
         var panel = new StackPanel();
         if (family?.IsTemplate == true)
         {
             var otherUses = new PresetPresentation(document, forms, groups).Uses(family.Definition)
                 .Count(block => block.Kind == BlockKind.Rule && !family.Rows.Any(row => row.Id == block.Id));
-            if (otherUses > 0) panel.Children.Add(EditorControls.Text($"Changes to these common settings also affect {otherUses} other behaviors."));
+            if (otherUses > 0) panel.Children.Add(EditorControls.Text($"These settings also affect {otherUses} other behaviors."));
         }
         panel.Children.Add(commonEditor); commonContent.Content = panel;
     }
@@ -197,8 +190,8 @@ public sealed class BehaviorEditorControl : UserControl
         var family = BehaviorFamily.Find(document, RuleId);
         if (family is { IsTemplate: true, Parameters.Count: > 0 })
         {
-            ((TabItem)tabs.Items[0]).Header = "Common settings";
-            if (tabs.Items.Count == 1) tabs.Items.Add(new TabItem { Header = "Variations", Content = variationScroll });
+            ((TabItem)tabs.Items[0]).Header = "Settings";
+            if (tabs.Items.Count == 1) tabs.Items.Add(new TabItem { Header = "Variables", Content = variationScroll });
             variationsActive = showVariations; tabs.SelectedIndex = showVariations ? 1 : 0;
             RefreshRows();
         }
@@ -214,29 +207,69 @@ public sealed class BehaviorEditorControl : UserControl
         UpdateActions();
     }
 
-    private void MakeVariable(IReadOnlyList<string> path, PresetField field)
+    private bool ChangeVariable(IReadOnlyList<string> path, PresetField field, bool enabled)
     {
         Capture();
         try
         {
-            var parameter = BehaviorFamily.MakeVariable(document, RuleId, path);
-            Rebuild(true, RuleId, parameter); variationScroll.ScrollToTop(); NotifyChanged();
+            if (enabled)
+            {
+                var parameter = ChooseVariableName(field);
+                if (parameter is null) return false;
+                BehaviorFamily.MakeVariable(document, RuleId, path, parameter,
+                    ValueEditorControl.NewValue(field.ChildContext, field));
+                Rebuild(false); NotifyChanged();
+            }
+            else
+            {
+                var family = BehaviorFamily.Find(document, RuleId)!;
+                var value = BehaviorFamily.GetValue(family.Definition.Value, path);
+                if (value is not { Kind: ValueKind.Scalar } || !value.Text.StartsWith('$')) return false;
+                RuleId = BehaviorFamily.ClearVariable(document, RuleId, value.Text[1..]);
+                Rebuild(false); NotifyChanged();
+            }
+            return true;
         }
-        catch (Exception error) { ShowError(error, "Cannot vary this setting"); }
+        catch (Exception error) { ShowError(error, "Cannot change variable"); return false; }
+    }
+
+    private string? ChooseVariableName(PresetField field)
+    {
+        var dialog = new Window { Owner = Window.GetWindow(this), Title = "Name variable", Width = 420,
+            SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        var panel = new StackPanel { Margin = new Thickness(20) };
+        panel.Children.Add(EditorControls.Text($"Variable name for {field.Label}"));
+        var input = new TextBox(); AutomationProperties.SetName(input, "Variable name"); panel.Children.Add(input);
+        var error = EditorControls.Text(""); error.Visibility = Visibility.Collapsed; panel.Children.Add(error);
+        EditorControls.Footer(panel, EditorControls.Button("Create", () =>
+        {
+            var candidate = input.Text.Trim();
+            error.Text = !TemplateCall.IsName(candidate) ? "Use letters, numbers, underscores, or hyphens."
+                : BehaviorFamily.Find(document, RuleId)?.Parameters.Contains(candidate) == true ? "That variable name is already in use." : "";
+            error.Visibility = error.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+            if (error.Text.Length == 0) dialog.DialogResult = true;
+        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
+        dialog.Content = panel; dialog.Loaded += (_, _) => input.Focus();
+        return dialog.ShowDialog() == true ? input.Text.Trim() : null;
     }
 
     private readonly StackPanel variationView = new();
 
     private void BuildVariationView()
     {
-        var help = EditorControls.Text("Each row is one use of this behavior. Add rows to use it with different items or values. The other settings stay shared. Select a cell to edit its value below.");
-        help.FontSize = 12; variationView.Children.Add(help);
-        var actions = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
         addRow = EditorControls.Button("Add row", AddRow); actions.Children.Add(addRow);
-        addItems = EditorControls.Button("Add items...", AddItems); actions.Children.Add(addItems);
-        duplicate = EditorControls.Button("Duplicate selected", DuplicateRows); actions.Children.Add(duplicate);
-        remove = EditorControls.Button("Remove selected", RemoveRows); actions.Children.Add(remove);
-        paste = EditorControls.Button("Paste rows", PasteRows); actions.Children.Add(paste); variationView.Children.Add(actions);
+        addRow.Margin = new Thickness(0); addRow.ToolTip = "Add an empty row.";
+        addOptions = EditorControls.Button("▾", () => { addMenu.PlacementTarget = addOptions; addMenu.IsOpen = true; });
+        AutomationProperties.SetName(addOptions, "Add rows from forms");
+        addOptions.Margin = new Thickness(1, 0, 0, 0); addOptions.ToolTip = "Add one row per selected form.";
+        actions.Children.Add(addOptions); variationView.Children.Add(actions);
+        duplicate.Click += (_, _) => DuplicateRows(); remove.Click += (_, _) => RemoveRows();
+        paste.Click += (_, _) => PasteRows(); fill.Click += (_, _) => FillSelected();
+        paste.ToolTip = "Paste tab-separated values, starting at the selected cell. Each line fills a row.";
+        table.ContextMenu = new ContextMenu();
+        foreach (var item in new[] { duplicate, remove, paste, fill }) table.ContextMenu.Items.Add(item);
+        table.ContextMenuOpening += (_, _) => UpdateActions();
         table.AutoGenerateColumns = false; table.IsReadOnly = true; table.CanUserAddRows = table.CanUserDeleteRows = false;
         table.CanUserReorderColumns = false; table.CanUserSortColumns = false;
         table.SelectionMode = DataGridSelectionMode.Extended; table.SelectionUnit = DataGridSelectionUnit.FullRow;
@@ -248,23 +281,10 @@ public sealed class BehaviorEditorControl : UserControl
         {
             if (args.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control) { PasteRows(); args.Handled = true; }
         };
+        AutomationProperties.SetName(table, "Variable values; select a cell to edit it below");
         variationView.Children.Add(table); rowStatus.FontSize = 12; rowStatus.Margin = new Thickness(0, 5, 0, 8);
         variationView.Children.Add(rowStatus);
-        var fieldLabel = EditorControls.Text("Setting"); fieldLabel.VerticalAlignment = VerticalAlignment.Center;
-        fieldLabel.Margin = new Thickness(0, 0, 8, 0); valueActions.Children.Add(fieldLabel);
-        fieldChoice.DisplayMemberPath = nameof(VariationColumn.Label);
-        fieldChoice.SelectionChanged += (_, _) =>
-        {
-            if (refreshing) return;
-            if (fieldChoice.SelectedItem is VariationColumn column && table.CurrentItem is VariationRow row)
-                SelectCell(row.Id, column.Parameter);
-            UpdateActions();
-        };
-        valueActions.Children.Add(fieldChoice);
-        fill = EditorControls.Button("Fill selected rows", FillSelected); valueActions.Children.Add(fill);
-        same = EditorControls.Button("Use one value for this setting", SameForAll);
-        same.ToolTip = "Remove this variation and use the selected value throughout the behavior. You will be asked before replacing different values.";
-        variationView.Children.Add(valueActions); variationView.Children.Add(cellSection);
+        variationView.Children.Add(cellSection);
     }
 
     private void RefreshRows()
@@ -277,9 +297,8 @@ public sealed class BehaviorEditorControl : UserControl
             for (var index = 0; index < family.Parameters.Count; index++)
             {
                 var parameter = family.Parameters[index];
-                var label = ParameterLabel(family.Definition.Value, family.Definition.Context, parameter) ?? $"Value {index + 1}";
+                var label = parameter;
                 var field = PresetSchema.GetParameterField(family.Definition, parameter, document);
-                if (field is not null) field = field with { Label = label };
                 columns.Add(new(parameter, label, field));
                 table.Columns.Add(new DataGridTextColumn { Header = label, Binding = new Binding($"[{index}]"), MinWidth = 130,
                     Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
@@ -291,8 +310,12 @@ public sealed class BehaviorEditorControl : UserControl
             }
         }
         table.ItemsSource = null; table.ItemsSource = rows;
-        fieldChoice.ItemsSource = null; fieldChoice.ItemsSource = columns;
-        fieldChoice.SelectedIndex = columns.Count == 0 ? -1 : Math.Max(0, columns.FindIndex(column => column.Parameter == cellParameter));
+        addMenu.Items.Clear();
+        foreach (var column in columns.Where(column => column.Field?.Kind is FieldKind.Form or FieldKind.FormList))
+        {
+            var item = new MenuItem { Header = $"Choose forms for {column.Label}..." };
+            item.Click += (_, _) => AddItems(column); addMenu.Items.Add(item);
+        }
         refreshing = wasRefreshing; UpdateActions();
     }
 
@@ -341,16 +364,17 @@ public sealed class BehaviorEditorControl : UserControl
         var columnIndex = Math.Max(0, columns.FindIndex(column => column.Parameter == parameter));
         refreshing = true; table.SelectedItem = row;
         table.CurrentCell = new DataGridCellInfo(row, table.Columns[columns.Count == 0 ? 0 : columnIndex + 1]);
-        if (columns.Count > 0) fieldChoice.SelectedIndex = columnIndex;
         refreshing = false; table.ScrollIntoView(row); OpenCell();
     }
+
+    private VariationColumn? SelectedColumn => table.Columns.IndexOf(table.CurrentCell.Column) is var index && index > 0 && index <= columns.Count
+        ? columns[index - 1] : columns.FirstOrDefault();
 
     private void OpenCell()
     {
         if (!variationsActive) return;
         var row = table.CurrentItem as VariationRow ?? table.SelectedItem as VariationRow;
-        var index = table.CurrentColumn is null ? -1 : table.CurrentColumn.DisplayIndex - 1;
-        var column = index >= 0 && index < columns.Count ? columns[index] : fieldChoice.SelectedItem as VariationColumn;
+        var column = SelectedColumn;
         if (row is null || column is null) { CaptureCell(); ClearCell(); UpdateActions(); return; }
         if (row.Id == cellRowId && column.Parameter == cellParameter) { UpdateActions(); return; }
         CaptureCell(); ClearCell();
@@ -359,11 +383,16 @@ public sealed class BehaviorEditorControl : UserControl
         var value = argument.IsUnsetArgument && column.Field?.Kind == FieldKind.ObjectList
             ? ValueEditorControl.NewValue(column.Field.ChildContext, column.Field) : argument;
         cellEditor = new ValueEditorControl(document, forms, value, column.Field?.ChildContext ?? PresetSchema.InferContext("", value),
-            column.Label, field: column.Field, groups: groups, behaviorMode: true, allowVariations: false, sourceForms: Sources(row.Id));
+            column.Label, field: column.Field, groups: groups, behaviorMode: true, allowVariations: false, sourceForms: Sources(row.Id), showHeading: false);
         cellEditor.Changed += (_, _) => { cellDirty = true; NotifyChanged(); RefreshSummaries(); };
-        var panel = new StackPanel(); cellFeedback.FontSize = 12; panel.Children.Add(cellFeedback); panel.Children.Add(cellEditor);
-        cellSection.Header = $"Row {row.Number}: {column.Label}"; cellSection.Content = panel; cellSection.Visibility = Visibility.Visible;
-        refreshing = true; fieldChoice.SelectedItem = column; refreshing = false; UpdateActions();
+        var panel = new StackPanel();
+        var heading = new StackPanel { Orientation = Orientation.Horizontal };
+        heading.Children.Add(EditorControls.Text($"Row {row.Number} · {column.Label}", true));
+        if (column.Field is { } field) heading.Children.Add(EditorControls.Info(field.Label, field.Help));
+        panel.Children.Add(heading); panel.Children.Add(cellEditor);
+        cellFeedback.FontSize = 12; panel.Children.Add(cellFeedback);
+        cellSection.Content = panel; cellSection.Visibility = Visibility.Visible;
+        UpdateActions();
     }
 
     private void ClearCell()
@@ -397,20 +426,16 @@ public sealed class BehaviorEditorControl : UserControl
 
     private void UpdateActions()
     {
-        var selected = SelectedRows(); var column = fieldChoice.SelectedItem as VariationColumn;
-        variationNavigation.Visibility = variationsActive ? Visibility.Visible : Visibility.Collapsed;
-        variationContext.Text = column is null ? "Different values per item" : "Different values: " + column.Label;
+        var selected = SelectedRows(); var column = SelectedColumn;
         addRow.Visibility = document.Kind != PresetKind.Default ? Visibility.Visible : Visibility.Collapsed;
-        addItems.Visibility = document.Kind != PresetKind.Default && column?.Field?.Kind is FieldKind.Form or FieldKind.FormList
+        addOptions.Visibility = document.Kind != PresetKind.Default && addMenu.Items.Count > 0
             ? Visibility.Visible : Visibility.Collapsed;
-        addItems.ToolTip = column is null ? "First vary an item setting in Common settings." : "Add one row for each form selected for " + column.Label + ".";
         duplicate.Visibility = document.Kind != PresetKind.Default && selected.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         remove.Visibility = selected.Length > 0 && selected.Length < rows.Count ? Visibility.Visible : Visibility.Collapsed;
         var hasValue = cellRowId is not null && column is not null &&
             !BehaviorFamily.GetArgument(document, cellRowId, column.Parameter).IsUnsetArgument;
         fill.Visibility = hasValue && selected.Length > 1 ? Visibility.Visible : Visibility.Collapsed;
-        same.Visibility = variationsActive && hasValue ? Visibility.Visible : Visibility.Collapsed;
-        paste.Visibility = valueActions.Visibility = columns.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        paste.Visibility = columns.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (cellRowId is not null && column is not null)
         {
             var value = BehaviorFamily.GetArgument(document, cellRowId, column.Parameter);
@@ -421,22 +446,22 @@ public sealed class BehaviorEditorControl : UserControl
             cellFeedback.SetResourceReference(TextBlock.ForegroundProperty, "SystemFillColorCautionBrush");
         }
         var missing = rows.Sum(row => columns.Count(item => BehaviorFamily.GetArgument(document, row.Id, item.Parameter).IsUnsetArgument));
-        rowStatus.Text = $"{rows.Count} rows" + (selected.Length > 1 ? $" · {selected.Length} selected" : "") +
-            (missing > 0 ? $" · {missing} values to fill" : columns.Count == 0 ? " · All settings are common." : "");
+        rowStatus.Text = $"{rows.Count} {(rows.Count == 1 ? "row" : "rows")}" + (selected.Length > 1 ? $" · {selected.Length} selected" : "") +
+            (missing > 0 ? $" · {missing} {(missing == 1 ? "value" : "values")} to fill" : "");
     }
 
     private void AddRow()
     {
-        Capture(); var parameter = (fieldChoice.SelectedItem as VariationColumn)?.Parameter;
+        Capture(); var parameter = SelectedColumn?.Parameter;
         var row = BehaviorFamily.AddUse(document, RuleId); Rebuild(true, row.Id, parameter); NotifyChanged();
     }
 
-    private void AddItems()
+    private void AddItems(VariationColumn column)
     {
-        if (fieldChoice.SelectedItem is not VariationColumn { Field: { } field } column) return;
+        if (column.Field is not { } field) return;
         Capture();
         var picker = new FormPickerWindow(forms, multiple: true,
-            selection: BulkFormSelection(field, column.Parameter), purpose: "Add items for " + column.Label.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
+            selection: BulkFormSelection(field, column.Parameter), purpose: "Choose forms for " + column.Label) { Owner = Window.GetWindow(this) };
         if (picker.ShowDialog() != true) return;
         string? first = null;
         foreach (var form in picker.SelectedForms)
@@ -487,7 +512,7 @@ public sealed class BehaviorEditorControl : UserControl
 
     private void FillSelected()
     {
-        if (cellRowId is null || fieldChoice.SelectedItem is not VariationColumn column) return;
+        if (cellRowId is null || SelectedColumn is not { } column) return;
         var selected = SelectedRows(); var rowId = cellRowId; Capture();
         var value = BehaviorFamily.GetArgument(document, rowId, column.Parameter);
         if (value.IsUnsetArgument) return;
@@ -495,47 +520,34 @@ public sealed class BehaviorEditorControl : UserControl
         Rebuild(true, rowId, column.Parameter); NotifyChanged();
     }
 
-    private void SameForAll()
-    {
-        if (cellRowId is null || fieldChoice.SelectedItem is not VariationColumn column) return;
-        var rowId = cellRowId; Capture(); var value = BehaviorFamily.GetArgument(document, rowId, column.Parameter);
-        if (value.IsUnsetArgument) return;
-        var family = BehaviorFamily.Find(document, RuleId)!;
-        var chosen = PresetYaml.Write(value, flow: true);
-        var different = family.Rows.Count(row => PresetYaml.Write(BehaviorFamily.GetArgument(document, row.Id, column.Parameter), flow: true) != chosen);
-        if (different > 0 && MessageBox.Show(Window.GetWindow(this),
-            $"Use {presentation.Summary(value, column.Field?.ChildContext ?? "", behaviorMode: true)} for {column.Label} in all {family.Rows.Count} rows?\n\nThis replaces {different} differing values and moves the setting into Common settings.",
-            "Use one value for this setting", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
-        try { BehaviorFamily.SameForAll(document, RuleId, column.Parameter, value); Rebuild(false); NotifyChanged(); }
-        catch (Exception error) { ShowError(error, "Cannot use this value for all rows"); }
-    }
-
     private void PasteRows()
     {
+        try { PasteCells(Clipboard.GetText()); }
+        catch (Exception error) { ShowError(error, "Cannot paste cells"); }
+    }
+
+    private void PasteCells(string text)
+    {
         if (columns.Count == 0) return;
-        try
+        if (string.IsNullOrEmpty(text)) return;
+        var startColumn = Math.Max(0, table.Columns.IndexOf(table.CurrentCell.Column) - 1);
+        var lines = text.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');
+        var values = lines.Select(line => line.Split('\t')).ToArray();
+        if (values.Any(row => row.Length > columns.Count - startColumn))
+            throw new InvalidOperationException($"The clipboard has {values.Max(row => row.Length)} columns. Only {columns.Count - startColumn} fit from '{columns[startColumn].Label}'.\n\nCopy only the matching columns, or select an earlier column before pasting. Separate columns with tabs and rows with new lines.");
+        var parsed = values.Select(row => row.Select((value, index) => PasteValue(value, columns[startColumn + index].Field)).ToArray()).ToArray();
+        var startRow = table.CurrentItem is VariationRow selected ? rows.IndexOf(selected) : rows.Count;
+        if (document.Kind == PresetKind.Default && startRow + parsed.Length > rows.Count)
+            throw new InvalidOperationException("This preset has one row. Paste the values into that row.");
+        Capture(); var existing = BehaviorFamily.Find(document, RuleId)!.Rows.ToArray(); string? first = null;
+        for (var rowIndex = 0; rowIndex < parsed.Length; rowIndex++)
         {
-            var text = Clipboard.GetText(); if (string.IsNullOrEmpty(text)) return;
-            var startColumn = Math.Max(0, table.CurrentColumn?.DisplayIndex - 1 ?? 0);
-            var lines = text.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');
-            var values = lines.Select(line => line.Split('\t')).ToArray();
-            if (values.Any(row => row.Length > columns.Count - startColumn))
-                throw new InvalidOperationException("The pasted rows have more columns than the selected setting and the settings to its right.");
-            var parsed = values.Select(row => row.Select((value, index) => PasteValue(value, columns[startColumn + index].Field)).ToArray()).ToArray();
-            var startRow = table.CurrentItem is VariationRow selected ? rows.IndexOf(selected) : rows.Count;
-            if (document.Kind == PresetKind.Default && startRow + parsed.Length > rows.Count)
-                throw new InvalidOperationException("This preset has one row. Paste the values into that row.");
-            Capture(); var existing = BehaviorFamily.Find(document, RuleId)!.Rows.ToArray(); string? first = null;
-            for (var rowIndex = 0; rowIndex < parsed.Length; rowIndex++)
-            {
-                var target = startRow + rowIndex < existing.Length ? existing[startRow + rowIndex] : BehaviorFamily.AddUse(document, RuleId);
-                first ??= target.Id;
-                for (var columnIndex = 0; columnIndex < parsed[rowIndex].Length; columnIndex++)
-                    BehaviorFamily.SetArgument(document, target.Id, columns[startColumn + columnIndex].Parameter, parsed[rowIndex][columnIndex]);
-            }
-            Rebuild(true, first, columns[startColumn].Parameter); NotifyChanged();
+            var target = startRow + rowIndex < existing.Length ? existing[startRow + rowIndex] : BehaviorFamily.AddUse(document, RuleId);
+            first ??= target.Id;
+            for (var columnIndex = 0; columnIndex < parsed[rowIndex].Length; columnIndex++)
+                BehaviorFamily.SetArgument(document, target.Id, columns[startColumn + columnIndex].Parameter, parsed[rowIndex][columnIndex]);
         }
-        catch (Exception error) { ShowError(error, "Cannot paste rows"); }
+        Rebuild(true, first, columns[startColumn].Parameter); NotifyChanged();
     }
 
     private static PresetValue PasteValue(string text, PresetField? field)

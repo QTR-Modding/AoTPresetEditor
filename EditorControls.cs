@@ -1,5 +1,8 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 
 namespace AoTPresetEditor;
 
@@ -32,6 +35,27 @@ internal static class EditorControls
     {
         var button = new Button { Content = title, IsCancel = isCancel };
         button.Click += (_, _) => action();
+        return button;
+    }
+    public static Button Info(string label, string explanation)
+    {
+        var tooltip = new ToolTip { Content = new TextBlock { Text = explanation, TextWrapping = TextWrapping.Wrap, MaxWidth = 420 },
+            Placement = PlacementMode.Bottom };
+        var button = new Button { Content = "ⓘ", Width = 24, Height = 24, MinWidth = 0, MinHeight = 0,
+            Padding = new Thickness(0), Margin = new Thickness(5, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = tooltip };
+        tooltip.PlacementTarget = button;
+        AutomationProperties.SetName(button, "Help for " + label);
+        AutomationProperties.SetHelpText(button, explanation);
+        ToolTipService.SetInitialShowDelay(button, 0);
+        button.Click += (_, _) => tooltip.IsOpen = true;
+        button.GotKeyboardFocus += (_, _) => tooltip.IsOpen = true;
+        button.LostKeyboardFocus += (_, _) => tooltip.IsOpen = false;
+        button.PreviewKeyDown += (_, args) =>
+        {
+            if (args.Key != Key.Escape || !tooltip.IsOpen) return;
+            tooltip.IsOpen = false; args.Handled = true;
+        };
         return button;
     }
     public static DockPanel Footer(Panel parent, params Button[] buttons)

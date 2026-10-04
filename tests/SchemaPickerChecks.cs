@@ -9,6 +9,7 @@ internal static class SchemaPickerChecks
     {
         GroupFields();
         ParameterFields();
+        AcousticResultSelection();
         GroupDrafts();
     }
 
@@ -81,6 +82,40 @@ internal static class SchemaPickerChecks
         Require(Get("soundOnly", "audio").FormTypes!.SequenceEqual(["SoundDescriptor"]), "A standalone sound template must infer its form type.");
         document.Blocks.Single(block => block.Kind == BlockKind.Template && block.Key == "inner").Context = "Value";
         Require(Get("inner", "time").Kind == FieldKind.Number, "A generic template containing duration must infer its field context.");
+    }
+
+    private static void AcousticResultSelection()
+    {
+        FormRow Row(string type) => new(type, type, type, "Test.esp", "Test.esp", type,
+            IsTrigger: true, IsBoundObject: true);
+        var acoustic = Row("AcousticSpace");
+        FormRow[] forms = [acoustic, Row("Static"), Row("Weapon")];
+        foreach (var context in new[] { "rule", "transformer" })
+        {
+            var field = PresetSchema.GetFields(context, PresetKind.Custom).Single(field => field.Key == "finalFormEditorID");
+            var selection = FormSelection.ForField(field, "FOOD");
+            Require(selection.Matches(acoustic), "AoT-accepted acoustic space identifiers must remain valid when imported or entered manually.");
+            var picker = new FormPickerWindow(forms, selection: selection);
+            Require(Field<DataGrid>(picker, "results").Items.Cast<FormRow>().SequenceEqual(forms.Skip(1)),
+                "Result pickers must omit acoustic spaces while retaining inventory and world objects.");
+            Require(!Field<ComboBox>(picker, "types").Items.Cast<string>().Contains("AcousticSpace"),
+                "The result type dropdown must omit acoustic spaces too.");
+            picker.Close();
+        }
+        Require(new FormSelection().IsPickerChoice(acoustic) && new FormSelection(TriggerOnly: true).IsPickerChoice(acoustic),
+            "Result picker policy must not narrow the form browser or trigger selection.");
+        var document = PresetDocument.Parse("""
+            ownerLists:
+            - owners: FoodBeef
+              stages: [{no: 0, name: '', duration: 1}]
+              finalFormEditorID: AcousticSpace
+              transformers:
+              - {FormEditorID: Static, finalFormEditorID: AcousticSpace, duration: 1}
+            """, "FOOD", PresetKind.Custom);
+        var errors = (IReadOnlyList<string>)typeof(PresetValidation)
+            .GetMethod("KnownFormErrors", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [document.Blocks.Single().Value, "FOOD", PresetKind.Custom, new PresetPresentation(document, forms)])!;
+        Require(errors.Count == 0, "Hiding acoustic space choices must not invalidate existing final result identifiers.");
     }
 
     private static void GroupDrafts()

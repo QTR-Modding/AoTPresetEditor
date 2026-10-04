@@ -50,26 +50,40 @@ public sealed class BehaviorFamily
         return value;
     }
 
-    public static string MakeVariable(PresetDocument document, string ruleId, IReadOnlyList<string> path)
+    public static string MakeVariable(PresetDocument document, string ruleId, IReadOnlyList<string> path, string? requestedName = null,
+        PresetValue? initialValue = null)
     {
         var family = RequireFamily(document, ruleId);
         if (path.Count == 0) throw new InvalidOperationException("Choose a setting inside the behavior.");
-        var value = GetValue(family.Definition.Value, path) ?? throw new InvalidOperationException("This setting is no longer present.");
+        var parent = GetValue(family.Definition.Value, path.Take(path.Count - 1).ToArray());
+        var value = GetValue(family.Definition.Value, path);
+        if (value is null && parent?.Kind != ValueKind.Mapping) throw new InvalidOperationException("This setting is no longer present.");
+        value ??= initialValue ?? PresetValue.UnsetArgument();
         if (value.Kind == ValueKind.Scalar && value.Text.StartsWith('$') && family.Parameters.Contains(value.Text[1..]))
             return value.Text[1..];
         if (PresetDocument.Descendants(value).Any(node => node.Anchor.Length > 0))
             throw new InvalidOperationException("This setting defines shared data. Edit its shared definition before varying it.");
-        var stem = string.Join("_", path.Select(part => Regex.Replace(part, "[^a-zA-Z0-9_-]", "_")));
-        if (stem.Length == 0) stem = "value";
-        var parameter = stem;
-        var suffix = 2;
-        while (family.Parameters.Contains(parameter)) parameter = stem + suffix++;
+        var parameter = requestedName;
+        if (parameter is not null)
+        {
+            if (!TemplateCall.IsName(parameter)) throw new InvalidOperationException("Variable names can contain letters, digits, underscores and hyphens.");
+            if (family.Parameters.Contains(parameter)) throw new InvalidOperationException("This behavior already has a variable with that name.");
+        }
+        else
+        {
+            var stem = string.Join("_", path.Select(part => Regex.Replace(part, "[^a-zA-Z0-9_-]", "_")));
+            if (stem.Length == 0) stem = "value";
+            parameter = stem;
+            var suffix = 2;
+            while (family.Parameters.Contains(parameter)) parameter = stem + suffix++;
+        }
         var previous = document.Clone();
         var originalWasTemplate = family.IsTemplate;
         family = EnsureTemplate(document, family);
         var before = family.Parameters;
         var original = value.Clone();
         SetValue(family.Definition.Value, path, PresetValue.Scalar("$" + parameter));
+        if (IsSelectorParameter(document, family.Definition, parameter)) original = PresetDocument.CompactSelector(original);
         var after = TemplateCall.FindParameters(family.Definition.Value, document);
         foreach (var block in document.Blocks)
             RewriteCalls(block.Value, family.Definition.Key, before, after, original, parameter, document,
@@ -91,15 +105,102 @@ public sealed class BehaviorFamily
         if (previous is not null) document.RebindTemplateCalls(previous);
     }
 
-    public static void SameForAll(PresetDocument document, string ruleId, string parameter, PresetValue value)
+    public static string ClearVariable(PresetDocument document, string ruleId, string parameter)
     {
         var family = RequireFamily(document, ruleId);
-        if (!family.Parameters.Contains(parameter)) throw new InvalidOperationException("This variation is no longer present.");
-        var previous = document.Clone();
-        PadCalls(document, family.Definition.Key, family.Parameters.Count);
-        family.Definition.Value = Substitute(family.Definition.Value,
-            new Dictionary<string, PresetValue>(StringComparer.Ordinal) { [parameter] = EscapeLiteral(value, document, [], out _) }, document, [], false);
-        document.RebindTemplateCalls(previous);
+        if (!family.Parameters.Contains(parameter)) throw new InvalidOperationException("This variable is no longer present.");
+        var anchors = PresetDocument.Descendants(family.Definition.Value)
+            .Where(node => node.Kind == ValueKind.Scalar && node.Text == "$" + parameter && node.Anchor.Length > 0)
+            .Select(node => node.Anchor).ToHashSet(StringComparer.Ordinal);
+        if (document.Blocks.Where(block => block.Id != family.Definition.Id).SelectMany(block => PresetDocument.Descendants(block.Value))
+            .Any(node => node.Kind == ValueKind.Alias && anchors.Contains(node.Text)))
+            throw new InvalidOperationException("Another behavior refers to this field's shared name. Remove that reference before clearing the variable.");
+        var cleared = ClearParameter(family.Definition.Value, parameter, document, [])!;
+        SetCommon(document, ruleId, cleared);
+        return Normalize(document, ruleId);
+    }
+
+    public static string Normalize(PresetDocument document, string ruleId)
+    {
+        var family = Find(document, ruleId);
+        if (family is not { IsTemplate: true, Parameters.Count: 0 } ||
+            CallNames(family.Definition.Value).Contains(family.Definition.Key) ||
+            PresetDocument.Descendants(family.Definition.Value).Any(node => node.Anchor.Length > 0 || node.Kind == ValueKind.Alias) ||
+            family.Rows.Any(row => PresetDocument.Descendants(row.Value).Any(HasAnnotations)) ||
+            new PresetPresentation(document, []).Uses(family.Definition).Any(use => !family.Rows.Contains(use))) return ruleId;
+        var first = family.Rows[0];
+        var firstIndex = document.Blocks.IndexOf(first);
+        for (var index = 0; index < family.Rows.Count; index++)
+            if (document.Blocks.IndexOf(family.Rows[index]) != firstIndex + index || family.Rows[index].Name != first.Name ||
+                family.Rows[index].Context != first.Context || !TryCall(CallValue(document, family.Rows[index]), out _, out var arguments) || arguments.Count != 0)
+                return ruleId;
+        var value = Substitute(family.Definition.Value, new Dictionary<string, PresetValue>(), document, [], true);
+        first.Value = value;
+        first.Name = family.Definition.Name;
+        foreach (var row in family.Rows.Skip(1)) document.Remove(row);
+        document.Remove(family.Definition);
+        return first.Id;
+    }
+
+    private static bool HasAnnotations(PresetValue value) => value.Anchor.Length > 0 || value.Tag.Length > 0 ||
+        value.Comments.Count > 0 || value.TrailingComments.Count > 0 || value.InlineComment.Length > 0;
+
+    private static PresetValue? ClearParameter(PresetValue value, string parameter, PresetDocument document, HashSet<string> active)
+    {
+        if (value.Kind == ValueKind.Scalar && value.Text == "$" + parameter) return null;
+        PresetValue? source = null;
+        var reference = "";
+        if (value.Kind == ValueKind.Alias)
+        {
+            source = document.Blocks.SelectMany(block => PresetDocument.Descendants(block.Value)).FirstOrDefault(node => node.Anchor == value.Text);
+            reference = "&" + value.Text;
+        }
+        else if (TryCall(value, out var name, out var arguments) && TemplateCall.FindParameters(value, document).Contains(parameter))
+        {
+            var definition = document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name);
+            if (definition is not null)
+            {
+                var parameters = TemplateCall.FindParameters(definition.Value, document);
+                var bindings = parameters.Select((key, index) => (key, value: index < arguments.Count ? arguments[index] : PresetValue.UnsetArgument()))
+                    .ToDictionary(item => item.key, item => item.value, StringComparer.Ordinal);
+                source = Substitute(definition.Value, bindings, document, [], false);
+                reference = name;
+            }
+        }
+        if (source is not null && TemplateCall.FindParameters(source, document).Contains(parameter))
+        {
+            if (!active.Add(reference)) throw new InvalidDataException("Shared settings refer to each other in a circle.");
+            var resolved = ClearParameter(source, parameter, document, active);
+            active.Remove(reference);
+            if (resolved is not null)
+            {
+                foreach (var node in PresetDocument.Descendants(resolved)) node.Anchor = "";
+                KeepComments(value, resolved);
+            }
+            return resolved;
+        }
+        var result = value.Clone();
+        foreach (var (key, child) in value.Fields)
+        {
+            var cleared = ClearParameter(child, parameter, document, active);
+            if (cleared is not null) result.Set(key, cleared);
+            else { result.Remove(key); KeepComments(child, result); }
+        }
+        result.Items.Clear();
+        foreach (var child in value.Items)
+        {
+            var cleared = ClearParameter(child, parameter, document, active);
+            if (cleared is not null) result.Items.Add(cleared);
+            else KeepComments(child, result);
+        }
+        return result;
+    }
+
+    private static void KeepComments(PresetValue source, PresetValue target)
+    {
+        target.TrailingComments.AddRange(source.Comments);
+        if (source.InlineComment.Length > 0) target.TrailingComments.Add(source.InlineComment);
+        target.TrailingComments.AddRange(source.TrailingComments);
     }
 
     public static PresetValue GetArgument(PresetDocument document, string rowId, string parameter)
@@ -119,7 +220,8 @@ public sealed class BehaviorFamily
         var call = CallValue(document, row);
         TryCall(call, out _, out var arguments);
         while (arguments.Count < family.Parameters.Count) arguments.Add(PresetValue.UnsetArgument());
-        arguments[index] = value.Clone();
+        arguments[index] = IsSelectorParameter(document, family.Definition, parameter)
+            ? PresetDocument.CompactSelector(value).Clone() : value.Clone();
         call.Text = TemplateCall.Format(family.Definition.Key, arguments);
     }
 
@@ -196,6 +298,14 @@ public sealed class BehaviorFamily
         for (var index = 0; index < family.Parameters.Count; index++)
             if (family.Parameters[index] == parameter) return index;
         throw new InvalidOperationException("This variation is no longer present.");
+    }
+
+    private static bool IsSelectorParameter(PresetDocument document, PresetBlock definition, string parameter)
+    {
+        var key = document.Kind == PresetKind.Addon ? "forms" : "owners";
+        return document.Kind != PresetKind.Default && definition.Value.Get(key) is { Kind: ValueKind.Scalar } selector &&
+            selector.Text == "$" + parameter && !definition.Value.Fields.Where(field => field.Key != key)
+                .Any(field => TemplateCall.FindParameters(field.Value, document).Contains(parameter));
     }
 
     private static PresetValue CallValue(PresetDocument document, PresetBlock rule) =>

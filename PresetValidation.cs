@@ -29,7 +29,7 @@ public static class PresetValidation
         {
             var blockErrors = new List<string>();
             if (string.IsNullOrWhiteSpace(block.Name)) blockErrors.Add("Give this block a name.");
-            if (HasUnsetArgument(block.Value, templateNames)) blockErrors.Add("Fill the missing values in Variations for this item.");
+            if (HasUnsetArgument(block.Value, templateNames)) blockErrors.Add("Fill the missing values in Variables for this row.");
             if (block.Kind != BlockKind.Rule)
                 blockErrors.AddRange(PresetSchema.Validate(block.Value, block.Context, document.Category, document.Kind, partial: true));
             errors[block.Id] = blockErrors;

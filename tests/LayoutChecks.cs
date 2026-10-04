@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using AoTPresetEditor;
@@ -28,7 +29,8 @@ internal static class LayoutChecks
 
     private static void CheckPreset(PresetDocument document, string scenario)
     {
-        var main = new MainWindow(null);
+        var placementPath = Path.Combine(Path.GetTempPath(), "AoT-layout-" + Guid.NewGuid().ToString("N") + ".json");
+        var main = new MainWindow(null, placementPath);
         try
         {
             var workspace = Field<PresetWorkspace>(main, "Workspace");
@@ -157,12 +159,14 @@ internal static class LayoutChecks
             Invoke(workspace, "ResetEditor");
             SetField(workspace, "dirty", false);
             main.Close();
+            if (File.Exists(placementPath)) File.Delete(placementPath);
         }
     }
 
     private static void CheckEmptyPreset()
     {
-        var main = new MainWindow(null);
+        var placementPath = Path.Combine(Path.GetTempPath(), "AoT-layout-" + Guid.NewGuid().ToString("N") + ".json");
+        var main = new MainWindow(null, placementPath);
         var workspace = Field<PresetWorkspace>(main, "Workspace");
         try
         {
@@ -181,7 +185,7 @@ internal static class LayoutChecks
                 details.ActualWidth >= workspace.ActualWidth * 0.9,
                 "An empty preset must have one visible Add behavior action and no empty sidebar.");
         }
-        finally { main.Close(); }
+        finally { main.Close(); if (File.Exists(placementPath)) File.Delete(placementPath); }
     }
 
     private static void CheckBrowseNavigation(MainWindow main, PresetWorkspace workspace, BehaviorEditorControl editor, FrameworkElement client)
@@ -230,27 +234,38 @@ internal static class LayoutChecks
         commonScroll.ScrollToBottom(); Measure(client, size);
         Require(commonScroll.VerticalOffset > 0,
             "The navigation regression fixture must start with a scrolled settings page.");
-        var option = Descendants<Button>(collection).Single(button =>
-            System.Windows.Automation.AutomationProperties.GetName(button) == "Options for Duration (game hours)");
-        option.ContextMenu!.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Vary per item"))
-            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        editor.Capture();
+        BehaviorFamily.MakeVariable(editor.Document, editor.RuleId, ["transformers"], "heat_settings");
+        Invoke(editor, "Rebuild", false, null, null);
         Measure(client, size);
-        var back = Field<Button>(editor, "backToSettings");
-        Require(tabs.SelectedIndex == 1 && Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Visible,
-            "Varying a field from a scrolled page must open per-item editing with a return action.");
-        CheckInside(back, viewport, "The return action must remain inside the editor viewport after changing views.");
+        Require(tabs.SelectedIndex == 0 && Equals(((TabItem)tabs.Items[1]).Header, "Variables"),
+            "Creating a variable from a scrolled Settings page must keep Settings selected and expose Variables.");
+        var settingsTab = (TabItem)tabs.Items[0];
+        var variablesTab = (TabItem)tabs.Items[1];
+        CheckInside(variablesTab, viewport, "The Variables tab must remain inside the editor viewport after creating a variable.");
+        tabs.SelectedIndex = 1;
+        var table = Field<DataGrid>(editor, "table");
+        table.SelectedItem = table.Items[0];
+        table.CurrentCell = new DataGridCellInfo(table.Items[0], table.Columns[1]);
+        var cell = Field<ValueEditorControl>(editor, "cellEditor");
+        Field<ListBox>(cell, "entryList").SelectedIndex = 0;
+        Descendants<Button>(cell).First(button => Equals(button.Content, "Edit entry"))
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        foreach (var section in Descendants<Expander>(cell)) section.IsExpanded = true;
+        Measure(client, size);
+        CheckInside(settingsTab, viewport, "The Settings tab must offer a visible return path when Variables is selected.");
         var variationScroll = (ScrollViewer)((TabItem)tabs.Items[1]).Content;
         var compactSize = new Size(1050, 450);
         Measure(client, compactSize);
         Require(variationScroll.ScrollableHeight > 0,
-            "The navigation regression fixture must overflow the per-item page before checking its return action.");
+            "The navigation regression fixture must overflow the variable collection editor before checking its return path.");
         variationScroll.ScrollToBottom(); Measure(client, compactSize);
         Require(variationScroll.VerticalOffset > 0,
-            "The per-item navigation check must scroll the content before testing the fixed return action.");
-        CheckInside(back, viewport, "Scrolling per-item values must not move the return action out of view.");
-        back.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Measure(client, size);
-        Require(tabs.SelectedIndex == 0 && Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Collapsed,
-            "The return action must restore settings instead of leaving an empty or detached view.");
+            "The variable navigation check must scroll the content before testing its fixed tab headers.");
+        CheckInside(settingsTab, viewport, "Scrolling variable values must not move the Settings tab out of view.");
+        tabs.SelectedIndex = 0; Measure(client, size);
+        Require(tabs.SelectedIndex == 0 && Field<ValueEditorControl>(editor, "commonEditor").Visibility == Visibility.Visible,
+            "Selecting Settings must restore its editor instead of leaving an empty or detached view.");
     }
 
     private static void CheckInside(FrameworkElement control, FrameworkElement viewport, string message)

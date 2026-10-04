@@ -123,7 +123,7 @@ internal static class FormSelectionChecks
         foreach (var result in new[] { "Location", "Perk", "FormList", "Sound", "MagicEffect" })
         {
             var invalid = rule.Clone(); invalid.Set("finalFormEditorID", PresetValue.Scalar(result));
-            Require(Errors(invalid).Any(error => error.StartsWith("Final result item:", StringComparison.Ordinal)),
+            Require(Errors(invalid).Any(error => error.StartsWith("Final item:", StringComparison.Ordinal)),
                 $"Known non-bound result {result} must not pass validation.");
         }
         var badTransformation = rule.Clone();

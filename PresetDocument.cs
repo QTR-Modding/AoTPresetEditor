@@ -175,7 +175,18 @@ public sealed class PresetDocument
         Blocks.Add(block);
         return block;
     }
-    public bool Remove(PresetBlock block) => Blocks.Remove(block);
+    public bool Remove(PresetBlock block)
+    {
+        if (!Blocks.Remove(block)) return false;
+        if (block.Kind == BlockKind.Template && !Blocks.Any(item => item.Kind == BlockKind.Template))
+        {
+            Comments.AddRange(templateComments);
+            TrailingComments.AddRange(templateTrailingComments);
+            templateComments.Clear();
+            templateTrailingComments.Clear();
+        }
+        return true;
+    }
 
     public string ToYaml()
     {
@@ -190,6 +201,17 @@ public sealed class PresetDocument
         rules.TrailingComments.AddRange(ruleTrailingComments);
         foreach (var block in Blocks)
         {
+            var value = block.Value;
+            if (block.Kind is BlockKind.Rule or BlockKind.Template && value.Kind == ValueKind.Mapping &&
+                PresetSchema.NormalizeContext(block.Context) == "rule" && Kind != PresetKind.Default)
+            {
+                var key = Kind == PresetKind.Addon ? "forms" : "owners";
+                if (value.Get(key) is { } selector && CompactSelector(selector) is { } compact && !ReferenceEquals(selector, compact))
+                {
+                    value = value.Clone();
+                    value.Set(key, compact);
+                }
+            }
             switch (block.Kind)
             {
                 case BlockKind.Shared:
@@ -197,7 +219,7 @@ public sealed class PresetDocument
                     break;
                 case BlockKind.Template:
                     if (!root.Fields.ContainsKey("templates")) root.Set("templates", templates);
-                    AddUnique(templates, block.Key, block.Value);
+                    AddUnique(templates, block.Key, value);
                     break;
                 case BlockKind.Rule when Kind == PresetKind.Default:
                     if (block.Value.Kind == ValueKind.Alias || block.Value.Kind == ValueKind.Scalar && TemplateCall.TryParse(block.Value.Text, out _, out _))
@@ -218,7 +240,7 @@ public sealed class PresetDocument
                         break;
                     }
                     if (!root.Fields.ContainsKey(key)) root.Set(key, rules);
-                    rules.Items.Add(block.Value);
+                    rules.Items.Add(value);
                     break;
             }
         }
@@ -227,6 +249,17 @@ public sealed class PresetDocument
         OrderDefinitions(root);
         CheckAliases(root);
         return MetadataPrefix + JsonSerializer.Serialize(names) + Environment.NewLine + PresetYaml.Write(root);
+    }
+
+    internal static PresetValue CompactSelector(PresetValue value)
+    {
+        if (value.Kind != ValueKind.Sequence || value.Items.Count != 1 || value.Anchor.Length > 0 || value.Tag.Length > 0 ||
+            value.Items[0] is not { Kind: ValueKind.Scalar, IsNull: false, IsUnsetArgument: false } item || item.Text.StartsWith('$')) return value;
+        var scalar = item.Clone();
+        scalar.Comments.InsertRange(0, value.Comments);
+        scalar.TrailingComments.AddRange(value.TrailingComments);
+        if (value.InlineComment.Length > 0) scalar.TrailingComments.Add(value.InlineComment);
+        return scalar;
     }
     internal static IEnumerable<PresetValue> Descendants(PresetValue value)
     {

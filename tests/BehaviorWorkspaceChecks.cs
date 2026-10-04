@@ -101,12 +101,46 @@ internal static class BehaviorWorkspaceChecks
             Invoke(workspace, "CommitEditor");
             Require(first.Document.Blocks.Single(block => block.Kind == BlockKind.Rule).Name == "Latest name while validation is running",
                 "Capturing again must preserve the latest input instead of restoring an earlier validation snapshot.");
+            Reset(workspace, accept: false);
+            Require(Field<PresetProject>(workspace, "project") == project && project.Entries.Count == 2 &&
+                Field<BehaviorEditorControl>(workspace, "editor") == reopened,
+                "Canceling Reset must preserve the whole project and unfinished editor.");
+            SetField(workspace, "exportRoot", "A previous mod folder");
+            SetField(workspace, "draftPath", "A previous draft file");
+            Reset(workspace, accept: true);
+            Require(Field<PresetProject>(workspace, "project").Entries.Count == 0 &&
+                Field<PresetProject>(workspace, "project").Name == project.Name &&
+                Field<object?>(workspace, "editor") is null && Field<object?>(workspace, "document") is null &&
+                Field<object?>(workspace, "activeEntry") is null && Field<object?>(workspace, "exportRoot") is null &&
+                Field<object?>(workspace, "draftPath") is null && Field<ListBox>(workspace, "blocks").Items.Count == 0 &&
+                Field<bool>(workspace, "dirty") && !Field<DispatcherTimer>(workspace, "editTimer").IsEnabled,
+                "Reset must clear all documents, pending groups, editor state, and previous save targets while keeping the preset name.");
+            Require(project.Entries.Count == 2 && first.Document.PendingGroups.Count == 1,
+                "Reset must start a new empty project without mutating the old imported documents.");
         }
         finally
         {
             Invoke(workspace, "ResetEditor");
             SynchronizationContext.SetSynchronizationContext(previousContext);
         }
+    }
+
+    private static void Reset(PresetWorkspace workspace, bool accept)
+    {
+        Exception? failure = null;
+        workspace.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            var dialog = PresentationSource.CurrentSources.Cast<PresentationSource>().Select(source => source.RootVisual)
+                .OfType<Window>().Single(window => window.Title == "Reset preset");
+            try
+            {
+                var button = Descendants<Button>(dialog).Single(button => Equals(button.Content, accept ? "Clear preset" : "Cancel"));
+                button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            }
+            catch (Exception error) { failure = error; dialog.DialogResult = false; }
+        }));
+        Invoke(workspace, "ResetPreset");
+        if (failure is not null) throw failure;
     }
 
     private static TextBox Duration(BehaviorEditorControl editor)

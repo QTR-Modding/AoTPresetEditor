@@ -1,6 +1,9 @@
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
+using System.Windows.Interop;
+using System.Windows.Threading;
 using AoTPresetEditor;
 
 internal static class BehaviorEditorChecks
@@ -8,6 +11,8 @@ internal static class BehaviorEditorChecks
     public static void Run()
     {
         NestedVariationsAndCapture();
+        VariableNameCancellation();
+        PasteNamedColumns();
         RepeatedParameters();
         CollectionVariations();
         StageApplicability();
@@ -32,18 +37,20 @@ internal static class BehaviorEditorChecks
         var common = Common(editor);
         var transformation = CollectionEntry(common, "transformers", 0);
         Input(transformation, "duration").Text = "3";
-        Vary(transformation, "duration");
+        MakeVariable(transformation, "duration", "cooking_hours");
         var family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
         var parameter = family.Parameters.Single();
         Require(BehaviorFamily.GetValue(family.Definition.Value, ["transformers", "0", "duration"])!.Text == "$" + parameter,
             "The nested field's actual Vary action must use its complete collection path.");
         Require(BehaviorFamily.GetArgument(editor.Document, rule.Id, parameter).Text == "3",
             "Varying a field must capture the current input first.");
-        Require(Field<TabControl>(editor, "tabs").SelectedIndex == 1, "Varying a field must open its variations.");
-        Require(Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Visible &&
-            Field<TextBlock>(editor, "variationContext").Text.Contains("Duration", StringComparison.OrdinalIgnoreCase),
-            "Opening per-item editing must name the chosen field and offer a visible way back.");
-        Click(Field<Button>(editor, "duplicate"));
+        var tabs = Field<TabControl>(editor, "tabs");
+        Require(tabs.SelectedIndex == 0 && Equals(((TabItem)tabs.Items[1]).Header, "Variables"),
+            "Making a field variable must stay on Settings and expose the Variables tab.");
+        Require(parameter == "cooking_hours" && Equals(Field<DataGrid>(editor, "table").Columns[1].Header, parameter),
+            "The chosen variable name must label its column.");
+        tabs.SelectedIndex = 1; SelectCell(editor, 0, 0);
+        Click(Field<MenuItem>(editor, "duplicate"));
         var duplicateId = BehaviorFamily.Find(editor.Document, rule.Id)!.Rows[1].Id;
         CellInput(editor).Text = "7";
         SelectCell(editor, 0, 0);
@@ -53,11 +60,9 @@ internal static class BehaviorEditorChecks
         Click(Field<Button>(editor, "addRow"));
         var newId = BehaviorFamily.Find(editor.Document, rule.Id)!.Rows[2].Id;
         CellInput(editor).Text = "9";
-        var tabs = Field<TabControl>(editor, "tabs");
-        Click(Field<Button>(editor, "backToSettings"));
-        Require(tabs.SelectedIndex == 0 && Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Collapsed &&
-            BehaviorFamily.GetArgument(editor.Document, newId, parameter).Text == "9",
-            "Back must return to settings and capture the unfinished row without removing its variation.");
+        tabs.SelectedIndex = 0;
+        Require(BehaviorFamily.GetArgument(editor.Document, newId, parameter).Text == "9",
+            "Returning to Settings must capture the unfinished row without removing its variable.");
         Input(CollectionEntry(Common(editor), "transformers", 0), "finalFormEditorID").Text = "RoastedBeef";
         Field<TextBox>(editor, "name").Text = "Roasting";
         tabs.SelectedIndex = 1;
@@ -97,16 +102,84 @@ internal static class BehaviorEditorChecks
         SelectCell(editor, 1, 0); CellInput(editor).Text = "6";
         SelectCell(editor, 0, 0); CellInput(editor).Text = "6";
         Field<TextBox>(editor, "name").Text = "Slow cooking";
-        Click(Field<Button>(editor, "same")); editor.Capture();
-        var family = BehaviorFamily.Find(editor.Document, rule.Id)!;
-        Require(family.Parameters.Count == 0 && family.Definition.Name == "Slow cooking" &&
-            family.Definition.Value.Get("transformers")!.Items.All(item => item.Get("duration")!.Text == "6"),
-            "Use same value for all must replace every occurrence while preserving the name.");
-        Require(family.Rows.Count == 2, "Making all settings common must retain both authored uses.");
-        Require(Field<TabControl>(editor, "tabs").Items.Count == 1 &&
-            Field<DockPanel>(editor, "variationNavigation").Visibility == Visibility.Collapsed,
-            "Removing the final varying field must close the empty per-item view.");
+        Field<TabControl>(editor, "tabs").SelectedIndex = 0;
+        ClearVariable(CollectionEntry(Common(editor), "transformers", 0), "duration"); editor.Capture();
+        var family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+        Require(!family.IsTemplate && family.Definition.Name == "Slow cooking" &&
+            family.Definition.Value.Get("transformers")!.Items.All(item => item.Get("duration") is null),
+            "Clearing a variable must remove every occurrence instead of retaining a row's value, while preserving the behavior name.");
+        Require(family.Rows.Count == 1 && editor.Document.Blocks.Count == 1,
+            "Clearing the last variable must simplify identical adjacent uses into one ordinary rule.");
+        Require(Field<TabControl>(editor, "tabs").Items.Count == 1,
+            "Removing the final variable must close the empty Variables tab.");
     }
+
+    private static void VariableNameCancellation()
+    {
+        var document = PresetDocument.Parse("""
+            formsLists:
+            - forms: FoodBeef
+              transformers:
+              - {FormEditorID: Fire, finalFormEditorID: CookedBeef, duration: 2}
+            """, "FOOD", PresetKind.Addon);
+        var editor = new BehaviorEditorControl(document, [], document.Blocks.Single().Id);
+        var transformation = CollectionEntry(Common(editor), "transformers", 0);
+        Input(transformation, "duration").Text = "3"; editor.Capture();
+        var before = editor.Document.ToYaml();
+        foreach (var key in new[] { "duration", "sound" })
+        {
+            MakeVariable(transformation, key, null);
+            Require(editor.Document.ToYaml() == before && !VariableChoice(transformation, key).IsChecked.GetValueOrDefault(),
+                "Canceling Name variable must leave the field and checkbox unchanged, including an absent optional field.");
+            Require(Field<TabControl>(editor, "tabs").Items.Count == 1 &&
+                Field<TabControl>(editor, "tabs").SelectedIndex == 0,
+                "Canceling variable creation must not create a template or a Variables tab.");
+        }
+        Require(Input(transformation, "duration").Text == "3" && transformation.Value.Get("sound") is null,
+            "Naming cancellation must preserve unfinished input and must not enable an optional setting.");
+    }
+
+    private static void PasteNamedColumns()
+    {
+        var document = PresetDocument.Parse("""
+            formsLists:
+            - forms: FoodBeef
+              transformers:
+              - {FormEditorID: Fire, finalFormEditorID: CookedBeef, duration: 2}
+            """, "FOOD", PresetKind.Addon);
+        var editor = new BehaviorEditorControl(document, [], document.Blocks.Single().Id);
+        MakeVariable(Common(editor), "forms", "raw_item");
+        MakeVariable(CollectionEntry(Common(editor), "transformers", 0), "finalFormEditorID", "cooked_item");
+        var tabs = Field<TabControl>(editor, "tabs"); tabs.SelectedIndex = 1; SelectCell(editor, 0, 0);
+        var table = Field<DataGrid>(editor, "table");
+        Require(table.Columns.Skip(1).Select(column => column.Header).SequenceEqual(new object[] { "raw_item", "cooked_item" }),
+            "Each chosen variable name must appear once as a table column in parameter order.");
+        PasteCells(editor, "FoodBeef\tCookedBeef\nFoodChicken\tGrilledChicken"); editor.Capture();
+        var family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+        Require(family.Rows.Count == 2 &&
+            BehaviorFamily.GetArgument(editor.Document, family.Rows[0].Id, "raw_item").Text == "FoodBeef" &&
+            BehaviorFamily.GetArgument(editor.Document, family.Rows[1].Id, "raw_item").Text == "FoodChicken" &&
+            BehaviorFamily.GetArgument(editor.Document, family.Rows[1].Id, "cooked_item").Text == "GrilledChicken",
+            "Pasting two columns must fill their selected variables and add the missing row.");
+        SelectCell(editor, 0, 1);
+        PasteCells(editor, "RoastedBeef\nRoastedChicken"); editor.Capture();
+        family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+        Require(BehaviorFamily.GetArgument(editor.Document, family.Rows[0].Id, "raw_item").Text == "FoodBeef" &&
+            BehaviorFamily.GetArgument(editor.Document, family.Rows[0].Id, "cooked_item").Text == "RoastedBeef" &&
+            BehaviorFamily.GetArgument(editor.Document, family.Rows[1].Id, "cooked_item").Text == "RoastedChicken",
+            "Pasting into the second column must keep the first column untouched without a separate field selector.\n" + editor.Document.ToYaml());
+        var before = editor.Document.ToDraft();
+        try { PasteCells(editor, "Wrong\tExtra"); throw new InvalidOperationException("An overwide paste was accepted."); }
+        catch (TargetInvocationException error) when (error.InnerException is InvalidOperationException failure)
+        {
+            Require(failure.Message.Contains("2 columns", StringComparison.Ordinal) && failure.Message.Contains("Only 1 fit", StringComparison.Ordinal) &&
+                failure.Message.Contains("cooked_item", StringComparison.Ordinal) && editor.Document.ToDraft() == before,
+                "An overwide paste must identify the column mismatch and leave every value unchanged.");
+        }
+    }
+
+    private static void PasteCells(BehaviorEditorControl editor, string text) =>
+        typeof(BehaviorEditorControl).GetMethod("PasteCells", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(editor, [text]);
 
     private static void CollectionVariations()
     {
@@ -120,11 +193,11 @@ internal static class BehaviorEditorChecks
             """, "FOOD", PresetKind.Addon);
         var rule = document.Blocks.Single();
         var editor = new BehaviorEditorControl(document, [], rule.Id);
-        Vary(Common(editor), "transformers");
+        MakeVariable(Common(editor), "transformers", "heat_settings");
+        Field<TabControl>(editor, "tabs").SelectedIndex = 1; SelectCell(editor, 0, 0);
         var cell = Field<ValueEditorControl>(editor, "cellEditor");
-        Require(!Descendants<Button>(cell).Any(button => button.ContextMenu?.Items.OfType<MenuItem>()
-            .Any(item => Equals(item.Header, "Vary per item")) == true),
-            "A per-row collection editor must not offer an unconnected Vary action inside that row.");
+        Require(!Descendants<CheckBox>(cell).Any(box => Equals(box.Content, "Variable")),
+            "A per-row collection editor must not offer an unconnected Variable checkbox inside that row.");
         var entry = Descendants<ValueEditorControl>(cell).First(control => control.Value.Kind == ValueKind.Mapping);
         Input(entry, "duration").Text = "8";
         Field<TabControl>(editor, "tabs").SelectedIndex = 0; editor.Capture();
@@ -164,26 +237,27 @@ internal static class BehaviorEditorChecks
         var document = PresetDocument.Parse("""
             templates:
               cook:
-                forms: FoodBeef
+                forms: $a
                 transformers:
                 - FormEditorID: Fire
                   finalFormEditorID: CookedBeef
-                  duration: $hours
+                  duration: $d
             formsLists:
-            - cook(2)
-            - cook(4)
+            - cook(FoodBeef, 2)
+            - cook(FoodChicken, 4)
             """, "FOOD", PresetKind.Addon);
         var rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
         var editor = new BehaviorEditorControl(document, [], rules[0].Id);
         Field<TabControl>(editor, "tabs").SelectedIndex = 1;
-        SelectCell(editor, 1, 0); CellInput(editor).Text = "-1"; editor.Capture();
+        SelectCell(editor, 1, 1); CellInput(editor).Text = "-1"; editor.Capture();
         var result = PresetValidation.Check(editor.Document, CancellationToken.None).GetAwaiter().GetResult();
         Require(result.Errors[rules[0].Id].Count == 0 && result.Errors[rules[1].Id].Any(error => error.Contains("Duration", StringComparison.OrdinalIgnoreCase)),
             "A row's invalid variation must be reported against that authored rule instead of its common definition or another row.");
         Field<TabControl>(editor, "tabs").SelectedIndex = 0;
         Require(editor.FocusIssue(result.Errors[rules[1].Id].First(), rules[1].Id) &&
-            Field<TabControl>(editor, "tabs").SelectedIndex == 1 && Field<string>(editor, "cellRowId") == rules[1].Id && CellInput(editor).Text == "-1",
-            "Following a variation issue must select the offending authored row and its value.");
+            Field<TabControl>(editor, "tabs").SelectedIndex == 1 && Field<string>(editor, "cellRowId") == rules[1].Id &&
+            Field<string>(editor, "cellParameter") == "d" && CellInput(editor).Text == "-1",
+            "Following a duration issue must select its offending row and duration variable, even when source variable 'a' appears inside the error text.");
         Click(Field<Button>(editor, "addRow"));
         var added = BehaviorFamily.Find(editor.Document, editor.RuleId)!.Rows.Last();
         result = PresetValidation.Check(editor.Document, CancellationToken.None).GetAwaiter().GetResult();
@@ -287,12 +361,33 @@ internal static class BehaviorEditorChecks
     }
     private static TextBox Input(ValueEditorControl editor, string key) => Descendants<TextBox>(Card(editor, key)).Single();
     private static TextBox CellInput(BehaviorEditorControl editor) => Descendants<TextBox>(Field<ValueEditorControl>(editor, "cellEditor")).Single();
-    private static void Vary(ValueEditorControl editor, string key)
+    internal static void MakeVariable(ValueEditorControl editor, string key, string? variableName)
     {
-        var option = Descendants<Button>(Card(editor, key)).First(button => button.ContextMenu?.Items.OfType<MenuItem>()
-            .Any(item => Equals(item.Header, "Vary per item")) == true);
-        option.ContextMenu!.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Vary per item"))
-            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        var choice = VariableChoice(editor, key);
+        if (Window.GetWindow(editor) is { } owner) new WindowInteropHelper(owner).EnsureHandle();
+        var response = Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            var dialog = PresentationSource.CurrentSources.Cast<PresentationSource>().Select(source => source.RootVisual)
+                .OfType<Window>().Single(window => window.Title == "Name variable");
+            if (variableName is not null)
+                Descendants<TextBox>(dialog).Single(input => AutomationProperties.GetName(input) == "Variable name").Text = variableName;
+            Click(Descendants<Button>(dialog).Single(button => Equals(button.Content, variableName is null ? "Cancel" : "Create")));
+        }));
+        try { choice.IsChecked = true; choice.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent)); }
+        finally { response.Abort(); }
+        Require(response.Status == DispatcherOperationStatus.Completed, "The real Name variable dialog must receive the test response.");
+    }
+    private static CheckBox VariableChoice(ValueEditorControl editor, string key)
+    {
+        var view = Field<System.Collections.IDictionary>(editor, "fields")[key]!;
+        var descriptor = (PresetField)view.GetType().GetProperty("Field")!.GetValue(view)!;
+        return Descendants<CheckBox>(Card(editor, key))
+            .Single(choice => AutomationProperties.GetName(choice) == "Variable: " + descriptor.Label);
+    }
+    private static void ClearVariable(ValueEditorControl editor, string key)
+    {
+        var choice = VariableChoice(editor, key); choice.IsChecked = false;
+        choice.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
     }
     private static void SelectCell(BehaviorEditorControl editor, int row, int parameter)
     {
@@ -309,5 +404,6 @@ internal static class BehaviorEditorChecks
         }
     }
     private static void Click(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    private static void Click(MenuItem item) => item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 }

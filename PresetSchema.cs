@@ -46,7 +46,7 @@ public static class PresetSchema
     private static readonly PresetField[] TransformerFields =
     [
         new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. A form group can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
-        new("finalFormEditorID", "Result item", FieldKind.Form, "The object produced when the transformation finishes. AoT accepts any bound object.", true, BoundObjectOnly: true),
+        new("finalFormEditorID", "Result item", FieldKind.Form, "The object produced when the transformation finishes.", true, BoundObjectOnly: true),
         new("duration", "Duration (game hours)", FieldKind.Number, "Positive time needed to finish this transformation while its trigger applies.", true, DefaultText: "0.05"),
         .. TriggerFields,
         .. VisualFields
@@ -60,7 +60,7 @@ public static class PresetSchema
     private static readonly PresetField[] RuleFields =
     [
         new("stages", "Stages", FieldKind.ObjectList, "The sequence of stages, beginning with stage 0.", true, "stage"),
-        new("finalFormEditorID", "Final result item", FieldKind.Form, "Object produced after the last stage. AoT accepts any bound object. Required even if an infinite stage prevents reaching it.", true, BoundObjectOnly: true),
+        new("finalFormEditorID", "Final item", FieldKind.Form, "Object produced after the last stage. Required even if an infinite stage prevents reaching it.", true, BoundObjectOnly: true),
         new("containers", "Evolution filter", FieldKind.FormList, "Inventory owner's base forms where evolution is allowed. For a world item, this checks the item's own base form. Unset or empty is unrestricted.", AllowsGroups: true),
         new("timeModulators", "Time modifiers", FieldKind.ObjectList, "Changes stage progression while a trigger applies. The first matching time modifier wins when no transformation matches.", ChildContext: "modulator"),
         new("transformers", "Transformations", FieldKind.ObjectList, "Triggered transformations, in priority order. The first matching transformation wins.", ChildContext: "transformer")

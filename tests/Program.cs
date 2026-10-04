@@ -186,7 +186,7 @@ internal static class Program
         derivative.Set("FormEditorID", PresetValue.Scalar("0x0"));
         Require(PresetSchema.Validate(derivative, "stage", "FOOD").Count > 0, "An explicit zero stage ID must fail even when the item could be generated.");
         rule.Set("finalFormEditorID", PresetValue.Scalar("0"));
-        Require(PresetSchema.Validate(rule, "CustomRule", "FOOD").Any(error => error.Contains("Final result item")), "A required result cannot be form zero.");
+        Require(PresetSchema.Validate(rule, "CustomRule", "FOOD").Any(error => error.Contains("Final item")), "A required result cannot be form zero.");
     }
     private static void WholeRuleList()
     {

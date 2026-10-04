@@ -50,6 +50,10 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
         (!BoundObjectOnly || form.IsBoundObject) &&
         (!RequiresEditorId || form.EditorId.Length != 0) &&
         (ExcludedForms is null || !ExcludedForms.Contains(form));
+
+    // Acoustic spaces pass AoT's bound-object check but have no inventory or 3D item representation.
+    public bool IsPickerChoice(FormRow form) => Matches(form) &&
+        (!BoundObjectOnly || !form.Type.Equals("AcousticSpace", StringComparison.OrdinalIgnoreCase));
 }
 
 public sealed record CatalogResult(IReadOnlyList<FormRow> Forms, IReadOnlyList<string> Plugins, string PluginsPath);

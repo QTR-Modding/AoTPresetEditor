@@ -36,7 +36,7 @@ public sealed class FormPickerWindow : Window
     {
         this.forms = allowedTypes is { Count: > 0 } || selection is not null
             ? forms.Where(form => (allowedTypes is not { Count: > 0 } || allowedTypes.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
-                (selection?.Matches(form) ?? true)).ToArray()
+                (selection?.IsPickerChoice(form) ?? true)).ToArray()
             : forms;
         this.multiple = multiple;
         this.browseOnly = browseOnly;
