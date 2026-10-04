@@ -322,12 +322,12 @@ public sealed class PresetWorkspace : UserControl
         panel.Children.Add(EditorControls.Text("Item type"));
         var types = new ComboBox { ItemsSource = CategoryNames, SelectedIndex = Math.Max(0, Array.IndexOf(Categories, document?.Category ?? "FOOD")) }; panel.Children.Add(types);
         panel.Children.Add(EditorControls.Text("What should this behavior do?"));
-        var purpose = new ComboBox { ItemsSource = new[] { "Add reactions and preservation", "Define aging stages", "Set fallback aging for this item type" }, SelectedIndex = 0 }; panel.Children.Add(purpose);
+        var purpose = new ComboBox { ItemsSource = new[] { "Stages", "Add reactions and preservation", "Set fallback aging for this item type" }, SelectedIndex = 0 }; panel.Children.Add(purpose);
         var explanation = EditorControls.Text(""); panel.Children.Add(explanation);
         void Explain() => explanation.Text = purpose.SelectedIndex switch
         {
-            0 => "Add triggered transformations or time modifiers. Keep the items' existing aging progression.",
-            1 => "Choose items and define their complete stage progression. This takes precedence over fallback aging.",
+            0 => "Choose items and define the states they pass through.",
+            1 => "Add triggered transformations or time modifiers. Keep the items' existing aging progression.",
             _ => "Define progression for items of this type that have no more specific aging rule."
         };
         purpose.SelectionChanged += (_, _) => Explain(); Explain();
@@ -340,7 +340,7 @@ public sealed class PresetWorkspace : UserControl
             dialog.DialogResult = true;
         }), EditorControls.Button("Cancel", () => dialog.DialogResult = false));
         dialog.Content = panel; if (dialog.ShowDialog() != true) return;
-        var kind = purpose.SelectedIndex switch { 0 => PresetKind.Addon, 1 => PresetKind.Custom, _ => PresetKind.Default };
+        var kind = purpose.SelectedIndex switch { 0 => PresetKind.Custom, 1 => PresetKind.Addon, _ => PresetKind.Default };
         var entry = project.GetOrCreate(Categories[types.SelectedIndex], kind);
         if (entry.Document.Blocks.Any(block => block.Kind == BlockKind.Rule && block.Key is "ownerLists" or "formsLists"))
             entry = project.Add(PresetDocument.Create(entry.Document.Category, kind), filename);
