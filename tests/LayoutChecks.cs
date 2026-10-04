@@ -7,6 +7,7 @@ internal static class LayoutChecks
 {
     public static void Run()
     {
+        CheckEmptyPreset();
         CheckPreset(PresetDocument.Parse("""
             formsLists:
             - forms: FoodBeef
@@ -52,8 +53,14 @@ internal static class LayoutChecks
             Invoke(workspace, "RenderIssues");
             Field<Action>(workspace, "Opened").Invoke();
             Field<Menu>(main, "ToolsMenu").Visibility = Visibility.Visible;
+            var blocks = Field<ListBox>(workspace, "blocks");
+            blocks.SelectedItem = null;
+            Require(!Descendants<Button>(Field<ContentControl>(workspace, "details")).Any() &&
+                Field<DockPanel>(workspace, "blockSidebar").Visibility == Visibility.Visible,
+                "Deselecting a behavior must show a selection prompt without a duplicate Add action.");
+            blocks.SelectedIndex = 0;
 
-            Require(Field<Expander>(main, "PresetBrowser").Visibility == Visibility.Collapsed,
+            Require(Field<DockPanel>(main, "PresetBrowser").Visibility == Visibility.Collapsed,
                 "Opening a preset should release the installed-browser area for editing.");
             var viewport = Descendants<ScrollViewer>(workspace).Single(view => view.Name == "EditorViewport");
             Require(viewport.VerticalScrollBarVisibility == ScrollBarVisibility.Disabled,
@@ -142,6 +149,7 @@ internal static class LayoutChecks
             Require(windowViewport.ScrollableWidth == 0 && windowViewport.ScrollableHeight == 0 &&
                 ReferenceEquals(editor, Field<BehaviorEditorControl>(workspace, "editor")) && editor.BlockName == "Cooking beef at 1400",
                 "Enlarging the window must restore its normal layout without outer scrollbars or losing the edit.");
+            if (scenario == "Valid") CheckBrowseNavigation(main, workspace, editor, client);
         }
         finally
         {
@@ -150,6 +158,62 @@ internal static class LayoutChecks
             SetField(workspace, "dirty", false);
             main.Close();
         }
+    }
+
+    private static void CheckEmptyPreset()
+    {
+        var main = new MainWindow(null);
+        var workspace = Field<PresetWorkspace>(main, "Workspace");
+        try
+        {
+            Require(workspace.Visibility == Visibility.Collapsed &&
+                Field<DockPanel>(main, "PresetBrowser").Visibility == Visibility.Visible &&
+                Field<Button>(main, "ResumeEditing").Visibility == Visibility.Collapsed,
+                "Startup must show the preset list without an empty editor or a resume action.");
+            SetField(workspace, "project", new PresetProject { Name = "Empty preset" });
+            Invoke(workspace, "ShowWelcome"); Invoke(workspace, "UpdateActions");
+            Field<Action>(workspace, "Opened").Invoke();
+            var client = (FrameworkElement)main.Content;
+            Measure(client, new Size(1050, 650));
+            var details = Field<ContentControl>(workspace, "details");
+            Require(Field<DockPanel>(workspace, "blockSidebar").Visibility == Visibility.Collapsed &&
+                Descendants<Button>(details).Count(button => Equals(button.Content, "Add behavior...")) == 1 &&
+                details.ActualWidth >= workspace.ActualWidth * 0.9,
+                "An empty preset must have one visible Add behavior action and no empty sidebar.");
+        }
+        finally { main.Close(); }
+    }
+
+    private static void CheckBrowseNavigation(MainWindow main, PresetWorkspace workspace, BehaviorEditorControl editor, FrameworkElement client)
+    {
+        var browser = Field<DockPanel>(main, "PresetBrowser");
+        var resume = Field<Button>(main, "ResumeEditing");
+        var search = Field<TextBox>(main, "PresetSearch");
+        var project = Field<PresetProject>(workspace, "project");
+        var snapshot = project.ToDraft();
+        var list = Field<ListBox>(main, "PresetList");
+        var files = new[] { new PresetFile("C:\\fixtures\\one.yml", "FOOD\\custom\\one.yml") };
+        SetField(main, "presets", files);
+        Invoke(main, "UpdatePresetFilters");
+        search.Text = "missing";
+        Require(list.Items.Count == 0 && Field<TextBlock>(main, "PresetEmpty").Visibility == Visibility.Visible,
+            "A search with no matches must explain the empty result.");
+        search.Text = "one";
+        var back = Descendants<Button>(workspace).Single(button => Equals(button.Content, "Back to presets"));
+        back.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Measure(client, new Size(1050, 650));
+        Require(browser.Visibility == Visibility.Visible && workspace.Visibility == Visibility.Collapsed &&
+            resume.Visibility == Visibility.Visible && search.Text == "one" && list.Items.Count == 1,
+            "Back must restore the filtered preset list and provide Resume editing.");
+        Require(ReferenceEquals(editor, Field<BehaviorEditorControl>(workspace, "editor")) &&
+            project.ToDraft() == snapshot && Field<bool>(workspace, "editorDirty") && Field<bool>(workspace, "dirty"),
+            "Browsing must retain the active editor, uncaptured input, and unsaved state.");
+
+        resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Measure(client, new Size(1050, 650));
+        Require(browser.Visibility == Visibility.Collapsed && workspace.Visibility == Visibility.Visible &&
+            ReferenceEquals(editor, Field<BehaviorEditorControl>(workspace, "editor")) && editor.BlockName == "Cooking beef at 1400",
+            "Resume must return to the same unfinished editor without reloading its file.");
     }
 
     private static void CheckVariationNavigation(BehaviorEditorControl editor, FrameworkElement client, ScrollViewer viewport)

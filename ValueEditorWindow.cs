@@ -46,7 +46,7 @@ public sealed class ValueEditorWindow : Window
         });
         apply.SetResourceReference(StyleProperty, "PrimaryButton");
         apply.IsDefault = true;
-        var cancel = EditorControls.Button("Cancel", () => DialogResult = false); cancel.IsCancel = true;
+        var cancel = EditorControls.Button("Cancel", () => DialogResult = false, isCancel: true);
         void UpdateApply()
         {
             var missingName = blockName is not null && BlockName.Length == 0;

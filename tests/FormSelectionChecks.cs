@@ -15,6 +15,8 @@ internal static class FormSelectionChecks
         food.EditorID = "Food"; food.Flags = Ingestible.Flag.FoodItem;
         var otherFood = mod.Ingestibles.AddNew();
         otherFood.EditorID = "OtherFood"; otherFood.Flags = Ingestible.Flag.FoodItem;
+        var unnamedFood = mod.Ingestibles.AddNew();
+        unnamedFood.Name = "Food without EditorID"; unnamedFood.Flags = Ingestible.Flag.FoodItem;
         var medicine = mod.Ingestibles.AddNew();
         medicine.EditorID = "Medicine"; medicine.Flags = Ingestible.Flag.Medicine;
         var poisonedFood = mod.Ingestibles.AddNew();
@@ -37,6 +39,8 @@ internal static class FormSelectionChecks
         var list = mod.FormLists.AddNew(); list.EditorID = "FormList";
         var sound = mod.SoundDescriptors.AddNew(); sound.EditorID = "Sound";
         var effect = mod.MagicEffects.AddNew(); effect.EditorID = "MagicEffect";
+        var art = mod.ArtObjects.AddNew(); art.EditorID = "Art";
+        var shader = mod.EffectShaders.AddNew(); shader.EditorID = "Shader";
         var catalog = new Dictionary<FormKey, FormRow>();
         typeof(FormCatalog).GetMethod("AddRecords", BindingFlags.NonPublic | BindingFlags.Static)!
             .Invoke(null, [mod, "PickerTest.esp", catalog]);
@@ -66,8 +70,13 @@ internal static class FormSelectionChecks
             !new FormSelection(BoundObjectOnly: true, TriggerOnly: true).Matches(Row("Location")),
             "Combined parameter constraints must retain the bound-object requirement.");
 
-        var foodSelection = new FormSelection(["Ingestible", "Ingredient"], "FOOD");
-        Require(forms.Count(foodSelection.Matches) == 3, "FOOD source selection must hide medicine, poison, and ordinary ingredients.");
+        var sourceField = PresetSchema.GetFields("rule", PresetKind.Custom).Single(field => field.Key == "owners");
+        var foodSelection = FormSelection.ForField(sourceField, "FOOD");
+        Require(forms.Count(foodSelection.Matches) == 3, "FOOD source selection must hide incompatible types and sources without EditorIDs.");
+        var unnamed = forms.Single(form => form.EditorId.Length == 0);
+        Require(resultSelection.Matches(unnamed) && new FormSelection(TriggerOnly: true).Matches(unnamed) &&
+            FormSelection.ForField(PresetSchema.GetFields("stage", PresetKind.Custom).Single(field => field.Key == "FormEditorID"), "FOOD", [Row("Food")]).Matches(unnamed),
+            "EditorIDs are required only for source items, not stage replacements, final results, or triggers.");
         Require(new FormSelection(Category: "INGR").Matches(Row("FoodIngredient")), "An overlapping category must not be lost during filtering.");
         Require(new FormSelection().Matches(Row("Sound")), "No constraint must preserve unrestricted browsing.");
         Require(!forms.Any(new FormSelection([]).Matches), "An empty type intersection must have no valid choices.");
@@ -109,7 +118,7 @@ internal static class FormSelectionChecks
         Require(catalog.ResolveForm(food.Identifier) == catalog.ResolveForm("Food"), "Known identifiers must resolve to one catalog form.");
         Require(catalog.SourceForms(rule).SequenceEqual([food]), "Concrete rule sources must be available without rescanning the catalog.");
         IReadOnlyList<string> Errors(PresetValue value) => (IReadOnlyList<string>)typeof(PresetValidation)
-            .GetMethod("KnownFormErrors", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [value, "FOOD", catalog])!;
+            .GetMethod("KnownFormErrors", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [value, "FOOD", PresetKind.Custom, catalog])!;
         Require(Errors(rule).Count == 0, "A FOOD rule may produce keys and ammunition while explicit stages stay compatible with its source.");
         foreach (var result in new[] { "Location", "Perk", "FormList", "Sound", "MagicEffect" })
         {
@@ -141,6 +150,54 @@ internal static class FormSelectionChecks
         unresolved.Set("finalFormEditorID", PresetValue.Scalar("OptionalModResult"));
         unresolved.Get("stages")!.Items[1].Set("FormEditorID", PresetValue.Scalar("OptionalModStage"));
         Require(Errors(unresolved).Count == 0, "Unknown name selectors and optional forms must remain authorable.");
+
+        var invalidSource = rule.Clone(); invalidSource.Set("owners", PresetValue.Scalar(forms.Single(form => form.EditorId == "Armor").Identifier));
+        Require(Errors(invalidSource).Any(error => error.StartsWith("Applies to:", StringComparison.Ordinal)),
+            "A numeric source identifier with an incompatible category must not pass validation.");
+        invalidSource.Set("owners", PresetValue.Scalar("Armor"));
+        Require(Errors(invalidSource).Count == 0, "Custom owner text may be a name selector even when it also resolves to an unrelated EditorID.");
+        invalidSource.Set("owners", PresetValue.Scalar(forms.Single(form => form.EditorId.Length == 0).Identifier));
+        Require(Errors(invalidSource).Any(error => error.Contains("no EditorID")), "AoT rejects source items without EditorIDs even when selected by numeric ID.");
+
+        foreach (var (key, invalid, expected) in new[]
+        {
+            ("sound", "Art", "SoundDescriptor"), ("art_object", "Sound", "ArtObject"),
+            ("effect_shader", "MagicEffect", "EffectShader")
+        })
+        {
+            var typed = rule.Clone(); typed.Get("stages")!.Items[0].Set(key, PresetValue.Scalar(invalid));
+            Require(Errors(typed).Any(error => error.StartsWith("Stages 1:", StringComparison.Ordinal) && error.Contains(expected)),
+                $"A known incompatible {key} form must be reported at its stage field.");
+        }
+        var trigger = rule.Clone(); trigger.Get("transformers")!.Items[0].Set("FormEditorID", PresetValue.Scalar("Sound"));
+        Require(Errors(trigger).Single().StartsWith("Transformations 1: Trigger:", StringComparison.Ordinal),
+            "Known incompatible trigger identifiers must not silently pass validation.");
+        var visuals = rule.Clone();
+        visuals.Get("stages")!.Items[0].Set("sound", PresetValue.Scalar("Sound"));
+        visuals.Get("stages")!.Items[0].Set("art_object", PresetValue.Scalar("Art"));
+        visuals.Get("stages")!.Items[0].Set("effect_shader", PresetValue.Scalar("Shader"));
+        visuals.Set("containers", PresetValue.Scalar("Sound"));
+        visuals.Get("transformers")!.Items[0].Set("containers", PresetValue.Scalar("Sound"));
+        Require(Errors(visuals).Count == 0, "Valid effect types and intentionally nonmatching inventory-filter sentinels must remain allowed.");
+
+        var effects = rule.Clone(); var generatedStage = effects.Get("stages")!.Items[1];
+        generatedStage.Fields.Remove("FormEditorID");
+        generatedStage.Set("mgeffect", PresetYaml.Parse("[{FormEditorID: Sound, magnitude: 1, duration: 2}]"));
+        Require(Errors(effects).Single().StartsWith("Stages 2: Magic effects 1: Magic effect:", StringComparison.Ordinal),
+            "Generated stage magic effects must use actual magic-effect forms.");
+        generatedStage.Set("FormEditorID", PresetValue.Scalar("OtherFood"));
+        Require(Errors(effects).Count == 0, "Effect overrides ignored for an explicit stage item must not create blocking issues.");
+
+        var grouped = PresetDocument.Parse("formsLists: [{forms: Mixed, transformers: [{FormEditorID: Sound, finalFormEditorID: Key, duration: 1}]}]", "FOOD", PresetKind.Addon);
+        var groupCatalog = new PresetPresentation(grouped, forms,
+            [new("Mixed", ["Food", "Armor", "OptionalItem"]), new("Sound", ["Fire", "OptionalTrigger"])]);
+        var groupedErrors = (IReadOnlyList<string>)typeof(PresetValidation).GetMethod("KnownFormErrors", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [grouped.Blocks.Single().Value, "FOOD", PresetKind.Addon, groupCatalog])!;
+        Require(groupedErrors.Count == 0, "Mixed groups, unresolved members, and group names shadowing EditorIDs must keep their native meaning.");
+        grouped.Blocks.Single().Value.Set("forms", PresetValue.Scalar("Armor"));
+        groupedErrors = (IReadOnlyList<string>)typeof(PresetValidation).GetMethod("KnownFormErrors", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [grouped.Blocks.Single().Value, "FOOD", PresetKind.Addon, groupCatalog])!;
+        Require(groupedErrors.Single().StartsWith("Applies to:", StringComparison.Ordinal), "Addon sources have no name-selector fallback for incompatible EditorIDs.");
 
         var expanded = PresetDocument.Parse("""
             templates:

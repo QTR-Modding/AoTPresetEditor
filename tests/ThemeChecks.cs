@@ -111,7 +111,9 @@ internal static class ThemeChecks
         Field<ComboBox>(dialog, "accents").SelectedIndex = (int)EditorAccent.Purple;
         Field<ComboBox>(dialog, "scale").SelectedItem = "150%";
         Require(app.Appearance == new AppearanceSettings(EditorTheme.Light, EditorAccent.Purple, 150), "Appearance controls did not preview their values.");
-        dialog.Close();
+        var cancel = LogicalChildren<Button>(dialog).Single(button => Equals(button.Content, "Cancel"));
+        Require(cancel.IsCancel, "Appearance must let Escape cancel its live preview.");
+        cancel.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Require(app.Appearance == original, "Closing Appearance without saving did not undo its preview.");
     }
 

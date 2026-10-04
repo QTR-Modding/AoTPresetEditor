@@ -49,7 +49,7 @@ public sealed class AppearanceWindow : Window
         panel.Children.Add(status);
         var save = EditorControls.Button("Save", Save);
         save.SetResourceReference(StyleProperty, "PrimaryButton");
-        var footer = EditorControls.Footer(layout, save, EditorControls.Button("Cancel", Close));
+        var footer = EditorControls.Footer(layout, save, EditorControls.Button("Cancel", Close, isCancel: true));
         Grid.SetRow(footer, 1);
         Content = layout;
         themes.SelectionChanged += (_, _) => Preview();

@@ -577,8 +577,9 @@ public sealed class ValueEditorControl : UserControl
             edit.Visibility = list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
             edit.Content = details.Visibility == Visibility.Visible ? "Hide entry" : "Edit entry";
             remove.Visibility = list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
-            up.Visibility = list.SelectedIndex > 0 ? Visibility.Visible : Visibility.Collapsed;
-            down.Visibility = list.SelectedIndex >= 0 && list.SelectedIndex < Value.Items.Count - 1 ? Visibility.Visible : Visibility.Collapsed;
+            var canReorder = !ItemContext().Equals("stage", StringComparison.OrdinalIgnoreCase);
+            up.Visibility = canReorder && list.SelectedIndex > 0 ? Visibility.Visible : Visibility.Collapsed;
+            down.Visibility = canReorder && list.SelectedIndex >= 0 && list.SelectedIndex < Value.Items.Count - 1 ? Visibility.Visible : Visibility.Collapsed;
         }
         void ShowEntry()
         {
@@ -631,10 +632,26 @@ public sealed class ValueEditorControl : UserControl
         var value = PresetSchema.GetFields(child, Document.Kind).Count > 0 ? PresetValue.Map() : PresetValue.Scalar("");
         if (child.Equals("stage", StringComparison.OrdinalIgnoreCase))
         {
-            value.Set("no", PresetValue.Scalar(Value.Items.Count.ToString()));
+            value.Set("no", PresetValue.Scalar(NextStageNumber().ToString(System.Globalization.CultureInfo.InvariantCulture)));
             value.Set("name", new() { Kind = ValueKind.Scalar, Text = "", Style = ScalarStyle.DoubleQuoted }); value.Set("duration", PresetValue.Scalar("1"));
         }
         return value;
+    }
+
+    private uint NextStageNumber()
+    {
+        var used = new HashSet<uint>();
+        for (var index = 0; index < Value.Items.Count; index++)
+        {
+            if (Value.Items[index].Get("no") is { Kind: ValueKind.Scalar } number && PresetSchema.TryUnsigned(number.Text, out var parsed))
+                used.Add(parsed);
+            else if (effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count &&
+                effective.Items[index].Get("no") is { Kind: ValueKind.Scalar } resolved && PresetSchema.TryUnsigned(resolved.Text, out parsed))
+                used.Add(parsed);
+        }
+        uint next = 0;
+        while (used.Contains(next)) next++;
+        return next;
     }
 
     private ValueEditorControl Child(PresetValue value, string childContext, string childTitle, PresetField? childField,
@@ -769,7 +786,7 @@ public sealed class ValueEditorControl : UserControl
             dialog.DialogResult = true;
         });
         use.Visibility = Visibility.Collapsed; choices.SelectionChanged += (_, _) => use.Visibility = choices.SelectedItem is not null ? Visibility.Visible : Visibility.Collapsed;
-        var footer = EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false));
+        var footer = EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         DockPanel.SetDock(footer, Dock.Bottom); panel.Children.Add(choices);
         dialog.Content = panel; dialog.ShowDialog();
     }
@@ -826,7 +843,7 @@ public sealed class ValueEditorControl : UserControl
         });
         void UpdateChoice() => use.Visibility = TemplateCall.IsName(entry.Text.Trim()) ? Visibility.Visible : Visibility.Collapsed;
         entry.TextChanged += (_, _) => UpdateChoice(); UpdateChoice();
-        EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false)); dialog.Content = panel; dialog.ShowDialog();
+        EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true)); dialog.Content = panel; dialog.ShowDialog();
     }
     private void AddSetting()
     {
@@ -845,7 +862,7 @@ public sealed class ValueEditorControl : UserControl
             status.Text = duplicate ? "This setting already exists." : "Enter a unique setting name.";
         }
         entry.TextChanged += (_, _) => UpdateChoice(); UpdateChoice();
-        EditorControls.Footer(panel, add, EditorControls.Button("Cancel", () => dialog.DialogResult = false)); dialog.Content = panel; dialog.ShowDialog();
+        EditorControls.Footer(panel, add, EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true)); dialog.Content = panel; dialog.ShowDialog();
     }
     private void SetValue(PresetValue value)
     {

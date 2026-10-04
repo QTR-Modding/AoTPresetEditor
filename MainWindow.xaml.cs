@@ -11,7 +11,6 @@ public partial class MainWindow : Window
     private const string AllPresetCategories = "All types";
     private IReadOnlyList<FormRow> forms = [];
     private IReadOnlyList<PresetFile> presets = [];
-    private PresetFile? selectedPreset;
     private bool selectingPreset;
     private bool loading;
     private bool wasMaximized;
@@ -33,12 +32,8 @@ public partial class MainWindow : Window
             e.Cancel = !Workspace.CanLeave();
             if (!e.Cancel) SavePlacement(placementPath);
         };
-        Workspace.Opened += () => { PresetList.SelectedItem = null; selectedPreset = null; PresetBrowser.Visibility = Visibility.Collapsed; };
-        Workspace.BrowseRequested += () =>
-        {
-            PresetBrowser.Visibility = PresetBrowser.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-            PresetBrowser.IsExpanded = true;
-        };
+        Workspace.Opened += ShowEditor;
+        Workspace.BrowseRequested += ShowPresetBrowser;
         if (dataFolder is not null)
         {
             DataPath.Text = dataFolder;
@@ -46,6 +41,25 @@ public partial class MainWindow : Window
             Loaded += async (_, _) => await LoadData();
         }
     }
+
+    private void ShowEditor()
+    {
+        PresetBrowser.Visibility = Visibility.Collapsed;
+        Workspace.Visibility = Visibility.Visible;
+    }
+
+    private void ShowPresetBrowser()
+    {
+        Workspace.Visibility = Visibility.Collapsed;
+        PresetList.SelectedItem = null;
+        ResumeEditing.Visibility = Workspace.HasProject ? Visibility.Visible : Visibility.Collapsed;
+        PresetBrowser.Visibility = Visibility.Visible;
+        PresetSearch.Focus();
+    }
+
+    private void Resume_Click(object sender, RoutedEventArgs e) => ShowEditor();
+    private void NewPreset_Click(object sender, RoutedEventArgs e) => Workspace.New();
+    private void OpenPreset_Click(object sender, RoutedEventArgs e) => Workspace.OpenFile();
 
     private void SavePlacement(string? path)
     {
@@ -78,6 +92,9 @@ public partial class MainWindow : Window
         forms = []; presets = [];
         Workspace.SetCatalog([], []);
         PresetList.ItemsSource = null; LoadOrderList.ItemsSource = null;
+        PresetFilters.Visibility = Visibility.Collapsed;
+        PresetEmpty.Text = "Loading installed presets...";
+        PresetEmpty.Visibility = Visibility.Visible;
         FormBrowserAction.Visibility = Visibility.Collapsed;
         LoadOrderInfo.Text = "";
         var timer = Stopwatch.StartNew();
@@ -101,6 +118,7 @@ public partial class MainWindow : Window
         catch (Exception error)
         {
             Status.Text = "Could not load forms: " + error.Message;
+            if (presets.Count == 0) PresetEmpty.Text = "Could not load installed presets. Check the Data folder on the Game data tab.";
         }
         finally
         {
@@ -139,10 +157,14 @@ public partial class MainWindow : Window
         var category = PresetCategories.SelectedItem as string;
         var allCategories = category is null or AllPresetCategories;
         var kind = (PresetKinds.SelectedItem as KeyValuePair<PresetKind?, string>?)?.Key;
-        PresetList.ItemsSource = presets.Where(p =>
+        var matches = presets.Where(p =>
             (allCategories || string.Equals(p.Category, category, StringComparison.OrdinalIgnoreCase)) &&
             (kind is null || p.Kind == kind) &&
-            p.RelativePath.Contains(PresetSearch.Text, StringComparison.OrdinalIgnoreCase));
+            p.RelativePath.Contains(PresetSearch.Text, StringComparison.OrdinalIgnoreCase)).ToArray();
+        PresetList.ItemsSource = matches;
+        PresetFilters.Visibility = presets.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        PresetEmpty.Text = presets.Count == 0 ? "No installed presets found in this Data folder." : "No presets match these filters.";
+        PresetEmpty.Visibility = matches.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private async void Preset_Selected(object sender, SelectionChangedEventArgs e)
@@ -151,9 +173,8 @@ public partial class MainWindow : Window
         selectingPreset = true;
         try
         {
-            if (await Workspace.Open(preset)) { selectedPreset = preset; PresetList.SelectedItem = preset; }
-            else PresetList.SelectedItem = selectedPreset;
+            await Workspace.Open(preset);
         }
-        finally { selectingPreset = false; }
+        finally { PresetList.SelectedItem = null; selectingPreset = false; }
     }
 }

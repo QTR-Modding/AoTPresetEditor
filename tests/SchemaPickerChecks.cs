@@ -65,7 +65,7 @@ internal static class SchemaPickerChecks
         PresetField Get(string template, string parameter) => PresetSchema.GetParameterField(
             document.Blocks.Single(block => block.Kind == BlockKind.Template && block.Key == template), parameter, document)
             ?? throw new Exception($"No field inferred for {template}.{parameter}.");
-        Require(Get("cook", "raw") is { Kind: FieldKind.FormList, AllowsGroups: true, MatchPresetCategory: true },
+        Require(Get("cook", "raw") is { Kind: FieldKind.FormList, AllowsGroups: true, MatchPresetCategory: true, RequiresEditorId: true },
             "An addon source parameter must retain group and category constraints.");
         Require(Get("cook", "heat") is { TriggerOnly: true, AllowsGroups: true }, "Merged trigger fields must retain their constraints.");
         Require(Get("cook", "time").Kind == FieldKind.Number, "Duration parameters must use numeric controls.");

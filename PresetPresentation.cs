@@ -40,7 +40,8 @@ public sealed class PresetPresentation
     public PresetValue? EffectiveValue(string blockId) => document.Blocks.FirstOrDefault(block => block.Id == blockId) is { } block ? EffectiveValue(block) : null;
     public PresetValue? EffectiveValue(PresetValue value) => effective.GetValueOrDefault(value);
 
-    public FormRow? ResolveForm(string identifier) => forms.GetValueOrDefault(NormalizeIdentifier(identifier)) ?? forms.GetValueOrDefault(identifier);
+    public FormRow? ResolveForm(string identifier, bool allowGroups = false) => allowGroups && groups.ContainsKey(identifier)
+        ? null : forms.GetValueOrDefault(NormalizeIdentifier(identifier)) ?? forms.GetValueOrDefault(identifier);
 
     public IReadOnlyList<FormRow> SourceForms(PresetValue rule)
     {

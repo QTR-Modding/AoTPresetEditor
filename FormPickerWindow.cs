@@ -226,7 +226,11 @@ public sealed class FormPickerWindow : Window
         if (selected.Count == 0) return;
         if (browseOnly)
         {
-            try { Clipboard.SetText(selected.First().Identifier); }
+            try
+            {
+                var identifier = selected.First().Identifier;
+                Clipboard.SetText(identifier); count.Text = "Copied " + identifier;
+            }
             catch (ExternalException) { count.Text = "The clipboard is busy. Try Copy identifier again."; }
             return;
         }

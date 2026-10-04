@@ -26,7 +26,7 @@ The editor starts in Dark mode. **Tools > Appearance** offers Dark, Light, or Fo
 
 ## Edit a preset
 
-1. Choose **File > New preset** and give it a name. **Add behavior** asks which item type it affects and what it should do. **Stages** is selected by default: choose items and define the states they pass through. The other choices add reactions or preservation, or provide fallback aging for that item type. The editor chooses AoT's file types and paths from these choices.
+1. Choose **New preset** and give it a name, or open an installed preset from the list. **Back to presets** returns to that list and keeps your unfinished edit; **Resume editing** brings it back. Opening a different file asks about unsaved work. **Add behavior** asks which item type it affects and what it should do. **Stages** is selected by default: choose items and define the states they pass through. The other choices add reactions or preservation, or provide fallback aging for that item type. The editor chooses AoT's file types and paths from these choices.
 2. The left list shows your behaviors. Select one to edit its settings alongside the list. Drag the divider to resize the list, or choose **Focus editor** to hide it. **Show behaviors** brings it back. The selected behavior's actions menu contains delete and available reorder commands.
 3. Required settings appear first; expand the other sections to see optional settings. **Help** beside a field explains its meaning and units. **Choose forms** searches your profile, limited to forms accepted by that field. Lists show a summary of each entry. **Edit entry** opens its settings; **Hide entry** closes them without losing changes. Entire list sections can also be collapsed. Move transformations up or down to set their priority; the first matching trigger wins.
 4. To reuse a behavior for several items, open a field's **...** menu and choose **Vary per item**. That field becomes a column in **Variations**. For example, vary **Applies to** and a transformation's **Result item**; each row can pair raw food with its cooked result while sharing the fire trigger and duration. Entire lists can vary too. **Common settings** edits the values shared by every row.
@@ -40,7 +40,7 @@ Existing templates, anchors, and rule order are retained. Direct uses of the sam
 
 Fields appear when AoT can use them. Stage 0 uses the original item; later FOOD and MISC stages can generate items with property overrides. Explicit replacement items retain their own properties. Saved settings that have no effect appear under **Unused** and stay in the file until you remove them. Final results accept all bound-object types; intermediate stage items must also fit the source item.
 
-Validation checks AoT field requirements, values, stage numbering, templates, shared references, and known result/stage forms. It detects incompatible replacements, reuse of a source as a later stage, and duplicate replacements written with different identifiers. Unknown identifiers still need to exist in your game. Test the exported preset in game to check its behavior.
+Validation checks AoT field requirements, values, stage numbering, templates, shared references, and known form types. It detects incompatible replacements, reuse of a source as a later stage, and duplicate replacements written with different identifiers. Source items need an EditorID, including when selected by numeric ID. Unknown identifiers still need to exist in your game. Test the exported preset in game to check its behavior.
 
 ## Use form groups
 

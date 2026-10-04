@@ -49,7 +49,7 @@ public static class PresetValidation
                 errors[block.Id] = [.. errors[block.Id], .. PresetSchema.Validate(expandedList, "Rules", document.Category, document.Kind)];
                 if (catalog is not null)
                     for (var index = 0; index < expandedList.Items.Count; index++)
-                        errors[block.Id] = [.. errors[block.Id], .. KnownFormErrors(expandedList.Items[index], document.Category, catalog)
+                        errors[block.Id] = [.. errors[block.Id], .. KnownFormErrors(expandedList.Items[index], document.Category, document.Kind, catalog)
                             .Select(error => $"Entry {index + 1}: {error}")];
                 if (expandedList.Items.Count == 0) errors[block.Id] = [.. errors[block.Id], "The rule list is empty."];
             }
@@ -63,7 +63,7 @@ public static class PresetValidation
                     var block = rules[index];
                     errors[block.Id] = [.. errors[block.Id], .. PresetSchema.Validate(expandedRules[index].Value,
                         PresetDocument.RuleContext(document.Kind), document.Category, document.Kind)];
-                    if (catalog is not null) errors[block.Id] = [.. errors[block.Id], .. KnownFormErrors(expandedRules[index].Value, document.Category, catalog)];
+                    if (catalog is not null) errors[block.Id] = [.. errors[block.Id], .. KnownFormErrors(expandedRules[index].Value, document.Category, document.Kind, catalog)];
                 }
             }
             foreach (var block in document.Blocks.Where(block => block.Kind == BlockKind.Shared))
@@ -82,18 +82,10 @@ public static class PresetValidation
         return new(source, expanded, errors, fileErrors);
     }
 
-    private static IReadOnlyList<string> KnownFormErrors(PresetValue rule, string category, PresetPresentation catalog)
+    private static IReadOnlyList<string> KnownFormErrors(PresetValue rule, string category, PresetKind kind, PresetPresentation catalog)
     {
         var errors = new List<string>();
-        void CheckResult(PresetValue? value, string label)
-        {
-            if (value is { Kind: ValueKind.Scalar } && catalog.ResolveForm(value.Text) is { IsBoundObject: false } form)
-                errors.Add($"{label}: {catalog.FormLabel(value.Text)} is {form.Type}, not a bound object that AoT can produce.");
-        }
-        CheckResult(rule.Get("finalFormEditorID"), "Final result item");
-        if (rule.Get("transformers") is { Kind: ValueKind.Sequence } transformations)
-            for (var index = 0; index < transformations.Items.Count; index++)
-                CheckResult(transformations.Items[index].Get("finalFormEditorID"), $"Transformations {index + 1}: Result item");
+        CheckKnownFields(rule, "rule", category, kind, catalog, "", errors);
         if (rule.Get("stages") is not { Kind: ValueKind.Sequence } stages) return errors;
         var stageField = PresetSchema.GetFields("stage", PresetKind.Custom).Single(field => field.Key == "FormEditorID");
         var categorySelection = new FormSelection(Category: category);
@@ -114,6 +106,41 @@ public static class PresetValidation
             replacements.TryAdd(replacement, value.Text);
         }
         return errors;
+    }
+
+    private static void CheckKnownFields(PresetValue value, string context, string category, PresetKind kind,
+        PresetPresentation catalog, string path, List<string> errors)
+    {
+        foreach (var field in PresetSchema.GetFields(context, kind))
+        {
+            if (value.Get(field.Key) is not { IsNull: false } child ||
+                PresetSchema.InactiveReason(field, value, context, category) is not null) continue;
+            var label = path.Length == 0 ? field.Label : path + ": " + field.Label;
+            if (field.Kind == FieldKind.ObjectList && child.Kind == ValueKind.Sequence)
+            {
+                for (var index = 0; index < child.Items.Count; index++)
+                    CheckKnownFields(child.Items[index], field.ChildContext, category, kind, catalog, $"{label} {index + 1}", errors);
+                continue;
+            }
+            if (field.Kind is not (FieldKind.Form or FieldKind.FormList) || field.MatchSourceType) continue;
+            var selection = FormSelection.ForField(field, category);
+            foreach (var item in child.Kind == ValueKind.Sequence ? child.Items : [child])
+            {
+                if (item.Kind != ValueKind.Scalar || item.IsNull) continue;
+                // Custom owner text can match item names even when the same text is another form's EditorID.
+                if (field.Key == "owners" && !PresetPresentation.NormalizeIdentifier(item.Text).Contains('~')) continue;
+                // A group may intentionally contain mixed or unresolved members; it takes precedence over an EditorID.
+                if (catalog.ResolveForm(item.Text, field.AllowsGroups) is not { } form || selection.Matches(form)) continue;
+                var name = catalog.FormLabel(item.Text);
+                var reason = field.RequiresEditorId && form.EditorId.Length == 0
+                    ? $"{name} has no EditorID; AoT cannot use it as a source item."
+                    : field.BoundObjectOnly ? $"{name} is {form.Type}, not a bound object that AoT can produce."
+                    : field.MatchPresetCategory ? $"{name} does not belong to {category}."
+                    : field.TriggerOnly ? $"{name} is {form.Type}; a trigger must be a bound object, location, or perk."
+                    : $"{name} is {form.Type}; this setting requires {string.Join(" or ", field.FormTypes ?? [])}.";
+                errors.Add($"{label}: {reason}");
+            }
+        }
     }
 
     private static bool HasUnsetArgument(PresetValue value, HashSet<string> templates)

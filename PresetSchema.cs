@@ -7,7 +7,7 @@ public enum FieldKind { Text, Form, FormList, Number, Integer, IntegerList, Bool
 public sealed record PresetField(string Key, string Label, FieldKind Kind, string Help,
     bool Required = false, string ChildContext = "", string[]? FormTypes = null, string? DefaultText = null,
     bool AllowsGroups = false, bool MatchPresetCategory = false, bool TriggerOnly = false, bool BoundObjectOnly = false,
-    bool MatchSourceType = false);
+    bool MatchSourceType = false, bool RequiresEditorId = false);
 
 public static class PresetSchema
 {
@@ -67,12 +67,12 @@ public static class PresetSchema
     ];
     private static readonly PresetField[] CustomFields =
     [
-        new("owners", "Applies to", FieldKind.FormList, "Items selected by form identifier or words in their names. A scalar or a list is accepted.", true, FormTypes: ItemTypes, MatchPresetCategory: true),
+        new("owners", "Applies to", FieldKind.FormList, "Items selected by form identifier or words in their names. A scalar or a list is accepted.", true, FormTypes: ItemTypes, MatchPresetCategory: true, RequiresEditorId: true),
         .. RuleFields
     ];
     private static readonly PresetField[] AddonFields =
     [
-        new("forms", "Applies to", FieldKind.FormList, "Items selected by form identifiers or form groups. A scalar or a list is accepted.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true),
+        new("forms", "Applies to", FieldKind.FormList, "Items selected by form identifiers or form groups. A scalar or a list is accepted.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true, RequiresEditorId: true),
         .. RuleFields.Where(field => field.Key is not ("stages" or "finalFormEditorID"))
     ];
 
@@ -268,7 +268,8 @@ public static class PresetSchema
             MatchPresetCategory = known.Any(field => field.MatchPresetCategory),
             TriggerOnly = known.Any(field => field.TriggerOnly),
             BoundObjectOnly = known.Any(field => field.BoundObjectOnly),
-            MatchSourceType = known.Any(field => field.MatchSourceType)
+            MatchSourceType = known.Any(field => field.MatchSourceType),
+            RequiresEditorId = known.Any(field => field.RequiresEditorId)
         };
     }
     public static IReadOnlyList<string> Validate(PresetValue value, string context, string category, bool partial = false) =>
@@ -471,7 +472,7 @@ public static class PresetSchema
     private static bool HasText(PresetValue? value) => value is { Kind: ValueKind.Scalar, IsNull: false } && !string.IsNullOrWhiteSpace(value.Text);
     private static bool IsReference(PresetValue value) => value.Kind == ValueKind.Alias || value.Kind == ValueKind.Scalar &&
         (value.Text.StartsWith('$') || TemplateCall.TryParse(value.Text, out _, out _));
-    private static bool TryUnsigned(string text, out uint number)
+    internal static bool TryUnsigned(string text, out uint number)
     {
         number = 0;
         if (text.TrimStart().StartsWith('-') || !TryInteger(text, out var parsed) || parsed < 0 || parsed > uint.MaxValue) return false;

@@ -37,7 +37,7 @@ public sealed class GroupPickerWindow : Window
         choose = EditorControls.Button("Choose", Choose); choose.IsDefault = true; choose.Visibility = Visibility.Collapsed;
         choose.SetResourceReference(StyleProperty, "PrimaryButton");
         EditorControls.Footer(footer, EditorControls.Button("New group...", NewGroup), choose,
-            EditorControls.Button("Cancel", () => DialogResult = false));
+            EditorControls.Button("Cancel", () => DialogResult = false, isCancel: true));
         DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer);
         var columns = new Grid();
         columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 160, MaxWidth = 280 });
@@ -193,7 +193,7 @@ public sealed class GroupEditorWindow : Window
         var footer = new StackPanel(); footer.Children.Add(status);
         create = EditorControls.Button("Create group", Create);
         create.ToolTip = "Adds this group to the preset. Save to mod exports it with the preset.";
-        EditorControls.Footer(footer, create, EditorControls.Button("Cancel", () => DialogResult = false));
+        EditorControls.Footer(footer, create, EditorControls.Button("Cancel", () => DialogResult = false, isCancel: true));
         DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer); layout.Children.Add(members); Content = layout;
         name.TextChanged += (_, _) => CheckName();
         Refresh(); CheckName();

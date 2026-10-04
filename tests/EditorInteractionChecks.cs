@@ -27,6 +27,7 @@ internal static class EditorInteractionChecks
         CompactFields();
         CompactScalarLists();
         CollectionDisclosure();
+        StageCreationAfterRemoval();
         CollectionSections();
         FieldApplicability();
         RetainedUnusedSettings();
@@ -500,6 +501,43 @@ internal static class EditorInteractionChecks
             "Adding an empty identifier must open its input immediately.");
         Field<ListBox>(editor, "entryList").SelectedIndex = 0;
         Require(details.Visibility == Visibility.Collapsed, "Selecting a different existing form should show its summary until editing is requested.");
+    }
+
+    private static void StageCreationAfterRemoval()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        var value = PresetYaml.Parse("owners: FoodBeef\nstages: [{no: 0, name: Fresh, duration: 1}, {no: 1, name: Middle, duration: 2}, {no: 0x2, name: Last, duration: 3}]\nfinalFormEditorID: FoodVenison\ntransformers: [{FormEditorID: Fire, finalFormEditorID: FoodVenison, duration: 1, allowed_stages: [0, 2]}]");
+        var editor = new ValueEditorControl(document, Forms, value, "CustomRule", "Rule");
+        var stages = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "stages");
+        var list = Field<ListBox>(stages, "entryList");
+        var actions = Field<StackPanel>(stages, "content").Children.OfType<WrapPanel>().Single();
+        list.SelectedIndex = 1;
+        Require(actions.Children.OfType<Button>().Where(button => button.Content is "Move up" or "Move down")
+            .All(button => button.Visibility == Visibility.Collapsed),
+            "Stages must not offer list reordering that cannot change numeric progression.");
+        Click(actions.Children.OfType<Button>().Single(button => Equals(button.Content, "Remove")));
+        Click(actions.Children.OfType<Button>().Single(button => Equals(button.Content, "Add stage")));
+        editor.Capture();
+        Require(stages.Value.Items.Select(stage => stage.Get("no")!.Text).SequenceEqual(["0", "0x2", "1"]),
+            "Adding a stage after removing a middle stage must fill the unused number without renumbering existing stages.");
+        Require(editor.Value.Get("transformers")!.Items.Single().Get("allowed_stages")!.Items.Select(stage => stage.Text).SequenceEqual(["0", "2"]),
+            "Creating a stage must preserve trigger stage references.");
+        Require(PresetSchema.Validate(editor.Value, "CustomRule", "FOOD").Count == 0,
+            "The stage list must remain valid after replacing a removed stage.");
+        list.SelectedIndex = 0;
+        Click(actions.Children.OfType<Button>().Single(button => Equals(button.Content, "Remove")));
+        Click(actions.Children.OfType<Button>().Single(button => Equals(button.Content, "Add stage")));
+        Require(stages.Value.Items.Last().Get("no")!.Text == "0",
+            "Adding a stage must restore stage 0 when it is missing.");
+        var transformerField = PresetSchema.GetFields("CustomRule", document.Kind).Single(field => field.Key == "transformers");
+        var transformations = PresetYaml.Parse("[{FormEditorID: Fire, duration: 1}, {FormEditorID: Snow, duration: 2}]");
+        var triggers = new ValueEditorControl(document, Forms, transformations, "transformer", "Transformations", field: transformerField);
+        var triggerActions = Field<StackPanel>(triggers, "content").Children.OfType<WrapPanel>().Single();
+        var down = triggerActions.Children.OfType<Button>().Single(button => Equals(button.Content, "Move down"));
+        Require(down.Visibility == Visibility.Visible, "Transformations must keep ordering controls because earlier triggers take priority.");
+        Click(down);
+        Require(triggers.Value.Items.Select(item => item.Get("FormEditorID")!.Text).SequenceEqual(["Snow", "Fire"]),
+            "Moving a transformation must update its trigger priority.");
     }
 
     private static void CollectionDisclosure()

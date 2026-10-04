@@ -24,7 +24,7 @@ public sealed record FormRow(string Name, string EditorId, string Type, string P
     ItemCategories Categories = ItemCategories.None, bool IsTrigger = false, bool IsBoundObject = false);
 
 public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, string? Category = null, bool TriggerOnly = false,
-    bool BoundObjectOnly = false, IReadOnlyCollection<FormRow>? ExcludedForms = null)
+    bool BoundObjectOnly = false, IReadOnlyCollection<FormRow>? ExcludedForms = null, bool RequiresEditorId = false)
 {
     private readonly ItemCategories category = Enum.TryParse<ItemCategories>(Category, true, out var value) ? value : ItemCategories.None;
 
@@ -40,7 +40,7 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
                 types = types is null ? [form.Type] : types.Where(type => type.Equals(form.Type, StringComparison.OrdinalIgnoreCase)).ToArray();
             }
         return new(types, field?.MatchPresetCategory == true ? category : null,
-            field?.TriggerOnly == true, field?.BoundObjectOnly == true, excluded);
+            field?.TriggerOnly == true, field?.BoundObjectOnly == true, excluded, field?.RequiresEditorId == true);
     }
 
     public bool Matches(FormRow form) =>
@@ -48,6 +48,7 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
         (string.IsNullOrEmpty(Category) || (form.Categories & category) != 0) &&
         (!TriggerOnly || form.IsTrigger) &&
         (!BoundObjectOnly || form.IsBoundObject) &&
+        (!RequiresEditorId || form.EditorId.Length != 0) &&
         (ExcludedForms is null || !ExcludedForms.Contains(form));
 }
 

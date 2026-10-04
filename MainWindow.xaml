@@ -16,10 +16,18 @@
   </DockPanel>
   <TabControl>
    <TabItem Header="Presets">
-    <DockPanel Margin="4">
-     <Expander x:Name="PresetBrowser" Header="Installed presets" DockPanel.Dock="Top" IsExpanded="True" Margin="0,0,0,12">
-      <DockPanel Height="210" Margin="8">
-       <StackPanel DockPanel.Dock="Left" Width="220" Margin="0,0,16,0">
+    <Grid Margin="4">
+     <DockPanel x:Name="PresetBrowser" Margin="8">
+      <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+       <Button x:Name="ResumeEditing" DockPanel.Dock="Right" Content="Resume editing" Click="Resume_Click" Visibility="Collapsed"/>
+       <StackPanel Orientation="Horizontal">
+        <Button Content="New preset..." Click="NewPreset_Click"/>
+        <Button Content="Open file or draft..." Click="OpenPreset_Click"/>
+       </StackPanel>
+      </DockPanel>
+      <TextBlock DockPanel.Dock="Top" Text="Installed presets" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+      <DockPanel>
+       <StackPanel x:Name="PresetFilters" DockPanel.Dock="Left" Width="220" Margin="0,0,16,0" Visibility="Collapsed">
         <TextBlock Text="Item type" Margin="0,0,0,5"/>
         <ComboBox x:Name="PresetCategories" SelectionChanged="PresetFilter_Changed" AutomationProperties.Name="Preset type"/>
         <TextBlock Text="Behavior" Margin="0,10,0,5"/>
@@ -27,11 +35,23 @@
         <TextBlock Text="Search files" Margin="0,10,0,5"/>
         <TextBox x:Name="PresetSearch" TextChanged="PresetFilter_Changed" AutomationProperties.Name="Search presets" ToolTip="Filter preset paths"/>
        </StackPanel>
-       <ListBox x:Name="PresetList" DisplayMemberPath="DisplayName" SelectionChanged="Preset_Selected" ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+       <Grid>
+        <ListBox x:Name="PresetList" SelectionChanged="Preset_Selected" ScrollViewer.HorizontalScrollBarVisibility="Auto">
+         <ListBox.ItemTemplate>
+          <DataTemplate>
+           <StackPanel Margin="4">
+            <TextBlock Text="{Binding DisplayName}"/>
+            <TextBlock Text="{Binding RelativePath}" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+           </StackPanel>
+          </DataTemplate>
+         </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock x:Name="PresetEmpty" Text="Choose a Skyrim Data folder on the Game data tab to browse installed presets. You can also open a file or create a preset." Margin="16" TextWrapping="Wrap" IsHitTestVisible="False"/>
+       </Grid>
       </DockPanel>
-     </Expander>
-     <local:PresetWorkspace x:Name="Workspace"/>
-    </DockPanel>
+     </DockPanel>
+     <local:PresetWorkspace x:Name="Workspace" Visibility="Collapsed"/>
+    </Grid>
    </TabItem>
    <TabItem Header="Game data">
     <DockPanel Margin="12">

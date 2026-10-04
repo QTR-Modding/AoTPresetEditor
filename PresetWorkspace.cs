@@ -13,6 +13,7 @@ public sealed class PresetWorkspace : UserControl
 {
     public event Action? Opened;
     public event Action? BrowseRequested;
+    public bool HasProject => project is not null;
     private static readonly string[] Categories = ["FOOD", "INGR", "MEDC", "POSN", "ARMO", "WEAP", "BOOK", "SCRL", "SLGM", "MISC"];
     private static readonly string[] CategoryNames = ["Food", "Ingredients", "Medicine", "Poisons", "Armor", "Weapons", "Books", "Scrolls", "Soul gems", "Miscellaneous items"];
     private readonly TextBlock title = EditorControls.Text("Open or create a preset", true);
@@ -64,6 +65,9 @@ public sealed class PresetWorkspace : UserControl
         var layout = new DockPanel();
         var header = new StackPanel();
         var toolbar = new DockPanel { Margin = new Thickness(0, 0, 0, 5) };
+        var back = EditorControls.Button("Back to presets", () => BrowseRequested?.Invoke());
+        back.ToolTip = "Return to the preset list. Your current edit is kept until you close it or open another preset.";
+        DockPanel.SetDock(back, Dock.Left); toolbar.Children.Add(back);
         focus = EditorControls.Button("Focus editor", ToggleFocusMode);
         focus.ToolTip = "Hide the behavior list to give the selected settings the full width.";
         DockPanel.SetDock(focus, Dock.Right); toolbar.Children.Add(focus);
@@ -75,7 +79,7 @@ public sealed class PresetWorkspace : UserControl
         DockPanel.SetDock(reviewIssues, Dock.Right); toolbar.Children.Add(reviewIssues);
         var fileMenu = new Menu { VerticalAlignment = VerticalAlignment.Center };
         var file = new MenuItem { Header = "File" };
-        foreach (var (label, action) in new (string, Action)[] { ("New preset...", New), ("Open file or draft...", OpenFile), ("Import into this preset...", ImportFile), ("Installed presets...", () => BrowseRequested?.Invoke()) })
+        foreach (var (label, action) in new (string, Action)[] { ("New preset...", New), ("Open file or draft...", OpenFile), ("Import into this preset...", ImportFile) })
         {
             var item = new MenuItem { Header = label }; item.Click += (_, _) => action(); file.Items.Add(item);
         }
@@ -136,20 +140,33 @@ public sealed class PresetWorkspace : UserControl
     private void ToggleFocusMode()
     {
         focused = !focused;
-        if (focused) sidebarWidth = new GridLength(sidebarColumn.ActualWidth);
-        sidebarColumn.MinWidth = focused ? 0 : 180;
-        sidebarColumn.Width = focused ? new GridLength(0) : sidebarWidth;
-        splitterColumn.Width = new GridLength(focused ? 0 : 8);
-        blockSidebar.Visibility = splitter.Visibility = focused ? Visibility.Collapsed : Visibility.Visible;
-        details.Margin = focused ? new Thickness(0) : new Thickness(8, 0, 0, 0);
+        UpdateSidebar();
         focus.Content = focused ? "Show behaviors" : "Focus editor";
+    }
+
+    private void UpdateSidebar()
+    {
+        var visible = blocks.Items.Count > 0 && !focused;
+        if ((blockSidebar.Visibility == Visibility.Visible) == visible) return;
+        if (!visible) sidebarWidth = sidebarColumn.Width;
+        sidebarColumn.MinWidth = visible ? 180 : 0;
+        sidebarColumn.Width = visible ? sidebarWidth : new GridLength(0);
+        splitterColumn.Width = new GridLength(visible ? 8 : 0);
+        blockSidebar.Visibility = splitter.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        details.Margin = visible ? new Thickness(8, 0, 0, 0) : new Thickness(0);
     }
 
     private void ShowWelcome()
     {
         var welcome = new StackPanel { Margin = new Thickness(15) };
+        if (blocks.Items.Count > 0)
+        {
+            welcome.Children.Add(EditorControls.Text("Select a behavior to edit its settings."));
+            details.Content = welcome;
+            return;
+        }
         welcome.Children.Add(EditorControls.Text("Describe what happens to your items", true));
-        welcome.Children.Add(EditorControls.Text("Add a behavior, choose the items it affects, then set how they change. Use a field's options to vary its value between items."));
+        welcome.Children.Add(EditorControls.Text("Add a behavior, choose the items it affects, then set how they change."));
         var start = new WrapPanel();
         if (project is null)
         {
@@ -208,7 +225,7 @@ public sealed class PresetWorkspace : UserControl
         panel.Children.Add(EditorControls.Text("Save your work before leaving?", true));
         panel.Children.Add(EditorControls.Text("A draft keeps unfinished settings and new form groups. It does not change your installed preset."));
         EditorControls.Footer(panel, EditorControls.Button("Save draft...", () => { if (SaveDraft()) dialog.DialogResult = true; }),
-            EditorControls.Button("Discard", () => dialog.DialogResult = true), EditorControls.Button("Cancel", () => dialog.DialogResult = false));
+            EditorControls.Button("Discard", () => dialog.DialogResult = true), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel;
         return dialog.ShowDialog() == true;
     }
@@ -250,7 +267,7 @@ public sealed class PresetWorkspace : UserControl
     }
 
     private void ImportFile() => PickFile(true);
-    private void OpenFile() => PickFile(false);
+    public void OpenFile() => PickFile(false);
 
     private async void PickFile(bool import)
     {
@@ -287,12 +304,12 @@ public sealed class PresetWorkspace : UserControl
         panel.Children.Add(EditorControls.Text("Item type"));
         var types = new ComboBox { ItemsSource = CategoryNames, SelectedIndex = 0 }; panel.Children.Add(types);
         EditorControls.Footer(panel, EditorControls.Button("Open", () => dialog.DialogResult = true),
-            EditorControls.Button("Cancel", () => dialog.DialogResult = false));
+            EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel;
         return dialog.ShowDialog() == true ? Categories[types.SelectedIndex] : null;
     }
 
-    private async void New()
+    public async void New()
     {
         if (!CanLeave()) return;
         var dialog = new Window { Title = "New preset", Owner = Host, Width = 460,
@@ -304,7 +321,7 @@ public sealed class PresetWorkspace : UserControl
         {
             if (!ValidFilename(name.Text.Trim())) { error.Text = "Choose a valid file name."; return; }
             dialog.DialogResult = true;
-        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false));
+        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel; if (dialog.ShowDialog() != true) return;
         ResetEditor(); filename = name.Text.Trim(); project = new PresetProject { Name = filename };
         activeEntry = null; document = null; presentation = null; validations.Clear();
@@ -338,7 +355,7 @@ public sealed class PresetWorkspace : UserControl
             if (purpose.SelectedIndex == 2 && project.Entries.Any(entry => entry.Document.Category == Categories[types.SelectedIndex] && entry.Document.Kind == PresetKind.Default && entry.Document.Blocks.Any(block => block.Kind == BlockKind.Rule)))
             { error.Text = "This item type already has fallback aging. Edit that behavior."; return; }
             dialog.DialogResult = true;
-        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false));
+        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel; if (dialog.ShowDialog() != true) return;
         var kind = purpose.SelectedIndex switch { 0 => PresetKind.Custom, 1 => PresetKind.Addon, _ => PresetKind.Default };
         var entry = project.GetOrCreate(Categories[types.SelectedIndex], kind);
@@ -539,6 +556,7 @@ public sealed class PresetWorkspace : UserControl
         EnsureProject();
         addBehavior.Visibility = project is not null ? Visibility.Visible : Visibility.Collapsed;
         if (focused && blocks.Items.Count == 0) ToggleFocusMode();
+        UpdateSidebar();
         focus.Visibility = blocks.Items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         save.Visibility = Ready ? Visibility.Visible : Visibility.Collapsed;
         yaml.Visibility = Ready ? Visibility.Visible : Visibility.Collapsed;
@@ -565,15 +583,27 @@ public sealed class PresetWorkspace : UserControl
             var result = validations[entries[0].Id];
             new YamlPreviewWindow(filename, result.Source, result.Expanded) { Owner = Host }.ShowDialog(); return;
         }
-        var picker = new Window { Title = "Generated files", Owner = Host, Width = 620, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        var panel = new StackPanel { Margin = new Thickness(18) };
+        var picker = new Window { Title = "Generated files", Owner = Host, MinWidth = 620, MinHeight = 400, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        EditorControls.FitToOwner(picker);
+        var layout = new DockPanel { Margin = new Thickness(18) };
+        var close = EditorControls.Button("Close", picker.Close, isCancel: true);
+        var footer = EditorControls.Footer(layout, close); DockPanel.SetDock(footer, Dock.Bottom);
+        var panel = new StackPanel();
+        var root = exportRoot ?? AppContext.BaseDirectory;
+        var presetRoot = Path.Combine(root, "SKSE", "Plugins", "AlchemyOfTime");
         foreach (var entry in entries)
-            panel.Children.Add(EditorControls.Button(CategoryLabel(entry.Document.Category) + " · " + entry.FileName, () =>
+        {
+            var path = Path.GetRelativePath(presetRoot, project.GetExportPath(entry, root));
+            var button = EditorControls.Button(path, () =>
             {
                 var result = validations[entry.Id];
                 new YamlPreviewWindow(entry.FileName, result.Source, result.Expanded) { Owner = picker }.ShowDialog();
-            }));
-        picker.Content = panel; picker.ShowDialog();
+            });
+            button.Content = new TextBlock { Text = path, TextWrapping = TextWrapping.Wrap };
+            panel.Children.Add(button);
+        }
+        layout.Children.Add(new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        picker.Content = layout; picker.ShowDialog();
     }
 
     private bool SaveDraft()
