@@ -290,6 +290,7 @@ internal static class BehaviorFamilyChecks
             - owners: [Beef]
               stages: [{no: 0, name: Fresh, duration: 1}]
               containers: [Chest]
+              extra: [One]
               finalFormEditorID: Result
             - owners: [Beef, Venison]
             - owners: []
@@ -298,9 +299,10 @@ internal static class BehaviorFamilyChecks
         var exported = PresetDocument.Parse(document.ToYaml(), "FOOD", PresetKind.Custom);
         var rows = exported.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
         Require(rows[0].Value.Get("owners") is { Kind: ValueKind.Scalar, Text: "Beef" } &&
-            rows[0].Value.Get("stages")!.Kind == ValueKind.Sequence && rows[0].Value.Get("containers")!.Kind == ValueKind.Sequence &&
+            rows[0].Value.Get("containers") is { Kind: ValueKind.Scalar, Text: "Chest" } &&
+            rows[0].Value.Get("stages")!.Kind == ValueKind.Sequence && rows[0].Value.Get("extra")!.Kind == ValueKind.Sequence &&
             rows.Skip(1).All(row => row.Value.Get("owners")!.Kind == ValueKind.Sequence),
-            "Only safe one-owner selectors may become scalars; arbitrary, empty, multiple, and anchored lists must remain lists.");
+            "Only supported singleton value lists may become scalars; arbitrary, structured, empty, multiple, and anchored lists must remain lists.");
         document = PresetDocument.Parse("templates:\n  both:\n    forms: $items\n    extra: $items\nformsLists:\n- both([Beef])\n", "FOOD", PresetKind.Addon);
         var rule = document.Blocks.Single(block => block.Kind == BlockKind.Rule);
         var selected = PresetValue.List(); selected.Items.Add(PresetValue.Scalar("Venison"));

@@ -206,34 +206,25 @@ public sealed class PresetDocument
         rules.TrailingComments.AddRange(ruleTrailingComments);
         foreach (var block in Blocks)
         {
-            var value = block.Value;
-            if (block.Kind is BlockKind.Rule or BlockKind.Template && value.Kind == ValueKind.Mapping &&
-                PresetSchema.NormalizeContext(block.Context) == "rule" && Kind != PresetKind.Default)
-            {
-                var key = Kind == PresetKind.Addon ? "forms" : "owners";
-                if (value.Get(key) is { } selector && CompactSelector(selector) is { } compact && !ReferenceEquals(selector, compact))
-                {
-                    value = value.Clone();
-                    value.Set(key, compact);
-                }
-            }
+            var value = block.Value.Clone();
+            CompactSettings(value, block.Context);
             switch (block.Kind)
             {
                 case BlockKind.Shared:
-                    AddUnique(root, block.Key, block.Value);
+                    AddUnique(root, block.Key, value);
                     break;
                 case BlockKind.Template:
                     if (!root.Fields.ContainsKey("templates")) root.Set("templates", templates);
                     AddUnique(templates, block.Key, value);
                     break;
                 case BlockKind.Rule when Kind == PresetKind.Default:
-                    if (block.Value.Kind == ValueKind.Alias || block.Value.Kind == ValueKind.Scalar && TemplateCall.TryParse(block.Value.Text, out _, out _))
+                    if (value.Kind == ValueKind.Alias || value.Kind == ValueKind.Scalar && TemplateCall.TryParse(value.Text, out _, out _))
                     {
-                        AddUnique(root, "<<", block.Value);
+                        AddUnique(root, "<<", value);
                         break;
                     }
-                    if (block.Value.Kind != ValueKind.Mapping) throw new InvalidDataException("The default rule must be a settings block, shared reference, or template use.");
-                    foreach (var field in block.Value.Fields) AddUnique(root, field.Key, field.Value);
+                    if (value.Kind != ValueKind.Mapping) throw new InvalidDataException("The default rule must be a settings block, shared reference, or template use.");
+                    foreach (var field in value.Fields) AddUnique(root, field.Key, field.Value);
                     break;
                 case BlockKind.Rule:
                     var key = Kind == PresetKind.Addon ? "formsLists" : "ownerLists";
@@ -241,7 +232,7 @@ public sealed class PresetDocument
                     {
                         if (Blocks.Count(item => item.Kind == BlockKind.Rule) != 1)
                             throw new InvalidDataException("A shared rule list cannot be combined with separate rules in the same preset.");
-                        AddUnique(root, key, block.Value);
+                        AddUnique(root, key, value);
                         break;
                     }
                     if (!root.Fields.ContainsKey(key)) root.Set(key, rules);
@@ -256,14 +247,48 @@ public sealed class PresetDocument
         return MetadataPrefix + JsonSerializer.Serialize(names) + Environment.NewLine + PresetYaml.Write(root);
     }
 
+    private void CompactSettings(PresetValue value, string context)
+    {
+        if (value.Kind == ValueKind.Sequence)
+        {
+            var itemContext = PresetSchema.GetFields(context, Kind).Count > 0 ? context :
+                PresetSchema.NormalizeContext(context) switch
+                {
+                    "rules" => RuleContext(Kind), "stages" => "stage", "transformers" => "transformer",
+                    "modulators" => "modulator", "effects" => "effect", _ => ""
+                };
+            foreach (var item in value.Items) CompactSettings(item, itemContext.Length > 0 ? itemContext : InferContext(item, Kind));
+            return;
+        }
+        foreach (var field in PresetSchema.GetFields(context, Kind))
+        {
+            if (value.Get(field.Key) is not { } child) continue;
+            if (field.Kind is FieldKind.FormList or FieldKind.IntegerList)
+            {
+                child = CompactSelector(child);
+                value.Set(field.Key, child);
+                if (child.Kind == ValueKind.Sequence && child.TrailingComments.Count == 0 &&
+                    child.Items.All(item => item.Kind is ValueKind.Scalar or ValueKind.Alias &&
+                        !item.Text.Contains('\n') && !item.Text.Contains('\r') && item.Comments.Count == 0 &&
+                        item.InlineComment.Length == 0 && item.TrailingComments.Count == 0)) child.Flow = true;
+            }
+            else if (field.Kind == FieldKind.ObjectList) CompactSettings(child, field.ChildContext);
+        }
+    }
+
     internal static PresetValue CompactSelector(PresetValue value)
     {
         if (value.Kind != ValueKind.Sequence || value.Items.Count != 1 || value.Anchor.Length > 0 || value.Tag.Length > 0 ||
-            value.Items[0] is not { Kind: ValueKind.Scalar, IsNull: false, IsUnsetArgument: false } item || item.Text.StartsWith('$')) return value;
+            value.Items[0] is not { Kind: ValueKind.Scalar, IsNull: false, IsUnsetArgument: false } item ||
+            item.Text.StartsWith('$') || TemplateCall.TryParse(item.Text, out _, out _)) return value;
         var scalar = item.Clone();
         scalar.Comments.InsertRange(0, value.Comments);
         scalar.TrailingComments.AddRange(value.TrailingComments);
-        if (value.InlineComment.Length > 0) scalar.TrailingComments.Add(value.InlineComment);
+        if (value.InlineComment.Length > 0)
+        {
+            if (scalar.InlineComment.Length == 0) scalar.InlineComment = value.InlineComment;
+            else scalar.TrailingComments.Add(value.InlineComment);
+        }
         return scalar;
     }
     internal static IEnumerable<PresetValue> Descendants(PresetValue value)

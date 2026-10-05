@@ -4,6 +4,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Threading;
 using Microsoft.Win32;
 
@@ -93,7 +94,10 @@ public sealed class PresetWorkspace : UserControl
         fileMenu.Items.Add(file); DockPanel.SetDock(fileMenu, Dock.Left); toolbar.Children.Add(fileMenu);
         var saveActions = new StackPanel { Orientation = Orientation.Horizontal };
         draftSave = EditorControls.Button("Save draft...", () => SaveDraft());
-        save = EditorControls.Button("Save to mod...", Save);
+        save = new Button { Content = "Save to mod...", Command = ApplicationCommands.Save, CommandTarget = this,
+            ToolTip = "Save to mod (Ctrl+S)" };
+        CommandBindings.Add(new CommandBinding(ApplicationCommands.Save, (_, _) => Save(),
+            (_, args) => args.CanExecute = IsVisible && IsEnabled && Ready));
         yaml = EditorControls.Button("View YAML...", ShowYaml);
         saveActions.Children.Add(draftSave); saveActions.Children.Add(save); saveActions.Children.Add(yaml); toolbar.Children.Add(saveActions);
         save.SetResourceReference(StyleProperty, "PrimaryButton");
@@ -663,6 +667,7 @@ public sealed class PresetWorkspace : UserControl
         UpdateSidebar();
         focus.Visibility = blocks.Items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         save.Visibility = Ready ? Visibility.Visible : Visibility.Collapsed;
+        CommandManager.InvalidateRequerySuggested();
         yaml.Visibility = Ready ? Visibility.Visible : Visibility.Collapsed;
         fileDraft.Visibility = project is not null ? Visibility.Visible : Visibility.Collapsed;
         draftSave.Visibility = project is not null && !Ready ? Visibility.Visible : Visibility.Collapsed;

@@ -369,7 +369,7 @@ public sealed class ValueEditorControl : UserControl
     {
         "color" or "sound" or "art_object" or "effect_shader" => "World effects",
         "value" or "weight" or "crafting_allowed" or "mgeffect" or "FormEditorID" => "Item properties",
-        "containers" => "Filters", "allowed_stages" => "Where this applies", _ => "Additional behavior"
+        "containers" or "allowed_stages" => "Filters", _ => "Additional behavior"
     };
 
     private void RenderField(PresetField descriptor, Panel target)

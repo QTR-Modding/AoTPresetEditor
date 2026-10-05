@@ -20,6 +20,8 @@ The complete app is written to `dist`. Keep that folder together; it includes th
 
 MO2 supplies that profile's plugin list and virtual Data folder. Running outside MO2 reads the normal game installation instead.
 
+For **Help**, add `msedgewebview2.exe` to MO2's executable blacklist. The default browser also needs an entry for **Open in browser** (`msedge.exe` for Edge). This lets the browsers run without MO2's filesystem hooks, which can prevent them from starting.
+
 ## Appearance
 
 The editor starts in Dark mode. **Tools > Appearance** offers Dark, Light, or Follow Windows, plus a button accent color. Changes preview immediately; **Save** remembers them, and **Cancel** restores the previous appearance. Preferences are stored in `%LOCALAPPDATA%/AoTPresetEditor/appearance.json`, separately from presets.
@@ -32,7 +34,7 @@ The editor starts in Dark mode. **Tools > Appearance** offers Dark, Light, or Fo
 4. To reuse a behavior with different values, check **Variable** beside a field and give it a name. Check **Applies to** and **Final item**, for example, to pair each source item with its result. **Variables** shows one column per name and one row per use. **Settings** holds the values shared by every row. For stages, make individual fields variable, such as duration or stage item. Unchecking **Variable** removes its column and clears the field so you can enter a shared value.
 5. In **Variables**, select a cell to edit its value below the table. **Add row** adds an empty row. Its arrow offers form selection for each form variable, adding one row per selected form. Select a range with Shift-click or Shift+Up/Down; Delete or Backspace removes the selected rows when the table has focus. Right-click the table to duplicate rows, paste tab-separated cells, or fill selected rows with the current value. Pasting starts at the selected cell; each line fills a row, with tabs separating columns. Click **Settings** to return; your edits are kept.
 6. Validation updates as you edit. **Review issues** lists problems; selecting one opens its rule and focuses the relevant field. **Save draft** keeps unfinished work and new form groups in an `.aotdraft` file. It stays available in **File** when the preset is valid. Reopen it with **File > Open file or draft** to continue.
-7. Once valid, **Save to mod** writes the behavior files and new groups into the correct `SKSE/Plugins/AlchemyOfTime/<type>/...` paths. Choose the mod's top-level folder. A preset can contain several item types and kinds of behavior; its draft keeps them together. **File > Import into this preset** adds an existing file to the workspace. Imported files keep their basenames and internal rule order.
+7. Once valid, **Save to mod** or **Ctrl+S** writes the behavior files and new groups into the correct `SKSE/Plugins/AlchemyOfTime/<type>/...` paths. Choose the mod's top-level folder. A preset can contain several item types and kinds of behavior; its draft keeps them together. **File > Import into this preset** adds an existing file to the workspace. Imported files keep their basenames and internal rule order.
 
 **View YAML** opens a read-only code viewer with syntax colors, folding, search, copy, and text zoom. **Preset YAML** shows what will be saved. **Expanded rules** shows the values after applying shared settings and template arguments. The editor's naming metadata is folded at the top of the source; copying includes it.
 

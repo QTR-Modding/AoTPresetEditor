@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using Microsoft.Win32;
 
 namespace AoTPresetEditor;
@@ -18,6 +19,7 @@ public partial class MainWindow : Window
     public MainWindow(string? dataFolder, string? placementPath = null)
     {
         InitializeComponent();
+        InputBindings.Add(new KeyBinding(ApplicationCommands.Save, Key.S, ModifierKeys.Control) { CommandTarget = Workspace });
         if (WindowPlacement.Load(placementPath) is { } placement)
         {
             WindowStartupLocation = WindowStartupLocation.Manual;

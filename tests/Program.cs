@@ -44,6 +44,7 @@ internal static class Program
             Check("Editor interactions", EditorInteractionChecks.Run);
             Check("Behavior editing and variation controls", BehaviorEditorChecks.Run);
             Check("Behavior workspace and mixed editing", BehaviorWorkspaceChecks.Run);
+            Check("Save to mod keyboard shortcut", SaveShortcutChecks.Run);
             Check("Form group files and draft isolation", FormGroupChecks.Run);
             Check("Form applicability", FormSelectionChecks.Run);
             Check("Preset and companion export rollback", PresetExportChecks.Run);
