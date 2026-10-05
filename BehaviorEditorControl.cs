@@ -371,11 +371,11 @@ public sealed class BehaviorEditorControl : UserControl
     }
 
     private VariationColumn? SelectedColumn => table.Columns.IndexOf(table.CurrentCell.Column) is var index && index > 0 && index <= columns.Count
-        ? columns[index - 1] : columns.FirstOrDefault();
+        ? columns[index - 1] : columns.FirstOrDefault(column => column.Parameter == cellParameter) ?? columns.FirstOrDefault();
 
     private void OpenCell()
     {
-        if (!variationsActive) return;
+        if (!variationsActive || !table.CurrentCell.IsValid) return;
         var row = table.CurrentItem as VariationRow ?? table.SelectedItem as VariationRow;
         var column = SelectedColumn;
         if (row is null || column is null) { CaptureCell(); ClearCell(); UpdateActions(); return; }
@@ -536,13 +536,14 @@ public sealed class BehaviorEditorControl : UserControl
     {
         if (columns.Count == 0) return;
         if (string.IsNullOrEmpty(text)) return;
-        var startColumn = Math.Max(0, table.Columns.IndexOf(table.CurrentCell.Column) - 1);
+        var startColumn = Math.Max(0, columns.IndexOf(SelectedColumn!));
         var lines = text.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');
         var values = lines.Select(line => line.Split('\t')).ToArray();
         if (values.Any(row => row.Length > columns.Count - startColumn))
             throw new InvalidOperationException($"The clipboard has {values.Max(row => row.Length)} columns. Only {columns.Count - startColumn} fit from '{columns[startColumn].Label}'.\n\nCopy only the matching columns, or select an earlier column before pasting. Separate columns with tabs and rows with new lines.");
         var parsed = values.Select(row => row.Select((value, index) => PasteValue(value, columns[startColumn + index].Field)).ToArray()).ToArray();
-        var startRow = table.CurrentItem is VariationRow selected ? rows.IndexOf(selected) : rows.Count;
+        var startRow = rows.FindIndex(row => row.Id == cellRowId);
+        if (startRow < 0) startRow = rows.Count;
         if (document.Kind == PresetKind.Default && startRow + parsed.Length > Math.Max(1, rows.Count))
             throw new InvalidOperationException("This preset has one row. Paste the values into that row.");
         Capture(); var existing = BehaviorFamily.Find(document, RuleId)!.Rows.ToArray(); string? first = null;

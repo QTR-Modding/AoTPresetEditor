@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Automation;
 using System.Windows.Interop;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using AoTPresetEditor;
 
@@ -180,6 +181,25 @@ internal static class BehaviorEditorChecks
                 failure.Message.Contains("cooked_item", StringComparison.Ordinal) && editor.Document.ToDraft() == before,
                 "An overwide paste must identify the column mismatch and leave every value unchanged.");
         }
+        var host = new Window { Content = editor, Width = 1000, Height = 800,
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, Opacity = 0,
+            ShowActivated = false, ShowInTaskbar = false };
+        try
+        {
+            host.Show(); SelectCell(editor, 1, 1);
+            FocusGridCell(host, table, 1, 2);
+            FocusManager.SetFocusedElement(host, Field<Button>(editor, "addRow"));
+            Require(!table.CurrentCell.IsValid, "The paste test must leave the focused grid cell before invoking its action.");
+            PasteCells(editor, "BakedChicken"); editor.Capture();
+            family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+            Require(family.Rows.Count == 2 &&
+                BehaviorFamily.GetArgument(editor.Document, family.Rows[0].Id, "raw_item").Text == "FoodBeef" &&
+                BehaviorFamily.GetArgument(editor.Document, family.Rows[0].Id, "cooked_item").Text == "RoastedBeef" &&
+                BehaviorFamily.GetArgument(editor.Document, family.Rows[1].Id, "raw_item").Text == "FoodChicken" &&
+                BehaviorFamily.GetArgument(editor.Document, family.Rows[1].Id, "cooked_item").Text == "BakedChicken",
+                "Pasting after focus leaves the grid must retain the chosen row and variable, without appending a row or changing other cells.");
+        }
+        finally { host.Close(); }
     }
 
     private static void PasteCells(BehaviorEditorControl editor, string text) =>
@@ -195,12 +215,11 @@ internal static class BehaviorEditorChecks
                 - {no: 0, name: "", duration: 1}
                 finalFormEditorID: $cooked
             ownerLists:
-            - cook([], null)
             - cook(RawBeef, null)
             """, "FOOD", PresetKind.Custom);
-        var rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
+        var rule = document.Blocks.Single(block => block.Kind == BlockKind.Rule);
         var cooked = new FormRow("Cooked Beef", "CookedBeef", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x721E8~Skyrim.esm", ItemCategories.FOOD, IsBoundObject: true);
-        var editor = new BehaviorEditorControl(document, [cooked], rules[0].Id);
+        var editor = new BehaviorEditorControl(document, [cooked], rule.Id);
         var host = new Window { Content = editor, Width = 1000, Height = 800,
             WindowStyle = WindowStyle.None, AllowsTransparency = true, Opacity = 0,
             ShowActivated = false, ShowInTaskbar = false };
@@ -209,14 +228,16 @@ internal static class BehaviorEditorChecks
         {
             host.Show();
             Field<TabControl>(editor, "tabs").SelectedIndex = 1;
-            SelectCell(editor, 1, 1); host.UpdateLayout();
+            SelectCell(editor, 0, 1); host.UpdateLayout();
             var table = Field<DataGrid>(editor, "table");
-            table.Focus();
+            FocusGridCell(host, table, 0, 2);
+            Require(table.CurrentCell.Column == table.Columns[2], "The final-item cell must own logical focus before opening its picker.");
             var cell = Field<ValueEditorControl>(editor, "cellEditor");
             var button = Descendants<Button>(cell).Single(item => Equals(item.Content, "Choose form..."));
-            button.Focus();
+            FocusManager.SetFocusedElement(host, button);
+            Require(!table.CurrentCell.IsValid, "Leaving the focused grid cell must exercise WPF's current-cell clearing path.");
             Require(ReferenceEquals(cell, Field<ValueEditorControl>(editor, "cellEditor")) &&
-                Field<string>(editor, "cellRowId") == rules[1].Id && Field<string>(editor, "cellParameter") == "cooked",
+                Field<string>(editor, "cellRowId") == rule.Id && Field<string>(editor, "cellParameter") == "cooked",
                 "Moving focus from a selected row to Choose form must preserve the selected cell and its button.");
             var response = Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
             {
@@ -224,7 +245,7 @@ internal static class BehaviorEditorChecks
                     .OfType<FormPickerWindow>().Single();
                 try
                 {
-                    Require(Field<string>(editor, "cellRowId") == rules[1].Id && Field<string>(editor, "cellParameter") == "cooked",
+                    Require(Field<string>(editor, "cellRowId") == rule.Id && Field<string>(editor, "cellParameter") == "cooked",
                         "Opening the form picker must retain the selected row and variable.");
                     Field<DataGrid>(picker, "results").SelectedIndex = 0;
                     Click(Field<Button>(picker, "choose"));
@@ -236,10 +257,10 @@ internal static class BehaviorEditorChecks
             if (failure is not null) throw failure;
             Require(response.Status == DispatcherOperationStatus.Completed, "Choose form must open its modal picker.");
             editor.Capture();
-            Require(Field<string>(editor, "cellRowId") == rules[1].Id &&
-                BehaviorFamily.GetArgument(editor.Document, rules[1].Id, "cooked").Text == cooked.Identifier &&
-                BehaviorFamily.GetArgument(editor.Document, rules[0].Id, "cooked").Text == "null",
-                "The picker must write only the selected row's argument and leave the active row selected.");
+            Require(Field<string>(editor, "cellRowId") == rule.Id &&
+                BehaviorFamily.GetArgument(editor.Document, rule.Id, "cooked").Text == cooked.Identifier &&
+                BehaviorFamily.GetArgument(editor.Document, rule.Id, "raw").Text == "RawBeef",
+                "The picker must update the final item without replacing the source item or selected variable.");
         }
         finally { host.Close(); }
     }
@@ -569,6 +590,13 @@ internal static class BehaviorEditorChecks
     {
         var table = Field<DataGrid>(editor, "table"); table.SelectedItem = table.Items[row];
         table.CurrentCell = new DataGridCellInfo(table.Items[row], table.Columns[parameter + 1]);
+    }
+    private static void FocusGridCell(Window host, DataGrid table, int row, int column)
+    {
+        table.ScrollIntoView(table.Items[row], table.Columns[column]); host.UpdateLayout();
+        DependencyObject selected = table.Columns[column].GetCellContent(table.Items[row]);
+        while (selected is not DataGridCell) selected = VisualTreeHelper.GetParent(selected);
+        FocusManager.SetFocusedElement(host, (DataGridCell)selected);
     }
     private static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;
     private static IEnumerable<T> Descendants<T>(DependencyObject parent) where T : DependencyObject
