@@ -15,6 +15,7 @@ internal static class PresetPresentationChecks
 
     public static void Run()
     {
+        EmptyBehaviorPresentation();
         var document = PresetDocument.Parse("""
             cooking: &cooking
               FormEditorID: Fire
@@ -86,6 +87,42 @@ internal static class PresetPresentationChecks
         Require(formPicker.Title == "Choose result item" && Field<DataGrid>(formPicker, "results").Items.Count == 4,
             "Contextual form selection must preserve applicability filtering.");
         formPicker.Close();
+    }
+
+    private static void EmptyBehaviorPresentation()
+    {
+        var document = PresetDocument.Parse("""
+            templates:
+              unusedSettings:
+                containers: $containers
+              meat:
+                owners: $raw
+                stages:
+                - no: 0
+                  duration: 1
+                finalFormEditorID: $cooked
+            ownerLists:
+            - meat(FoodBeef, FoodBeefCooked)
+            - meat(FoodVenison, FoodVenisonCooked)
+            """, "FOOD", PresetKind.Custom);
+        Require(new PresetPresentation(document, Forms).Behaviors().Count == 1,
+            "The behavior list must group template uses without exposing unrelated unused templates.");
+        foreach (var rule in document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray())
+            BehaviorFamily.RemoveUse(document, rule.Id);
+        var definition = document.Blocks.Single(block => block.Key == "meat");
+        foreach (var restored in new[] { document, document.Clone(), PresetDocument.FromDraft(document.ToDraft()),
+            PresetDocument.Parse(document.ToYaml(), document.Category, document.Kind) })
+        {
+            var presentation = new PresetPresentation(restored, Forms);
+            var behavior = presentation.Behaviors().Single();
+            Require(behavior.Id == definition.Id && behavior.IsBehavior && presentation.RuleSummary(behavior, true) == "No rows",
+                "An intentionally empty behavior must remain visible after cloning, drafting, and YAML reopening.");
+            Require(!restored.Blocks.Single(block => block.Key == "unusedSettings").IsBehavior,
+                "Preserving an empty behavior must not classify an imported helper template as a behavior.");
+        }
+        var row = BehaviorFamily.AddUse(document, definition.Id);
+        Require(new PresetPresentation(document, Forms).Behaviors().Single().Id == row.Id,
+            "Adding a new row to the retained settings must show one behavior, not the definition and row separately.");
     }
 
     private static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using YamlDotNet.Core;
 
@@ -52,8 +53,10 @@ public sealed class PresetBlock
     public string Name { get; set; } = "";
     public string Key { get; set; } = "";
     public string Context { get; set; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsBehavior { get; set; }
     public PresetValue Value { get; set; } = PresetValue.Map();
-    public PresetBlock Clone() => new() { Id = Id, Kind = Kind, Name = Name, Key = Key, Context = Context, Value = Value.Clone() };
+    public PresetBlock Clone() => new() { Id = Id, Kind = Kind, Name = Name, Key = Key, Context = Context, IsBehavior = IsBehavior, Value = Value.Clone() };
 }
 
 public sealed class PresetDocument
@@ -71,7 +74,8 @@ public sealed class PresetDocument
     private List<string> ruleTrailingComments = [];
     private List<string> templateTrailingComments = [];
 
-    private sealed record BlockMetadata(string Id, string Name, string Key, string Context, BlockKind Kind);
+    private sealed record BlockMetadata(string Id, string Name, string Key, string Context, BlockKind Kind,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool IsBehavior = false);
 
     public static PresetDocument Create(string category, PresetKind kind) => new() { Category = category, Kind = kind };
 
@@ -147,6 +151,7 @@ public sealed class PresetDocument
                 block.Id = saved.Id;
                 block.Name = saved.Name;
                 block.Context = saved.Context;
+                block.IsBehavior = saved.IsBehavior;
             }
             var order = metadata.Select((item, index) => (item.Id, index)).ToDictionary(item => item.Id, item => item.index);
             document.Blocks.Sort((left, right) => order.GetValueOrDefault(left.Id, int.MaxValue).CompareTo(order.GetValueOrDefault(right.Id, int.MaxValue)));
@@ -244,7 +249,7 @@ public sealed class PresetDocument
                     break;
             }
         }
-        var names = Blocks.Select(block => new BlockMetadata(block.Id, block.Name, block.Key, block.Context, block.Kind));
+        var names = Blocks.Select(block => new BlockMetadata(block.Id, block.Name, block.Key, block.Context, block.Kind, block.IsBehavior));
         OrderDefinitions(templates);
         OrderDefinitions(root);
         CheckAliases(root);

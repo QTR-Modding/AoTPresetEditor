@@ -14,7 +14,7 @@
     </MenuItem>
    </Menu>
   </DockPanel>
-  <TabControl>
+  <TabControl x:Name="MainTabs" SelectionChanged="MainTab_Selected">
    <TabItem Header="Presets">
     <Grid Margin="4">
      <DockPanel x:Name="PresetBrowser" Margin="8">
@@ -66,6 +66,7 @@
      <ListBox x:Name="LoadOrderList" FontFamily="Consolas"/>
     </DockPanel>
    </TabItem>
+   <TabItem x:Name="HelpTab" Header="Help"/>
   </TabControl>
   <TextBlock x:Name="Status" Grid.Row="1" Margin="0,3,0,0" FontSize="12" Text="Launch through MO2, or choose a Skyrim Data folder on the Game data tab." TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
  </Grid>

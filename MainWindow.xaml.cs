@@ -34,6 +34,7 @@ public partial class MainWindow : Window
         };
         Workspace.Opened += ShowEditor;
         Workspace.BrowseRequested += ShowPresetBrowser;
+        Closed += (_, _) => (HelpTab.Content as WikiView)?.Dispose();
         if (dataFolder is not null)
         {
             DataPath.Text = dataFolder;
@@ -61,6 +62,11 @@ public partial class MainWindow : Window
     private void NewPreset_Click(object sender, RoutedEventArgs e) => Workspace.New();
     private void OpenPreset_Click(object sender, RoutedEventArgs e) => Workspace.OpenFile();
 
+    private void MainTab_Selected(object sender, SelectionChangedEventArgs e)
+    {
+        if (ReferenceEquals(e.Source, MainTabs) && HelpTab?.IsSelected == true) HelpTab.Content ??= new WikiView();
+    }
+
     private void SavePlacement(string? path)
     {
         try { WindowPlacement.Capture(this, wasMaximized)?.Save(path); }
@@ -78,7 +84,11 @@ public partial class MainWindow : Window
 
     private async void Reload_Click(object sender, RoutedEventArgs e) => await LoadData();
 
-    private void Appearance_Click(object sender, RoutedEventArgs e) => new AppearanceWindow((App)Application.Current) { Owner = this }.ShowDialog();
+    private void Appearance_Click(object sender, RoutedEventArgs e)
+    {
+        new AppearanceWindow((App)Application.Current) { Owner = this }.ShowDialog();
+        (HelpTab.Content as WikiView)?.ApplyAppearance();
+    }
 
     private void FormBrowser_Click(object sender, RoutedEventArgs e) => new FormPickerWindow(forms, browseOnly: true) { Owner = this }.ShowDialog();
 

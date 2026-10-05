@@ -22,7 +22,7 @@ public static class PresetSchema
     private static readonly PresetField[] TriggerFields =
     [
         new("allowed_stages", "Allowed stages", FieldKind.IntegerList, "Stage numbers this trigger affects. Unset or empty means all stages; 0 selects the initial stage."),
-        new("containers", "Inventory filter", FieldKind.FormList, "Inventory owner's base forms where this trigger can apply. Unset or empty allows all inventories. World items ignore this filter.", AllowsGroups: true)
+        new("containers", "Containers", FieldKind.FormList, "Restrict this effect to the selected inventories; leave empty for no restriction. Items lying in the world ignore this filter.", AllowsGroups: true)
     ];
     private static readonly PresetField[] StageFields =
     [
@@ -61,9 +61,9 @@ public static class PresetSchema
     [
         new("stages", "Stages", FieldKind.ObjectList, "The sequence of stages, beginning with stage 0.", true, "stage"),
         new("finalFormEditorID", "Final item", FieldKind.Form, "Object produced after the last stage. Required even if an infinite stage prevents reaching it.", true, BoundObjectOnly: true),
-        new("containers", "Evolution filter", FieldKind.FormList, "Inventory owner's base forms where evolution is allowed. For a world item, this checks the item's own base form. Unset or empty is unrestricted.", AllowsGroups: true),
-        new("timeModulators", "Time modifiers", FieldKind.ObjectList, "Changes stage progression while a trigger applies. The first matching time modifier wins when no transformation matches.", ChildContext: "modulator"),
-        new("transformers", "Transformations", FieldKind.ObjectList, "Triggered transformations, in priority order. The first matching transformation wins.", ChildContext: "transformer")
+        new("containers", "Containers", FieldKind.FormList, "Restrict stage progression and transformations to the selected inventories and the listed items lying in the world; leave empty for no restriction.", AllowsGroups: true),
+        new("timeModulators", "Time modifiers", FieldKind.ObjectList, "Speed up, slow down, pause, or reverse an item's progress through its stages while the selected conditions apply.", ChildContext: "modulator"),
+        new("transformers", "Transformations", FieldKind.ObjectList, "Pause stage progression and turn the item into the chosen result after the selected conditions have remained active for the specified time.", ChildContext: "transformer")
     ];
     private static readonly PresetField[] CustomFields =
     [
@@ -133,8 +133,15 @@ public static class PresetSchema
     public static string FieldHelp(PresetField field, string context, PresetKind kind)
     {
         var help = field.Help;
+        if (field.Key == "containers" && NormalizeContext(context) is "transformer" or "modulator")
+        {
+            var effect = NormalizeContext(context) == "transformer" ? "transformation" : "time modifier";
+            help = $"Restrict this {effect} to the selected inventories; leave empty for no restriction. Items lying in the world ignore this filter.";
+        }
         if (kind == PresetKind.Addon && field.Key is "containers" or "allowed_stages")
-            help += " Additional behavior combines this list with the existing progression's restriction. An empty list does not clear that restriction.";
+            help += NormalizeContext(context) == "rule"
+                ? " These entries are added to the Containers filter in the item's stage settings. Leaving this empty keeps that filter."
+                : " When the item's stage settings already define this trigger, the lists are combined. Leaving this empty keeps the existing list.";
         if (kind == PresetKind.Default && NormalizeContext(context) == "stage" && field.Key == "duration")
             help += " Fallback aging whose stage 0 lasts 9999 hours or more (including .inf) only starts for items with matching reactions or preservation settings.";
         return help;
@@ -236,6 +243,7 @@ public static class PresetSchema
                     {
                         var childField = fields.FirstOrDefault(candidate => candidate.Key == name)
                             ?? VisualFields.FirstOrDefault(candidate => candidate.Key == name);
+                        if (childField is not null) childField = childField with { Help = FieldHelp(childField, context, document.Kind) };
                         FindParameterUses(child, childField?.ChildContext ?? InferContext(name, child), childField,
                             parameter, document, uses, activeTemplates, activeValues);
                     }
@@ -302,7 +310,7 @@ public static class PresetSchema
         "crafting_allowed" => "Cannot stand in for the source item in crafting",
         "mgeffect" => "Unchanged",
         "allowed_stages" => "Applies to every stage",
-        "containers" => NormalizeContext(context) == "rule" ? "No evolution filter" : "All inventories allowed",
+        "containers" => "Unrestricted",
         "timeModulators" => "Normal stage progression",
         "transformers" => "None",
         "sound" or "art_object" or "effect_shader" or "color" when NormalizeContext(context) is "transformer" or "modulator" => "Uses the stage setting",

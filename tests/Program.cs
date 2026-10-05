@@ -50,6 +50,8 @@ internal static class Program
             Check("Mixed behavior projects and export rollback", PresetProjectChecks.Run);
             Check("Template field constraints and group dialog drafts", SchemaPickerChecks.Run);
             Check("Appearance preference persistence", AppearanceSettingsChecks.Run);
+            Check("Embedded wiki navigation preserves editing", WikiChecks.Run);
+            Check("Enter in creation dialogs", CreationDialogChecks.Run);
             if (args.Length > 1) Check("Installed preset round trips", () => PresetDirectory(args[1]));
             Check("Live editor themes and preview cancellation", ThemeChecks.Run);
             Console.WriteLine($"Passed {passed} checks.");

@@ -191,7 +191,7 @@ public sealed class GroupEditorWindow : Window
         actions.Children.Add(remove); header.Children.Add(actions);
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
         var footer = new StackPanel(); footer.Children.Add(status);
-        create = EditorControls.Button("Create group", Create);
+        create = EditorControls.Button("Create group", Create, isDefault: true);
         create.ToolTip = "Adds this group to the preset. Save to mod exports it with the preset.";
         EditorControls.Footer(footer, create, EditorControls.Button("Cancel", () => DialogResult = false, isCancel: true));
         DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer); layout.Children.Add(members); Content = layout;

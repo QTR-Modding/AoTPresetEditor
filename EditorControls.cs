@@ -31,9 +31,9 @@ internal static class EditorControls
         Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
         FontSize = heading ? 20 : 14, FontWeight = heading ? FontWeights.SemiBold : FontWeights.Normal
     };
-    public static Button Button(string title, Action action, bool isCancel = false)
+    public static Button Button(string title, Action action, bool isCancel = false, bool isDefault = false)
     {
-        var button = new Button { Content = title, IsCancel = isCancel };
+        var button = new Button { Content = title, IsCancel = isCancel, IsDefault = isDefault };
         button.Click += (_, _) => action();
         return button;
     }

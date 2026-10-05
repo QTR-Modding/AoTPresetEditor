@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Automation;
 using System.Windows.Interop;
+using System.Windows.Input;
 using System.Windows.Threading;
 using AoTPresetEditor;
 
@@ -13,6 +14,9 @@ internal static class BehaviorEditorChecks
         NestedVariationsAndCapture();
         VariableNameCancellation();
         PasteNamedColumns();
+        ChooseFormPreservesCell();
+        PickerSurvivesPendingWorkspaceEdit();
+        DeleteSelectedRows();
         RepeatedParameters();
         CollectionVariations();
         StageApplicability();
@@ -180,6 +184,176 @@ internal static class BehaviorEditorChecks
 
     private static void PasteCells(BehaviorEditorControl editor, string text) =>
         typeof(BehaviorEditorControl).GetMethod("PasteCells", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(editor, [text]);
+
+    private static void ChooseFormPreservesCell()
+    {
+        var document = PresetDocument.Parse("""
+            templates:
+              cook:
+                owners: $raw
+                stages:
+                - {no: 0, name: "", duration: 1}
+                finalFormEditorID: $cooked
+            ownerLists:
+            - cook([], null)
+            - cook(RawBeef, null)
+            """, "FOOD", PresetKind.Custom);
+        var rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
+        var cooked = new FormRow("Cooked Beef", "CookedBeef", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x721E8~Skyrim.esm", ItemCategories.FOOD, IsBoundObject: true);
+        var editor = new BehaviorEditorControl(document, [cooked], rules[0].Id);
+        var host = new Window { Content = editor, Width = 1000, Height = 800,
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, Opacity = 0,
+            ShowActivated = false, ShowInTaskbar = false };
+        Exception? failure = null;
+        try
+        {
+            host.Show();
+            Field<TabControl>(editor, "tabs").SelectedIndex = 1;
+            SelectCell(editor, 1, 1); host.UpdateLayout();
+            var table = Field<DataGrid>(editor, "table");
+            table.Focus();
+            var cell = Field<ValueEditorControl>(editor, "cellEditor");
+            var button = Descendants<Button>(cell).Single(item => Equals(item.Content, "Choose form..."));
+            button.Focus();
+            Require(ReferenceEquals(cell, Field<ValueEditorControl>(editor, "cellEditor")) &&
+                Field<string>(editor, "cellRowId") == rules[1].Id && Field<string>(editor, "cellParameter") == "cooked",
+                "Moving focus from a selected row to Choose form must preserve the selected cell and its button.");
+            var response = Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                var picker = PresentationSource.CurrentSources.Cast<PresentationSource>().Select(source => source.RootVisual)
+                    .OfType<FormPickerWindow>().Single();
+                try
+                {
+                    Require(Field<string>(editor, "cellRowId") == rules[1].Id && Field<string>(editor, "cellParameter") == "cooked",
+                        "Opening the form picker must retain the selected row and variable.");
+                    Field<DataGrid>(picker, "results").SelectedIndex = 0;
+                    Click(Field<Button>(picker, "choose"));
+                }
+                catch (Exception error) { failure = error; picker.DialogResult = false; }
+            }));
+            try { Click(button); }
+            finally { response.Abort(); }
+            if (failure is not null) throw failure;
+            Require(response.Status == DispatcherOperationStatus.Completed, "Choose form must open its modal picker.");
+            editor.Capture();
+            Require(Field<string>(editor, "cellRowId") == rules[1].Id &&
+                BehaviorFamily.GetArgument(editor.Document, rules[1].Id, "cooked").Text == cooked.Identifier &&
+                BehaviorFamily.GetArgument(editor.Document, rules[0].Id, "cooked").Text == "null",
+                "The picker must write only the selected row's argument and leave the active row selected.");
+        }
+        finally { host.Close(); }
+    }
+
+    private static void DeleteSelectedRows()
+    {
+        var document = PresetDocument.Parse("""
+            templates:
+              cook:
+                owners: $raw
+                stages:
+                - {no: 0, name: "", duration: 1}
+                finalFormEditorID: CookedBeef
+            ownerLists:
+            - cook(RawBeef)
+            - cook(RawChicken)
+            - cook(RawVenison)
+            """, "FOOD", PresetKind.Custom);
+        var rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
+        var editor = new BehaviorEditorControl(document, [], rules[0].Id);
+        var host = new Window { Content = editor };
+        var source = HwndSource.FromHwnd(new WindowInteropHelper(host).EnsureHandle());
+        try
+        {
+            Field<TabControl>(editor, "tabs").SelectedIndex = 1;
+            SelectCell(editor, 0, 0);
+            var table = Field<DataGrid>(editor, "table");
+            Require(table.SelectionMode == DataGridSelectionMode.Extended && table.SelectionUnit == DataGridSelectionUnit.FullRow,
+                "The Variables table must retain WPF's Shift range selection for whole rows.");
+            table.SelectedItems.Add(table.Items[1]);
+            var key = new KeyEventArgs(Keyboard.PrimaryDevice, source, Environment.TickCount, Key.Delete) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+            table.RaiseEvent(key);
+            Require(key.Handled && table.Items.Count == 1 && BehaviorFamily.Find(editor.Document, editor.RuleId)!.Rows.Single().Id == rules[2].Id,
+                "Delete must remove the complete row selection and retain the unselected row.");
+            var input = CellInput(editor);
+            var back = new KeyEventArgs(Keyboard.PrimaryDevice, source, Environment.TickCount, Key.Back) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+            input.RaiseEvent(back);
+            Require(!back.Handled && table.Items.Count == 1, "Backspace in an input must remain text editing, not delete its row.");
+            back = new KeyEventArgs(Keyboard.PrimaryDevice, source, Environment.TickCount, Key.Back) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+            table.RaiseEvent(back);
+            var family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+            Require(back.Handled && table.Items.Count == 0 && family.Rows.Count == 0 && family.Definition.IsBehavior &&
+                family.Parameters.SequenceEqual(["raw"]) && family.Definition.Value.Get("finalFormEditorID")!.Text == "CookedBeef",
+                "Backspace on the final selected row must leave an empty table and preserve the behavior's common settings and variables.");
+            Require(Field<object?>(editor, "cellEditor") is null && Field<ContentControl>(editor, "cellSection").Visibility == Visibility.Collapsed,
+                "Deleting every row must remove the obsolete selected-cell editor.");
+            Click(Field<Button>(editor, "addRow"));
+            family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+            Require(table.Items.Count == 1 && family.Rows.Count == 1 && BehaviorFamily.GetArgument(editor.Document, editor.RuleId, "raw").IsUnsetArgument,
+                "Add row must remain usable after deleting all rows and create a new empty argument.");
+        }
+        finally { host.Close(); }
+    }
+
+    private static void PickerSurvivesPendingWorkspaceEdit()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        var rule = document.Add(BlockKind.Rule, "Cooking", "CustomRule");
+        rule.Value = ValueEditorWindow.NewValue("CustomRule");
+        var project = new PresetProject { Name = "New preset" };
+        var entry = project.Add(document, "Cooking");
+        var cooked = new FormRow("Cooked Beef", "CookedBeef", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x721E8~Skyrim.esm", ItemCategories.FOOD, IsBoundObject: true);
+        var workspace = new PresetWorkspace();
+        var host = new Window { Content = workspace, Width = 1100, Height = 850,
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, Opacity = 0,
+            ShowActivated = false, ShowInTaskbar = false };
+        var previousContext = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(workspace.Dispatcher));
+        void Set(string name, object value) => typeof(PresetWorkspace).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace, value);
+        void Invoke(string name, params object?[] arguments) => typeof(PresetWorkspace).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(workspace, arguments);
+        Set("project", project); Set("activeEntry", entry); Set("document", document); Set("forms", new[] { cooked });
+        try
+        {
+            host.Show(); Invoke("RenderBlocks", rule.Id); Invoke("SelectBlock");
+            var editor = Field<BehaviorEditorControl>(workspace, "editor");
+            MakeVariable(Common(editor), "owners", "raw");
+            MakeVariable(Common(editor), "finalFormEditorID", "cooked");
+            Field<TabControl>(editor, "tabs").SelectedIndex = 1;
+            Click(Field<Button>(editor, "addRow"));
+            Click(Field<Button>(editor, "addRow"));
+            SelectCell(editor, 2, 1);
+            var rowId = Field<string>(editor, "cellRowId");
+            var cell = Field<ValueEditorControl>(editor, "cellEditor");
+            var button = Descendants<Button>(cell).Single(item => Equals(item.Content, "Choose form..."));
+            host.UpdateLayout(); button.Focus();
+            Require(Field<DispatcherTimer>(workspace, "editTimer").IsEnabled,
+                "The interactive creation flow must leave validation pending before the picker is pressed.");
+            var frame = new DispatcherFrame();
+            var completed = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+            completed.Tick += (_, _) => { completed.Stop(); frame.Continue = false; };
+            completed.Start();
+            try { Dispatcher.PushFrame(frame); }
+            finally { completed.Stop(); }
+            Require(ReferenceEquals(editor, Field<BehaviorEditorControl>(workspace, "editor")) &&
+                ReferenceEquals(cell, Field<ValueEditorControl>(editor, "cellEditor")) &&
+                Field<string>(editor, "cellRowId") == rowId && Field<string>(editor, "cellParameter") == "cooked" && button.IsVisible,
+                "Pending workspace validation must not replace the chosen cell or button after interactive variable and row creation.");
+            Exception? failure = null;
+            var response = Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                var picker = PresentationSource.CurrentSources.Cast<PresentationSource>().Select(source => source.RootVisual)
+                    .OfType<FormPickerWindow>().Single();
+                try { Field<DataGrid>(picker, "results").SelectedIndex = 0; Click(Field<Button>(picker, "choose")); }
+                catch (Exception error) { failure = error; picker.DialogResult = false; }
+            }));
+            try { Click(button); }
+            finally { response.Abort(); }
+            if (failure is not null) throw failure;
+            Require(response.Status == DispatcherOperationStatus.Completed && Field<string>(editor, "cellRowId") == rowId &&
+                BehaviorFamily.GetArgument(editor.Document, rowId, "cooked").Text == cooked.Identifier,
+                "The picker must open and update the chosen row after pending workspace validation finishes.");
+        }
+        finally { Invoke("ResetEditor"); host.Close(); SynchronizationContext.SetSynchronizationContext(previousContext); }
+    }
 
     private static void CollectionVariations()
     {
@@ -371,7 +545,9 @@ internal static class BehaviorEditorChecks
                 .OfType<Window>().Single(window => window.Title == "Name variable");
             if (variableName is not null)
                 Descendants<TextBox>(dialog).Single(input => AutomationProperties.GetName(input) == "Variable name").Text = variableName;
-            Click(Descendants<Button>(dialog).Single(button => Equals(button.Content, variableName is null ? "Cancel" : "Create")));
+            var button = Descendants<Button>(dialog).Single(button => Equals(button.Content, variableName is null ? "Cancel" : "Create"));
+            Require(variableName is null || button.IsDefault, "Enter must invoke Create in the variable naming dialog.");
+            Click(button);
         }));
         try { choice.IsChecked = true; choice.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent)); }
         finally { response.Abort(); }

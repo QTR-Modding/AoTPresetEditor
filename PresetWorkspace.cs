@@ -133,6 +133,11 @@ public sealed class PresetWorkspace : UserControl
         Grid.SetColumn(editorScroll, 2); columns.Children.Add(editorScroll);
         blocks.SelectionChanged += (_, _) => { if (!rendering) SelectBlock(); };
         editTimer.Tick += async (_, _) => { editTimer.Stop(); if (CommitEditor()) await Refresh(SelectedId); };
+        Loaded += (_, _) =>
+        {
+            if (editorDirty || project is not null && checking is not { IsCancellationRequested: false } &&
+                project.Entries.Any(entry => !validations.ContainsKey(entry.Id))) editTimer.Start();
+        };
         Unloaded += (_, _) => { editTimer.Stop(); checking?.Cancel(); };
         layout.Children.Add(columns); Content = layout;
         ShowWelcome();
@@ -336,7 +341,7 @@ public sealed class PresetWorkspace : UserControl
         {
             if (!ValidFilename(name.Text.Trim())) { error.Text = "Choose a valid file name."; return; }
             dialog.DialogResult = true;
-        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
+        }, isDefault: true), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel; if (dialog.ShowDialog() != true) return;
         await StartEmptyPreset(name.Text.Trim());
     }
@@ -386,10 +391,11 @@ public sealed class PresetWorkspace : UserControl
         EditorControls.Footer(panel, EditorControls.Button("Create", () =>
         {
             if (name.Text.Trim().Length == 0) { error.Text = "Give this behavior a name."; return; }
-            if (purpose.SelectedIndex == 2 && project.Entries.Any(entry => entry.Document.Category == Categories[types.SelectedIndex] && entry.Document.Kind == PresetKind.Default && entry.Document.Blocks.Any(block => block.Kind == BlockKind.Rule)))
+            if (purpose.SelectedIndex == 2 && project.Entries.Any(entry => entry.Document.Category == Categories[types.SelectedIndex] &&
+                entry.Document.Kind == PresetKind.Default && new PresetPresentation(entry.Document, forms, groups).Behaviors().Count > 0))
             { error.Text = "This item type already has fallback aging. Edit that behavior."; return; }
             dialog.DialogResult = true;
-        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
+        }, isDefault: true), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel; if (dialog.ShowDialog() != true) return;
         var kind = purpose.SelectedIndex switch { 0 => PresetKind.Custom, 1 => PresetKind.Addon, _ => PresetKind.Default };
         var entry = project.GetOrCreate(Categories[types.SelectedIndex], kind);
@@ -455,6 +461,12 @@ public sealed class PresetWorkspace : UserControl
         var affected = family?.Rows.ToArray() ?? [block];
         if (MessageBox.Show(Host, $"Delete '{family?.Definition.Name ?? block.Name}'" + (affected.Length > 1 ? $" and its {affected.Length} rows?" : "?"), "Delete behavior", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
         ResetEditor(); foreach (var row in affected) document.Remove(row);
+        if (family is { IsTemplate: true })
+        {
+            family.Definition.IsBehavior = false;
+            if (affected.Length == 0 && new PresetPresentation(document, forms, groups).Uses(family.Definition).Count == 0)
+                document.Remove(family.Definition);
+        }
         if (activeEntry is not null) validations.Remove(activeEntry.Id);
         dirty = true; await Refresh();
     }
@@ -555,13 +567,12 @@ public sealed class PresetWorkspace : UserControl
             foreach (var entry in project.Entries)
             {
                 var catalog = new PresetPresentation(entry.Document, forms, groups, validations.GetValueOrDefault(entry.Id)?.Expanded);
-                var seen = new HashSet<string>();
-                foreach (var block in entry.Document.Blocks.Where(block => block.Kind == BlockKind.Rule))
+                foreach (var block in catalog.Behaviors())
                 {
                     var family = BehaviorFamily.Find(entry.Document, block.Id);
-                    if (family is not null && !seen.Add(family.Definition.Id)) continue;
                     var rows = family?.Rows ?? [block];
-                    var errors = rows.SelectMany(row => validations.GetValueOrDefault(entry.Id)?.Errors.GetValueOrDefault(row.Id) ?? []).ToArray();
+                    var errors = (rows.Count == 0 ? [block] : rows).SelectMany(row =>
+                        validations.GetValueOrDefault(entry.Id)?.Errors.GetValueOrDefault(row.Id) ?? []).ToArray();
                     var result = validations.GetValueOrDefault(entry.Id);
                     var status = result is null ? "•" : errors.Length > 0 ? "!" : result.FileErrors.Count > 0 ? "•" : "✓";
                     var rowPanel = new DockPanel { Margin = new Thickness(4, 5, 4, 5), MinHeight = 40 };
@@ -577,7 +588,7 @@ public sealed class PresetWorkspace : UserControl
                     var item = new ListBoxItem { Content = rowPanel, Tag = block.Id, HorizontalContentAlignment = HorizontalAlignment.Stretch,
                         ToolTip = label + Environment.NewLine + description + (errors.Length > 0 ? Environment.NewLine + string.Join(Environment.NewLine, errors) : "") };
                     blocks.Items.Add(item);
-                    if (rows.Any(row => row.Id == selected)) blocks.SelectedItem = item;
+                    if (block.Id == selected || rows.Any(row => row.Id == selected)) blocks.SelectedItem = item;
                 }
             }
             if (blocks.SelectedItem is null) blocks.SelectedItem = blocks.Items.OfType<ListBoxItem>().FirstOrDefault();

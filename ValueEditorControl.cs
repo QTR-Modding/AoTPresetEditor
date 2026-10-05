@@ -348,7 +348,7 @@ public sealed class ValueEditorControl : UserControl
     {
         "color" or "sound" or "art_object" or "effect_shader" => "World effects",
         "value" or "weight" or "crafting_allowed" or "mgeffect" or "FormEditorID" => "Item properties",
-        "containers" or "allowed_stages" => "Where this applies", _ => "Additional behavior"
+        "containers" => "Filters", "allowed_stages" => "Where this applies", _ => "Additional behavior"
     };
 
     private void RenderField(PresetField descriptor, Panel target)
@@ -361,7 +361,7 @@ public sealed class ValueEditorControl : UserControl
         if (descriptor.Help.Length > 0) caption.Children.Add(EditorControls.Info(descriptor.Label, PresetSchema.FieldHelp(descriptor, context, Document.Kind)));
         var actions = new WrapPanel();
         var variable = behaviorMode && allowVariations && IsVariable(current);
-        if (behaviorMode && allowVariations && descriptor.Key != "<<" &&
+        if (behaviorMode && allowVariations && descriptor.Key is not ("<<" or "stages") &&
             (current is null || !PresetDocument.Descendants(current).Any(value => value.Anchor.Length > 0)))
         {
             var choice = new CheckBox { Content = "Variable", IsChecked = variable, VerticalAlignment = VerticalAlignment.Center,
@@ -677,10 +677,10 @@ public sealed class ValueEditorControl : UserControl
             choice.Checked += (_, _) => { capture(); NotifyChanged(); }; choice.Unchecked += (_, _) => { capture(); NotifyChanged(); };
             content.Children.Add(choice); return;
         }
-        var entry = new TextBox { Text = Value.Text, Margin = new Thickness(0, 0, 0, 4), MinWidth = 80 };
+        var entry = new TextBox { Text = Value.IsNull ? "" : Value.Text, Margin = new Thickness(0, 0, 0, 4), MinWidth = 80 };
         capture = () =>
         {
-            if (Value.Text == entry.Text) return;
+            if ((Value.IsNull ? "" : Value.Text) == entry.Text) return;
             Value.Text = entry.Text; Value.Tag = ""; Value.Style = entry.Text.Length == 0 ? ScalarStyle.DoubleQuoted : ScalarStyle.Plain;
         };
         entry.TextChanged += (_, _) => { capture(); NotifyChanged(); };
@@ -845,7 +845,7 @@ public sealed class ValueEditorControl : UserControl
         {
             var parameter = entry.Text.Trim(); if (!TemplateCall.IsName(parameter)) { error.Text = "Use letters, digits, underscores or hyphens."; return; }
             SetValue(PresetValue.Scalar("$" + parameter)); dialog.DialogResult = true;
-        });
+        }, isDefault: true);
         void UpdateChoice() => use.Visibility = TemplateCall.IsName(entry.Text.Trim()) ? Visibility.Visible : Visibility.Collapsed;
         entry.TextChanged += (_, _) => UpdateChoice(); UpdateChoice();
         EditorControls.Footer(panel, use, EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true)); dialog.Content = panel; dialog.ShowDialog();
@@ -859,7 +859,7 @@ public sealed class ValueEditorControl : UserControl
         {
             var key = entry.Text.Trim(); if (key.Length == 0 || Value.Fields.ContainsKey(key)) return;
             Value.Set(key, PresetValue.Scalar("")); dialog.DialogResult = true; Render(); NotifyChanged();
-        });
+        }, isDefault: true);
         void UpdateChoice()
         {
             var key = entry.Text.Trim(); var duplicate = Value.Fields.ContainsKey(key);

@@ -20,7 +20,29 @@ internal static class BehaviorFamilyChecks
         var added = BehaviorFamily.AddUse(document, ruleId);
         Require(BehaviorFamily.GetArgument(document, added.Id, parameter).IsUnsetArgument, "New uses require a value instead of guessing null or zero.");
         Require(document.Blocks.Where(block => block.Kind == BlockKind.Rule).Last().Id == originalRules[1].Id, "Adding uses moved an unrelated rule.");
-        Require(BehaviorFamily.RemoveUse(document, added.Id) && BehaviorFamily.RemoveUse(document, duplicate.Id) && !BehaviorFamily.RemoveUse(document, ruleId), "Removing a use must retain the final use.");
+        Require(BehaviorFamily.RemoveUse(document, added.Id) && BehaviorFamily.RemoveUse(document, duplicate.Id) && BehaviorFamily.RemoveUse(document, ruleId),
+            "Removing selected rows must allow removing the final use.");
+        family = BehaviorFamily.Find(document, family.Definition.Id)!;
+        Require(family.Rows.Count == 0 && family.Definition.IsBehavior && family.Parameters.SequenceEqual([parameter]) &&
+            BehaviorFamily.GetValue(family.Definition.Value, ["transformers", "0", "duration"])!.Text == "$" + parameter,
+            "Removing every row must preserve the definition and its variables without leaving a placeholder use.");
+        document = PresetDocument.FromDraft(document.ToDraft());
+        family = BehaviorFamily.Find(document, family.Definition.Id)!;
+        Require(family.Rows.Count == 0 && family.Definition.IsBehavior, "A saved empty behavior must remain empty when reopened.");
+        var reloaded = PresetDocument.Parse(document.ToYaml(), document.Category, document.Kind);
+        Require(BehaviorFamily.Find(reloaded, family.Definition.Id) is { Rows.Count: 0, Definition.IsBehavior: true },
+            "YAML editor labels must retain an intentionally empty behavior without creating a template call.");
+        var validation = PresetValidation.Check(document, CancellationToken.None).GetAwaiter().GetResult();
+        Require(validation.Errors[family.Definition.Id].Contains("Add a row in Variables."),
+            "An intentionally empty behavior must require a row even when another behavior has active rules in the same document.");
+        var clearedEmpty = document.Clone();
+        var clearedId = BehaviorFamily.ClearVariable(clearedEmpty, family.Definition.Id, parameter);
+        Require(BehaviorFamily.Find(clearedEmpty, clearedId) is { IsTemplate: false, Rows.Count: 1 } clearedFamily &&
+            BehaviorFamily.GetValue(clearedFamily.Definition.Value, ["transformers", "0", "duration"]) is null,
+            "Clearing the final variable of an empty behavior must return to an ordinary rule with that setting cleared.");
+        added = BehaviorFamily.AddUse(document, family.Definition.Id);
+        Require(BehaviorFamily.Find(document, added.Id)!.Rows.Count == 1 && BehaviorFamily.GetArgument(document, added.Id, parameter).IsUnsetArgument,
+            "Adding a row after deleting every row must reuse the preserved settings and start with unset variables.");
 
         document = PresetDocument.Parse("""
             templates:
@@ -86,6 +108,12 @@ internal static class BehaviorFamilyChecks
         var overridden = document.Clone();
         overridden.Blocks.Single(block => block.Kind == BlockKind.Rule).Value.Set("finalFormEditorID", PresetValue.Scalar("AnotherResult"));
         Require(BehaviorFamily.Find(overridden, ruleId) is { IsTemplate: false }, "A default merge with explicit overrides must remain its own authored behavior.");
+        var emptyDefault = document.Clone();
+        Require(BehaviorFamily.RemoveUse(emptyDefault, ruleId), "The one row of a default behavior must be removable.");
+        var restoredDefault = BehaviorFamily.AddUse(emptyDefault, family.Definition.Id);
+        Require(BehaviorFamily.Find(emptyDefault, restoredDefault.Id)!.Rows.Count == 1 &&
+            BehaviorFamily.GetArgument(emptyDefault, restoredDefault.Id, parameter).IsUnsetArgument,
+            "An empty default behavior must allow its one row to be recreated with an unset value.");
         BehaviorFamily.ClearVariable(document, ruleId, parameter);
         family = BehaviorFamily.Find(document, ruleId)!;
         Require(!family.IsTemplate && BehaviorFamily.GetValue(family.Definition.Value, ["stages", "0", "duration"]) is null,

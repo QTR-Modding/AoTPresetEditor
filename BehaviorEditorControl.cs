@@ -142,6 +142,7 @@ public sealed class BehaviorEditorControl : UserControl
         { name.Focus(); return true; }
         if (BehaviorFamily.Find(document, RuleId) is { IsTemplate: true } family)
         {
+            if (family.Rows.Count == 0) { tabs.SelectedIndex = 1; table.Focus(); return true; }
             var row = family.Rows.FirstOrDefault(candidate => candidate.Id == rowId) ?? family.Rows[0];
             var normalized = NormalizeLabel(message);
             var column = message.StartsWith("Fill the missing values", StringComparison.OrdinalIgnoreCase)
@@ -248,7 +249,7 @@ public sealed class BehaviorEditorControl : UserControl
                 : BehaviorFamily.Find(document, RuleId)?.Parameters.Contains(candidate) == true ? "That variable name is already in use." : "";
             error.Visibility = error.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (error.Text.Length == 0) dialog.DialogResult = true;
-        }), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
+        }, isDefault: true), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel; dialog.Loaded += (_, _) => input.Focus();
         return dialog.ShowDialog() == true ? input.Text.Trim() : null;
     }
@@ -280,6 +281,8 @@ public sealed class BehaviorEditorControl : UserControl
         table.PreviewKeyDown += (_, args) =>
         {
             if (args.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control) { PasteRows(); args.Handled = true; }
+            else if (args.Key is Key.Delete or Key.Back && Keyboard.Modifiers == ModifierKeys.None)
+            { RemoveRows(); args.Handled = true; }
         };
         AutomationProperties.SetName(table, "Variable values; select a cell to edit it below");
         variationView.Children.Add(table); rowStatus.FontSize = 12; rowStatus.Margin = new Thickness(0, 5, 0, 8);
@@ -427,11 +430,11 @@ public sealed class BehaviorEditorControl : UserControl
     private void UpdateActions()
     {
         var selected = SelectedRows(); var column = SelectedColumn;
-        addRow.Visibility = document.Kind != PresetKind.Default ? Visibility.Visible : Visibility.Collapsed;
+        addRow.Visibility = document.Kind != PresetKind.Default || rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         addOptions.Visibility = document.Kind != PresetKind.Default && addMenu.Items.Count > 0
             ? Visibility.Visible : Visibility.Collapsed;
         duplicate.Visibility = document.Kind != PresetKind.Default && selected.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        remove.Visibility = selected.Length > 0 && selected.Length < rows.Count ? Visibility.Visible : Visibility.Collapsed;
+        remove.Visibility = selected.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         var hasValue = cellRowId is not null && column is not null &&
             !BehaviorFamily.GetArgument(document, cellRowId, column.Parameter).IsUnsetArgument;
         fill.Visibility = hasValue && selected.Length > 1 ? Visibility.Visible : Visibility.Collapsed;
@@ -453,7 +456,9 @@ public sealed class BehaviorEditorControl : UserControl
     private void AddRow()
     {
         Capture(); var parameter = SelectedColumn?.Parameter;
-        var row = BehaviorFamily.AddUse(document, RuleId); Rebuild(true, row.Id, parameter); NotifyChanged();
+        var row = BehaviorFamily.AddUse(document, RuleId);
+        if (Rule().Kind == BlockKind.Template) RuleId = row.Id;
+        Rebuild(true, row.Id, parameter); NotifyChanged();
     }
 
     private void AddItems(VariationColumn column)
@@ -469,6 +474,7 @@ public sealed class BehaviorEditorControl : UserControl
             var row = BehaviorFamily.AddUse(document, RuleId); first ??= row.Id;
             BehaviorFamily.SetArgument(document, row.Id, column.Parameter, PresetValue.Scalar(form.Identifier));
         }
+        if (Rule().Kind == BlockKind.Template && first is not null) RuleId = first;
         Rebuild(true, first, column.Parameter); NotifyChanged();
     }
 
@@ -503,8 +509,8 @@ public sealed class BehaviorEditorControl : UserControl
     private void RemoveRows()
     {
         var selected = SelectedRows(); var family = BehaviorFamily.Find(document, RuleId);
-        if (family is null || selected.Length == 0 || selected.Length >= family.Rows.Count) return;
-        Capture(); var next = family.Rows.First(row => !selected.Contains(row.Id)).Id;
+        if (family is null || selected.Length == 0) return;
+        Capture(); var next = family.Rows.FirstOrDefault(row => !selected.Contains(row.Id))?.Id ?? family.Definition.Id;
         foreach (var row in selected) BehaviorFamily.RemoveUse(document, row);
         RuleId = selected.Contains(RuleId) ? next : RuleId;
         Rebuild(true, RuleId); NotifyChanged();
@@ -537,7 +543,7 @@ public sealed class BehaviorEditorControl : UserControl
             throw new InvalidOperationException($"The clipboard has {values.Max(row => row.Length)} columns. Only {columns.Count - startColumn} fit from '{columns[startColumn].Label}'.\n\nCopy only the matching columns, or select an earlier column before pasting. Separate columns with tabs and rows with new lines.");
         var parsed = values.Select(row => row.Select((value, index) => PasteValue(value, columns[startColumn + index].Field)).ToArray()).ToArray();
         var startRow = table.CurrentItem is VariationRow selected ? rows.IndexOf(selected) : rows.Count;
-        if (document.Kind == PresetKind.Default && startRow + parsed.Length > rows.Count)
+        if (document.Kind == PresetKind.Default && startRow + parsed.Length > Math.Max(1, rows.Count))
             throw new InvalidOperationException("This preset has one row. Paste the values into that row.");
         Capture(); var existing = BehaviorFamily.Find(document, RuleId)!.Rows.ToArray(); string? first = null;
         for (var rowIndex = 0; rowIndex < parsed.Length; rowIndex++)
@@ -547,6 +553,7 @@ public sealed class BehaviorEditorControl : UserControl
             for (var columnIndex = 0; columnIndex < parsed[rowIndex].Length; columnIndex++)
                 BehaviorFamily.SetArgument(document, target.Id, columns[startColumn + columnIndex].Parameter, parsed[rowIndex][columnIndex]);
         }
+        if (Rule().Kind == BlockKind.Template && first is not null) RuleId = first;
         Rebuild(true, first, columns[startColumn].Parameter); NotifyChanged();
     }
 

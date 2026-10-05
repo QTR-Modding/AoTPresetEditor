@@ -16,7 +16,7 @@ public static class PresetValidation
         var expanded = "";
         var templateNames = document.Blocks.Where(block => block.Kind == BlockKind.Template).Select(block => block.Key).ToHashSet(StringComparer.Ordinal);
         var rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
-        if (rules.Length == 0) fileErrors.Add("Add at least one rule.");
+        if (rules.Length == 0 && !document.Blocks.Any(block => block.IsBehavior)) fileErrors.Add("Add at least one rule.");
         if (document.Kind == PresetKind.Default && rules.Length > 1) fileErrors.Add("A default preset can contain one rule.");
         if (document.Kind == PresetKind.Other) fileErrors.Add("Choose Default, Custom, or Addon as the preset kind.");
         if (document.Blocks.Select(block => block.Id).Distinct(StringComparer.Ordinal).Count() != document.Blocks.Count)
@@ -28,6 +28,8 @@ public static class PresetValidation
         foreach (var block in document.Blocks)
         {
             var blockErrors = new List<string>();
+            if (block.IsBehavior && BehaviorFamily.Find(document, block.Id) is { Rows.Count: 0 })
+                blockErrors.Add("Add a row in Variables.");
             if (string.IsNullOrWhiteSpace(block.Name)) blockErrors.Add("Give this block a name.");
             if (HasUnsetArgument(block.Value, templateNames)) blockErrors.Add("Fill the missing values in Variables for this row.");
             if (block.Kind != BlockKind.Rule)

@@ -20,17 +20,23 @@ public sealed class BehaviorFamily
 
     public static BehaviorFamily? Find(PresetDocument document, string ruleId)
     {
-        var rule = document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Rule && block.Id == ruleId);
-        if (rule is null || rule.Key is "ownerLists" or "formsLists") return null;
-        var value = CallValue(document, rule);
-        if (ReferenceEquals(value, rule.Value) && value.Kind == ValueKind.Mapping)
-            return rule.Value.Anchor.Length == 0 ? new(rule, [rule], []) : null;
-        if (!TryCall(value, out var name, out _)) return null;
-        var definition = document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name);
+        var block = document.Blocks.FirstOrDefault(block => block.Id == ruleId);
+        if (block is null) return null;
+        PresetBlock? definition;
+        if (block.Kind == BlockKind.Template && PresetSchema.NormalizeContext(block.Context) == "rule") definition = block;
+        else
+        {
+            if (block.Kind != BlockKind.Rule || block.Key is "ownerLists" or "formsLists") return null;
+            var value = CallValue(document, block);
+            if (ReferenceEquals(value, block.Value) && value.Kind == ValueKind.Mapping)
+                return block.Value.Anchor.Length == 0 ? new(block, [block], []) : null;
+            if (!TryCall(value, out var name, out _)) return null;
+            definition = document.Blocks.FirstOrDefault(candidate => candidate.Kind == BlockKind.Template && candidate.Key == name);
+        }
         if (definition?.Value.Kind != ValueKind.Mapping) return null;
         var parameters = TemplateCall.FindParameters(definition.Value, document);
         var rows = document.Blocks.Where(block => block.Kind == BlockKind.Rule && block.Key.Length == 0 &&
-            TryCall(CallValue(document, block), out var called, out _) && called == name).ToArray();
+            TryCall(CallValue(document, block), out var called, out _) && called == definition.Key).ToArray();
         if (rows.Any(row => TryCall(CallValue(document, row), out _, out var arguments) && arguments.Count > parameters.Count)) return null;
         return new(definition, rows, parameters);
     }
@@ -117,13 +123,14 @@ public sealed class BehaviorFamily
             throw new InvalidOperationException("Another behavior refers to this field's shared name. Remove that reference before clearing the variable.");
         var cleared = ClearParameter(family.Definition.Value, parameter, document, [])!;
         SetCommon(document, ruleId, cleared);
+        if (Find(document, ruleId) is { Rows.Count: 0, Parameters.Count: 0 }) ruleId = AddUse(document, ruleId).Id;
         return Normalize(document, ruleId);
     }
 
     public static string Normalize(PresetDocument document, string ruleId)
     {
         var family = Find(document, ruleId);
-        if (family is not { IsTemplate: true, Parameters.Count: 0 } ||
+        if (family is not { IsTemplate: true, Parameters.Count: 0, Rows.Count: > 0 } ||
             CallNames(family.Definition.Value).Contains(family.Definition.Key) ||
             PresetDocument.Descendants(family.Definition.Value).Any(node => node.Anchor.Length > 0 || node.Kind == ValueKind.Alias) ||
             family.Rows.Any(row => PresetDocument.Descendants(row.Value).Any(HasAnnotations)) ||
@@ -227,9 +234,9 @@ public sealed class BehaviorFamily
 
     public static PresetBlock AddUse(PresetDocument document, string ruleId)
     {
-        if (document.Kind == PresetKind.Default) throw new InvalidOperationException("A default preset has one use.");
         var family = EnsureTemplate(document, RequireFamily(document, ruleId));
-        var source = family.Rows[^1];
+        if (document.Kind == PresetKind.Default && family.Rows.Count > 0) throw new InvalidOperationException("A default preset has one use.");
+        var source = family.Rows.LastOrDefault() ?? family.Definition;
         var row = new PresetBlock
         {
             Kind = BlockKind.Rule, Name = family.Definition.Name, Context = source.Context,
@@ -254,7 +261,8 @@ public sealed class BehaviorFamily
     public static bool RemoveUse(PresetDocument document, string rowId)
     {
         var family = RequireFamily(document, rowId);
-        return family.Rows.Count > 1 && document.Remove(family.Rows.First(block => block.Id == rowId));
+        if (family.IsTemplate && family.Rows.Count == 1) family.Definition.IsBehavior = true;
+        return document.Remove(family.Rows.First(block => block.Id == rowId));
     }
 
     private static BehaviorFamily RequireFamily(PresetDocument document, string ruleId) =>

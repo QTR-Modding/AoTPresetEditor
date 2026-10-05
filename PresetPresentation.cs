@@ -70,7 +70,24 @@ public sealed class PresetPresentation
         return includeIdentifier && name != identifier ? $"{name} ({identifier})" : name;
     }
 
-    public string RuleSummary(PresetBlock block, bool behaviorMode = false) => Summary(EffectiveValue(block) ?? block.Value, block.Context, behaviorMode);
+    public IReadOnlyList<PresetBlock> Behaviors()
+    {
+        var result = new List<PresetBlock>();
+        var seen = new HashSet<string>();
+        foreach (var block in document.Blocks)
+        {
+            if (block.Kind != BlockKind.Rule && !(block.IsBehavior && block.Kind == BlockKind.Template)) continue;
+            var family = BehaviorFamily.Find(document, block.Id);
+            if (block.Kind == BlockKind.Template && family?.Rows.Count != 0) continue;
+            if (family is not null && !seen.Add(family.Definition.Id)) continue;
+            result.Add(block);
+        }
+        return result;
+    }
+
+    public string RuleSummary(PresetBlock block, bool behaviorMode = false) => block.Kind == BlockKind.Template &&
+        block.IsBehavior && BehaviorFamily.Find(document, block.Id)?.Rows.Count == 0 ? "No rows" :
+        Summary(EffectiveValue(block) ?? block.Value, block.Context, behaviorMode);
 
     public string ReferenceLabel(PresetValue value, bool behaviorMode = false)
     {

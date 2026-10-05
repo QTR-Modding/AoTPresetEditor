@@ -27,6 +27,7 @@ internal static class EditorInteractionChecks
         TriggerStageIssueNavigation();
         CompactFields();
         VariableCheckboxes();
+        EmptyScalarDisplay();
         CompactScalarLists();
         CollectionDisclosure();
         StageCreationAfterRemoval();
@@ -522,6 +523,34 @@ internal static class EditorInteractionChecks
         checkedVariable.IsChecked = false; checkedVariable.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
         Require(cleared && checkedVariable.IsChecked == true && named.Value.Get("duration")!.Text == "$hours",
             "A rejected removal must preserve the existing variable and checked state.");
+
+        var rule = new ValueEditorControl(document, Forms,
+            PresetYaml.Parse("owners: FoodBeef\nstages: $steps\nfinalFormEditorID: FoodVenison\n"),
+            "CustomRule", "Rule", parametersAllowed: true, behaviorMode: true);
+        Require(!Descendants<CheckBox>(FieldCard(rule, "stages")).Any(),
+            "The entire Stages list must not offer a Variable checkbox.");
+        rule.Capture();
+        Require(rule.Value.Get("stages")!.Text == "$steps",
+            "Imported whole-list stage arguments must survive editing other settings.");
+    }
+
+    private static void EmptyScalarDisplay()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        var field = PresetSchema.GetFields("rule", document.Kind).Single(item => item.Key == "finalFormEditorID");
+        foreach (var text in new[] { "null", "~", "!!null null", "\"null\"", "\"\"" })
+        {
+            var value = PresetYaml.Parse(text);
+            var editor = new ValueEditorControl(document, Forms, value, "value", "Final item", field: field);
+            var input = Descendants<TextBox>(editor).Single();
+            Require(input.Text == (value.IsNull ? "" : value.Text), "Only YAML nulls should display as blank fields.");
+            editor.Capture();
+            Require(editor.Value.Text == value.Text && editor.Value.Tag == value.Tag && editor.Value.Style == value.Style,
+                "Opening or capturing a null or quoted scalar must preserve its original value and style.");
+            input.Text = "FoodBeef";
+            editor.Capture();
+            Require(!editor.Value.IsNull && editor.Value.Text == "FoodBeef", "Entering a form must replace the empty value.");
+        }
     }
 
     private static void CompactScalarLists()
@@ -693,12 +722,12 @@ internal static class EditorInteractionChecks
             "Issue navigation must open the collapsed collection and the requested entry together.");
         var selected = details.Children.OfType<ValueEditorControl>().Single();
         section.IsExpanded = false;
-        var evolution = Descendants<Border>(editor).Single(card => Descendants<TextBlock>(card).Any(text => text.Text.StartsWith("Evolution filter", StringComparison.Ordinal)));
+        var evolution = Descendants<Border>(editor).Single(card => Descendants<TextBlock>(card).Any(text => text.Text.StartsWith("Containers", StringComparison.Ordinal)));
         Click(Descendants<Button>(evolution).Single(button => Equals(button.Content, "Set")));
         Require(ReferenceEquals(stages, Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "stages")) &&
             !section.IsExpanded && list.SelectedIndex == 1 && ReferenceEquals(selected, details.Children.OfType<ValueEditorControl>().Single()),
             "Setting another field must preserve the selected stage editor and its collapsed section.");
-        evolution = Descendants<Border>(editor).Single(card => Descendants<TextBlock>(card).Any(text => text.Text.StartsWith("Evolution filter", StringComparison.Ordinal)));
+        evolution = Descendants<Border>(editor).Single(card => Descendants<TextBlock>(card).Any(text => text.Text.StartsWith("Containers", StringComparison.Ordinal)));
         Click(Descendants<Button>(evolution).Single(button => Equals(button.Content, "Clear")));
         Require(!section.IsExpanded && list.SelectedIndex == 1 && ReferenceEquals(selected, details.Children.OfType<ValueEditorControl>().Single()),
             "Clearing another field must preserve the selected stage editor and its collapsed section.");

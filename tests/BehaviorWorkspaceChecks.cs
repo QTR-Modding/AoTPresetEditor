@@ -123,6 +123,67 @@ internal static class BehaviorWorkspaceChecks
             Invoke(workspace, "ResetEditor");
             SynchronizationContext.SetSynchronizationContext(previousContext);
         }
+        EmptyBehaviorWorkspace();
+    }
+
+    private static void EmptyBehaviorWorkspace()
+    {
+        var document = PresetDocument.Parse("""
+            templates:
+              unusedSettings:
+                containers: $containers
+              meat:
+                owners: $raw
+                stages:
+                - no: 0
+                  duration: 1
+                finalFormEditorID: $cooked
+            ownerLists:
+            - meat(FoodBeef, FoodBeefCooked)
+            - meat(FoodVenison, FoodVenisonCooked)
+            """, "FOOD", PresetKind.Custom);
+        var project = new PresetProject { Name = "Empty rows" };
+        var entry = project.Add(document, "Meat");
+        var firstId = document.Blocks.First(block => block.Kind == BlockKind.Rule).Id;
+        var definitionId = document.Blocks.Single(block => block.Key == "meat").Id;
+        var workspace = new PresetWorkspace();
+        SetField(workspace, "project", project); SetField(workspace, "activeEntry", entry);
+        SetField(workspace, "document", document); SetField(workspace, "filename", project.Name);
+        try
+        {
+            Invoke(workspace, "RenderBlocks", firstId); Invoke(workspace, "SelectBlock");
+            var editor = Field<BehaviorEditorControl>(workspace, "editor");
+            Field<TabControl>(editor, "tabs").SelectedIndex = 1;
+            Field<DataGrid>(editor, "table").SelectAll();
+            Invoke(editor, "RemoveRows"); Invoke(workspace, "CommitEditor");
+            Invoke(workspace, "RenderBlocks", definitionId); Invoke(workspace, "SelectBlock");
+            var list = Field<ListBox>(workspace, "blocks");
+            Require(list.Items.Count == 1 && Equals(((ListBoxItem)list.SelectedItem).Tag, definitionId) &&
+                ReferenceEquals(editor, Field<BehaviorEditorControl>(workspace, "editor")) &&
+                Field<DataGrid>(editor, "table").Items.Count == 0,
+                "Deleting all variable rows must preserve the active behavior and empty table during workspace refresh.");
+            Require(Field<StackPanel>(workspace, "blockActions").Visibility == Visibility.Visible &&
+                Field<MenuItem>(workspace, "up").Visibility == Visibility.Collapsed &&
+                Field<MenuItem>(workspace, "down").Visibility == Visibility.Collapsed,
+                "An empty behavior must remain selectable and deletable without offering rule-priority movement.");
+
+            var restored = PresetProject.FromDraft(project.ToDraft());
+            Invoke(workspace, "ResetEditor");
+            SetField(workspace, "project", restored); SetField(workspace, "activeEntry", restored.Entries[0]);
+            SetField(workspace, "document", restored.Entries[0].Document);
+            Invoke(workspace, "RenderBlocks", definitionId); Invoke(workspace, "SelectBlock");
+            var reopened = Field<BehaviorEditorControl>(workspace, "editor");
+            Require(reopened.RuleId == definitionId && Field<DataGrid>(reopened, "table").Items.Count == 0 &&
+                Field<TabControl>(reopened, "tabs").Items.Count == 2,
+                "Reopening a draft must retain Settings and Variables for the empty behavior.");
+            Field<TabControl>(reopened, "tabs").SelectedIndex = 1;
+            Invoke(reopened, "AddRow"); Invoke(workspace, "CommitEditor");
+            Invoke(workspace, "RenderBlocks", reopened.RuleId); Invoke(workspace, "SelectBlock");
+            Require(list.Items.Count == 1 && ReferenceEquals(reopened, Field<BehaviorEditorControl>(workspace, "editor")) &&
+                Field<DataGrid>(reopened, "table").Items.Count == 1,
+                "Adding a row after draft reopening must reuse the retained behavior and keep the same editor.");
+        }
+        finally { Invoke(workspace, "ResetEditor"); }
     }
 
     private static void Reset(PresetWorkspace workspace, bool accept)
