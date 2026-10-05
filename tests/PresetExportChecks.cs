@@ -32,6 +32,9 @@ internal static class PresetExportChecks
             Require(!Directory.EnumerateFiles(root, "*.aot-*", SearchOption.AllDirectories).Any(), "Successful rollback left staging or backup files.");
             Reject(() => PresetExport.Save(preset, "duplicate\n", [added, added with { Name = "newgroup" }], root));
             Reject(() => PresetExport.Save(Path.Combine(Path.GetDirectoryName(root)!, "outside.yml"), "outside\n", [], root));
+            CheckRetirement(Path.Combine(root, "retirement"));
+            CheckRetirementRollback(Path.Combine(root, "rollback"));
+            CheckRetirementPaths(Path.Combine(root, "paths"));
         }
         finally
         {
@@ -39,6 +42,67 @@ internal static class PresetExportChecks
             foreach (var directory in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories).OrderByDescending(path => path.Length)) Directory.Delete(directory);
             Directory.Delete(root);
         }
+    }
+
+    private static void CheckRetirement(string root)
+    {
+        Directory.CreateDirectory(root);
+        var original = Path.Combine(root, "previous.yml");
+        var output = Path.Combine(root, "custom", "current.yml");
+        File.WriteAllText(original, "original source\n");
+        PresetExport.Save([new(output, "new source\n")], [], root, [original]);
+        Require(File.ReadAllText(output) == "new source\n", "The retyped preset was not saved at its new path.");
+        Require(!File.Exists(original), "The previous preset remained active after moving its output.");
+        var backups = Directory.GetFiles(root, "previous.yml.*.aot-backup");
+        Require(backups.Length == 1 && File.ReadAllText(backups[0]) == "original source\n",
+            "The previous preset was not retained as a recovery copy.");
+        PresetExport.Save([new(output, "new source\n")], [], root);
+        Require(File.Exists(backups[0]), "A later save removed the retained original preset.");
+    }
+
+    private static void CheckRetirementRollback(string root)
+    {
+        Directory.CreateDirectory(root);
+        var first = Path.Combine(root, "first.yml");
+        var second = Path.Combine(root, "second.yml");
+        var output = Path.Combine(root, "current.yml");
+        var extra = Path.Combine(root, "new-directory", "new.yml");
+        var group = new FormGroupDefinition("RollbackGroup", ["FormA"]);
+        File.WriteAllText(first, "first original\n");
+        File.WriteAllText(second, "second original\n");
+        File.WriteAllText(output, "output original\n");
+        using (var lockedSecond = File.Open(second, FileMode.Open, FileAccess.Read, FileShare.Read))
+            Reject(() => PresetExport.Save([new(output, "changed\n"), new(extra, "new\n")], [group], root, [first, second]));
+        Require(File.ReadAllText(first) == "first original\n" && File.ReadAllText(second) == "second original\n",
+            "A second retirement failure did not restore both original presets.");
+        Require(File.ReadAllText(output) == "output original\n", "A retirement failure did not restore the overwritten output.");
+        Require(!File.Exists(extra) && !File.Exists(FormGroupCatalog.GetExportPath(root, group.Name)),
+            "A retirement failure left a new output or companion group active.");
+        Require(!Directory.Exists(Path.GetDirectoryName(extra)), "A retirement failure left its new empty output directory.");
+        Require(!Directory.EnumerateFiles(root, "*.aot-*", SearchOption.AllDirectories).Any(),
+            "Successful retirement rollback left staging or backup files.");
+    }
+
+    private static void CheckRetirementPaths(string root)
+    {
+        Directory.CreateDirectory(root);
+        var original = Path.Combine(root, "previous.yml");
+        var output = Path.Combine(root, "current.yml");
+        var group = new FormGroupDefinition("PathGroup", ["FormA"]);
+        var groupPath = FormGroupCatalog.GetExportPath(root, group.Name);
+        File.WriteAllText(original, "original\n");
+        File.WriteAllText(output, "current\n");
+        PresetOutput[] outputs = [new(output, "changed\n")];
+        Reject(() => PresetExport.Save(outputs, [], root, [output]));
+        Reject(() => PresetExport.Save(outputs, [group], root, [groupPath]));
+        Reject(() => PresetExport.Save(outputs, [], root, [original, original.ToUpperInvariant()]));
+        Reject(() => PresetExport.Save(outputs, [], root, [Path.Combine(root + "-outside", "previous.yml")]));
+        Reject(() => PresetExport.Save(outputs, [], root, [Path.Combine(root, "..", "outside.yml")]));
+        Reject(() => PresetExport.Save(outputs, [], root, [Path.Combine(root, "missing.yml")]));
+        Reject(() => PresetExport.Save(outputs, [], root, [root]));
+        Require(File.ReadAllText(original) == "original\n" && File.ReadAllText(output) == "current\n",
+            "Invalid retirement paths allowed output changes.");
+        Require(!File.Exists(groupPath), "An invalid retirement path allowed a companion group to be written.");
     }
 
     private static void Require(bool condition, string message)

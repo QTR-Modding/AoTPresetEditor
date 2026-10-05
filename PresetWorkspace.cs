@@ -54,6 +54,8 @@ public sealed class PresetWorkspace : UserControl
     private PresetValidationResult? validation;
     private IReadOnlyList<FormRow> forms = [];
     private IReadOnlyList<FormGroupDefinition> groups = [];
+    private StageAvailability stageAvailability = new();
+    private IReadOnlyDictionary<string, IReadOnlyList<string>> warnings = new Dictionary<string, IReadOnlyList<string>>();
     private string filename = "New preset";
     private string? exportRoot;
     private string? draftPath;
@@ -207,14 +209,17 @@ public sealed class PresetWorkspace : UserControl
     private string StatusText()
     {
         var count = validations.Values.Sum(result => result.FileErrors.Count + result.Errors.Values.Sum(errors => errors.Count));
+        var warningCount = warnings.Values.Sum(items => items.Count);
         return (Ready ? "✓ Ready to save to a mod" : count > 0 ? $"{count} {(count == 1 ? "issue" : "issues")}" : "Add or complete a behavior")
+            + (warningCount > 0 ? $" · {warningCount} {(warningCount == 1 ? "warning" : "warnings")}" : "")
             + (dirty ? " · Unsaved changes" : "");
     }
 
-    public async void SetCatalog(IReadOnlyList<FormRow> catalog, IReadOnlyList<FormGroupDefinition> formGroups)
+    public async void SetCatalog(IReadOnlyList<FormRow> catalog, IReadOnlyList<FormGroupDefinition> formGroups, StageAvailability? stages = null)
     {
         forms = catalog;
         groups = formGroups;
+        stageAvailability = stages ?? new(); warnings = new Dictionary<string, IReadOnlyList<string>>();
         presentation = null;
         validations.Clear();
         if (document is not null && CommitEditor())
@@ -377,33 +382,21 @@ public sealed class PresetWorkspace : UserControl
         var name = new TextBox(); panel.Children.Add(name);
         panel.Children.Add(EditorControls.Text("Item type"));
         var types = new ComboBox { ItemsSource = CategoryNames, SelectedIndex = Math.Max(0, Array.IndexOf(Categories, document?.Category ?? "FOOD")) }; panel.Children.Add(types);
-        panel.Children.Add(EditorControls.Text("What should this behavior do?"));
-        var purpose = new ComboBox { ItemsSource = new[] { "Stages", "Add reactions and preservation", "Set fallback aging for this item type" }, SelectedIndex = 0 }; panel.Children.Add(purpose);
-        var explanation = EditorControls.Text(""); panel.Children.Add(explanation);
-        void Explain() => explanation.Text = purpose.SelectedIndex switch
-        {
-            0 => "Choose items and define the states they pass through.",
-            1 => "Add triggered transformations or time modifiers. Keep the items' existing aging progression.",
-            _ => "Define progression for items of this type that have no more specific aging rule."
-        };
-        purpose.SelectionChanged += (_, _) => Explain(); Explain();
         var error = EditorControls.Text(""); panel.Children.Add(error);
         EditorControls.Footer(panel, EditorControls.Button("Create", () =>
         {
             if (name.Text.Trim().Length == 0) { error.Text = "Give this behavior a name."; return; }
-            if (purpose.SelectedIndex == 2 && project.Entries.Any(entry => entry.Document.Category == Categories[types.SelectedIndex] &&
-                entry.Document.Kind == PresetKind.Default && new PresetPresentation(entry.Document, forms, groups).Behaviors().Count > 0))
-            { error.Text = "This item type already has fallback aging. Edit that behavior."; return; }
             dialog.DialogResult = true;
         }, isDefault: true), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel; if (dialog.ShowDialog() != true) return;
-        var kind = purpose.SelectedIndex switch { 0 => PresetKind.Custom, 1 => PresetKind.Addon, _ => PresetKind.Default };
+        var kind = PresetKind.Addon;
         var entry = project.GetOrCreate(Categories[types.SelectedIndex], kind);
         if (entry.Document.Blocks.Any(block => block.Kind == BlockKind.Rule && block.Key is "ownerLists" or "formsLists"))
             entry = project.Add(PresetDocument.Create(entry.Document.Category, kind), filename);
         ResetEditor(); activeEntry = entry; document = entry.Document; presentation = null;
         var context = PresetDocument.RuleContext(kind);
         var added = document.Add(BlockKind.Rule, name.Text.Trim(), context); added.Value = ValueEditorWindow.NewValue(context);
+        added.Value.Set("forms", PresetValue.List());
         validations.Remove(entry.Id); dirty = true; await Refresh(added.Id);
     }
 
@@ -425,6 +418,7 @@ public sealed class PresetWorkspace : UserControl
         activeEntry = entry; document = entry.Document; validation = validations.GetValueOrDefault(entry.Id);
         presentation = new PresetPresentation(document, forms, groups, validation?.Expanded);
         editor = new BehaviorEditorControl(document, forms, id, groups);
+        editor.KindChangeRequested += ChangeBehaviorKind;
         editingId = id; editorDirty = false; editor.Changed += EditorChanged;
         details.Content = editor;
         editor.UpdatePresentation(presentation, presentation.EffectiveValue(document.Blocks.First(block => block.Id == id)));
@@ -435,9 +429,62 @@ public sealed class PresetWorkspace : UserControl
     {
         if (!ReferenceEquals(sender, editor)) return;
         editorDirty = true; dirty = true; validation = null; checking?.Cancel();
+        warnings = new Dictionary<string, IReadOnlyList<string>>();
         if (activeEntry is not null) validations.Remove(activeEntry.Id);
         title.Text = filename + " *"; state.Text = "Unsaved changes · Checking after edit...";
         UpdateActions(); editTimer.Stop(); editTimer.Start();
+    }
+
+    private PresetDocument? ChangeBehaviorKind(PresetDocument edited, string ruleId, PresetKind kind)
+    {
+        if (project is null) return null;
+        var candidate = project.Clone();
+        var source = candidate.FindByBlockId(ruleId)!; source.Document = edited.Clone();
+        var catalog = new PresetPresentation(edited, forms, groups);
+        var conversions = new Dictionary<string, PresetValue>(StringComparer.Ordinal);
+        if (kind == PresetKind.Default)
+        {
+            if (MessageBox.Show(Host, "Use these stages for " + CategoryLabel(edited.Category).ToLowerInvariant() +
+                " without their own stages? The current item selection will be cleared.", "Change affected items",
+                MessageBoxButton.OKCancel) != MessageBoxResult.OK) return null;
+        }
+        else if (edited.Kind != PresetKind.Default)
+        {
+            var allGroups = groups.Concat(edited.PendingGroups).GroupBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
+            foreach (var selector in candidate.BehaviorSelectors(ruleId))
+            {
+                if (selector.IsNull || string.IsNullOrWhiteSpace(selector.Text) || selector.IsUnsetArgument) continue;
+                IReadOnlyList<string>? identifiers = null;
+                if (edited.Kind == PresetKind.Addon && allGroups.TryGetValue(selector.Text, out var group))
+                    identifiers = group.Members;
+                else if (edited.Kind == PresetKind.Custom)
+                {
+                    var matches = forms.Where(form => new FormSelection(Category: edited.Category).Matches(form) &&
+                        catalog.MatchesOwner(selector.Text, form)).ToArray();
+                    var exact = catalog.ResolveForm(selector.Text);
+                    if (matches.Length > 1 || matches.Length == 1 && matches[0] != exact)
+                        identifiers = matches.Select(form => form.Identifier).ToArray();
+                    else if (matches.Length == 0 && exact is null &&
+                        !PresetPresentation.NormalizeIdentifier(selector.Text).Contains('~'))
+                        throw new InvalidOperationException("No loaded items match '" + selector.Text +
+                            "'. Choose individual items before removing the stages.");
+                }
+                if (identifiers is null) continue;
+                var items = PresetValue.List(); items.Items.AddRange(identifiers.Select(PresetValue.Scalar));
+                conversions[selector.Text] = items;
+            }
+            if (conversions.Count > 0 && MessageBox.Show(Host,
+                "This change requires individual items. Replace these selections with their current items?\n\n" +
+                string.Join("\n", conversions.Select(pair => pair.Key + ": " + pair.Value.Items.Count + " items")) +
+                "\n\nLater changes to these groups or name matches will not change the selection.",
+                "Use current items", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return null;
+        }
+        var changed = candidate.ChangeBehaviorKind(ruleId, kind,
+            value => conversions.TryGetValue(value.Text, out var replacement) ? replacement.Clone() : value);
+        checking?.Cancel(); validations.Clear(); warnings = new Dictionary<string, IReadOnlyList<string>>();
+        project = candidate; activeEntry = changed; document = changed.Document; presentation = null; validation = null;
+        return changed.Document;
     }
 
     private bool CommitEditor()
@@ -504,6 +551,7 @@ public sealed class PresetWorkspace : UserControl
                 request.Token.ThrowIfCancellationRequested(); validations[entry.Id] = result;
             }
             validation = activeEntry is null ? null : validations.GetValueOrDefault(activeEntry.Id);
+            warnings = stageAvailability.Check(project, validations, forms, groups);
             state.Text = StatusText();
             state.ToolTip = "Checks values and form compatibility. Test the saved behavior in game.";
             UpdatePresentation(validation?.Expanded);
@@ -553,7 +601,18 @@ public sealed class PresetWorkspace : UserControl
                     button.HorizontalAlignment = HorizontalAlignment.Left; issueList.Children.Add(button);
                 }
         }
-        issues.Header = $"Review issues ({issueList.Children.Count})"; reviewIssues.Content = issues.Header;
+        foreach (var entry in project.Entries)
+            foreach (var block in entry.Document.Blocks)
+                foreach (var warning in warnings.GetValueOrDefault(block.Id) ?? [])
+                {
+                    var text = EditorControls.Text(block.Name + ": " + warning);
+                    text.SetResourceReference(TextBlock.ForegroundProperty, "SystemFillColorCautionBrush");
+                    issueList.Children.Add(text);
+                }
+        var errors = validations.Values.Sum(result => result.FileErrors.Count + result.Errors.Values.Sum(items => items.Count));
+        var warningCount = warnings.Values.Sum(items => items.Count);
+        issues.Header = errors > 0 ? $"Review issues ({errors})" + (warningCount > 0 ? $" · Warnings ({warningCount})" : "")
+            : $"Warnings ({warningCount})"; reviewIssues.Content = issues.Header;
         reviewIssues.Visibility = issueList.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         issues.Visibility = issueList.Children.Count > 0 && issues.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -683,14 +742,30 @@ public sealed class PresetWorkspace : UserControl
                 Output: new PresetOutput(project.GetExportPath(entry, picker.FolderName), validations[entry.Id].Source))).ToArray();
             var outputs = changes.Select(change => change.Output).ToArray();
             var existing = outputs.Where(output => File.Exists(output.Path)).ToArray();
-            if (existing.Length > 0 && MessageBox.Show(Host, "Update these files?" + Environment.NewLine + string.Join(Environment.NewLine, existing.Select(output => output.Path)), "Save preset", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
+            var destination = Path.TrimEndingDirectorySeparator(Path.GetFullPath(picker.FolderName)) + Path.DirectorySeparatorChar;
+            var retired = changes.Select(change => change.Entry.OpenedPath).OfType<string>()
+                .Where(path => Path.GetFullPath(path).StartsWith(destination, StringComparison.OrdinalIgnoreCase) && File.Exists(path) &&
+                    !outputs.Any(output => Path.GetFullPath(output.Path).Equals(Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase)))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var confirmation = existing.Length > 0 ? "Update these files?\n" + string.Join("\n", existing.Select(output => output.Path)) : "";
+            if (retired.Length > 0) confirmation += (confirmation.Length > 0 ? "\n\n" : "") +
+                "These behaviors now belong in different files. Move their previous files to retained .aot-backup copies so AoT does not load both versions?\n" + string.Join("\n", retired);
+            var externalSources = changes.Select(change => change.Entry.OpenedPath).OfType<string>()
+                .Where(path => File.Exists(path) && !Path.GetFullPath(path).StartsWith(destination, StringComparison.OrdinalIgnoreCase) &&
+                    !outputs.Any(output => Path.GetFullPath(path).EndsWith(Path.DirectorySeparatorChar +
+                        Path.GetRelativePath(destination, output.Path), StringComparison.OrdinalIgnoreCase)))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (externalSources.Length > 0) confirmation += (confirmation.Length > 0 ? "\n\n" : "") +
+                "Saving creates new files and leaves these originals unchanged. To replace installed presets, disable their old files in the owning mods so AoT does not load both versions:\n" +
+                string.Join("\n", externalSources);
+            if (confirmation.Length > 0 && MessageBox.Show(Host, confirmation, "Save preset", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
             var pending = project.Entries.SelectMany(entry => entry.Document.PendingGroups).GroupBy(group => group.Name, StringComparer.OrdinalIgnoreCase).Select(group =>
             {
                 var first = group.First();
                 if (group.Any(value => FormGroupCatalog.Serialize(value) != FormGroupCatalog.Serialize(first))) throw new IOException("Different form groups share the name: " + group.Key);
                 return first;
             }).ToArray();
-            PresetExport.Save(outputs, pending, picker.FolderName);
+            PresetExport.Save(outputs, pending, picker.FolderName, retired);
             foreach (var change in changes)
             { change.Entry.OpenedPath = change.Output.Path; change.Entry.OpenedHash = Hash(Encoding.UTF8.GetBytes(change.Output.Source)); }
             exportRoot = picker.FolderName; dirty = false; location.Text = "Saved to: " + exportRoot;

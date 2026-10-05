@@ -43,6 +43,15 @@ public sealed class PresetPresentation
     public FormRow? ResolveForm(string identifier, bool allowGroups = false) => allowGroups && groups.ContainsKey(identifier)
         ? null : forms.GetValueOrDefault(NormalizeIdentifier(identifier)) ?? forms.GetValueOrDefault(identifier);
 
+    public bool MatchesOwner(string identifier, FormRow form)
+    {
+        if (ResolveForm(identifier) == form) return true;
+        // AoT also tries name words when an identifier resolves to a different form.
+        // CLibUtilsQTR's includesWord uses space-delimited words or phrases.
+        var name = " " + form.Name.Replace('\n', ' ').Trim(' ', '\t', '\n', '\r') + " ";
+        return name.Contains(" " + identifier.Trim(' ', '\t', '\n', '\r') + " ", StringComparison.OrdinalIgnoreCase);
+    }
+
     public IReadOnlyList<FormRow> SourceForms(PresetValue rule)
     {
         var owners = rule.Get("owners");

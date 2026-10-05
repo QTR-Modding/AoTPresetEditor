@@ -143,7 +143,7 @@ public static class PresetSchema
                 ? " These entries are added to the Containers filter in the item's stage settings. Leaving this empty keeps that filter."
                 : " When the item's stage settings already define this trigger, the lists are combined. Leaving this empty keeps the existing list.";
         if (kind == PresetKind.Default && NormalizeContext(context) == "stage" && field.Key == "duration")
-            help += " Fallback aging whose stage 0 lasts 9999 hours or more (including .inf) only starts for items with matching reactions or preservation settings.";
+            help += " For this scope, when stage 0 lasts 9999 game hours or more (including .inf), progression only starts for items with matching transformation or time-modifier settings.";
         return help;
     }
 

@@ -26,7 +26,7 @@ public sealed class PresetProject
     public PresetProjectEntry Add(PresetDocument document, string fileName, string? openedPath = null, string? openedHash = null)
     {
         if (document.Kind == PresetKind.Default && Find(document.Category, document.Kind) is not null)
-            throw new InvalidDataException("This preset already contains fallback aging for " + document.Category + ".");
+            throw new InvalidDataException("This preset already defines stages for other " + document.Category + " items.");
         var name = fileName;
         if (!ValidFileName(name)) throw new InvalidDataException("Give the preset file a valid name without path separators.");
         var suffix = 2;
@@ -49,6 +49,73 @@ public sealed class PresetProject
 
     public PresetProjectEntry GetOrCreate(string category, PresetKind kind) =>
         Find(category, kind) ?? Add(PresetDocument.Create(category, kind), Name);
+
+    public IReadOnlyList<PresetValue> BehaviorSelectors(string ruleId)
+    {
+        var entry = FindByBlockId(ruleId) ?? throw new InvalidOperationException("This behavior is no longer present.");
+        var selectors = new List<PresetValue>();
+        var copy = BehaviorDocument(entry.Document, ruleId, out _);
+        BehaviorFamily.ConvertSelectors(copy, ruleId, value => { selectors.Add(value.Clone()); return value; });
+        return selectors;
+    }
+
+    public PresetProjectEntry ChangeBehaviorKind(string ruleId, PresetKind targetKind,
+        Func<PresetValue, PresetValue>? convertSelector = null)
+    {
+        if (targetKind is not (PresetKind.Custom or PresetKind.Addon or PresetKind.Default))
+            throw new InvalidOperationException("Choose whether this behavior defines stages for selected items or other items of this type.");
+        var entry = FindByBlockId(ruleId) ?? throw new InvalidOperationException("This behavior is no longer present.");
+        if (entry.Document.Kind == targetKind) return entry;
+        if (targetKind == PresetKind.Default && Entries.Any(other => other != entry &&
+            SamePurpose(other.Document, entry.Document.Category, PresetKind.Default)))
+            throw new InvalidOperationException("This preset already defines stages for other items of this type.");
+        var target = BehaviorDocument(entry.Document, ruleId, out var familyIds);
+        var family = BehaviorFamily.Find(target, ruleId)!;
+        if (targetKind == PresetKind.Default && family.Rows.Count > 1)
+            throw new InvalidOperationException("Stages for other items of this type can have only one Variables row.");
+        BehaviorFamily.ChangeKind(target, ruleId, targetKind, convertSelector);
+
+        var remaining = entry.Document.Clone();
+        foreach (var block in remaining.Blocks.Where(block => familyIds.Contains(block.Id)).ToArray())
+        {
+            if (block.Kind == BlockKind.Rule || !new PresetPresentation(remaining, []).Uses(block)
+                .Any(use => !familyIds.Contains(use.Id))) remaining.Remove(block);
+            else block.Id = Guid.NewGuid().ToString("N");
+        }
+        if (new PresetPresentation(remaining, []).Behaviors().Count == 0)
+        {
+            // Keep unused imported definitions too when the complete file changes purpose.
+            var transferred = target.Blocks.Select(block => block.Id).ToHashSet(StringComparer.Ordinal);
+            foreach (var block in entry.Document.Blocks.Where(block => !transferred.Contains(block.Id)))
+                target.Blocks.Add(block.Clone());
+            entry.Document = target;
+            var stem = entry.FileName;
+            var suffix = 2;
+            while (Entries.Any(other => other != entry && SamePurpose(other.Document, target.Category, target.Kind) &&
+                other.FileName.Equals(entry.FileName, StringComparison.OrdinalIgnoreCase))) entry.FileName = stem + " " + suffix++;
+            return entry;
+        }
+        entry.Document = remaining;
+        return Add(target, entry.FileName);
+    }
+
+    private static PresetDocument BehaviorDocument(PresetDocument source, string ruleId, out HashSet<string> familyIds)
+    {
+        var family = BehaviorFamily.Find(source, ruleId)
+            ?? throw new InvalidOperationException("This imported behavior uses a shared rule list. Edit its original structure before changing which items it applies to.");
+        familyIds = family.Rows.Select(row => row.Id).Append(family.Definition.Id).ToHashSet(StringComparer.Ordinal);
+        var selected = familyIds;
+        var presentation = new PresetPresentation(source, []);
+        if (family.Rows.Any(row => presentation.Uses(row).Any(use => !selected.Contains(use.Id))))
+            throw new InvalidOperationException("Another behavior refers to shared data inside this behavior. Move that data to shared settings before changing its stage settings.");
+        var dependencies = source.Blocks.Where(block => selected.Contains(block.Id) ||
+            presentation.Uses(block).Any(use => selected.Contains(use.Id))).Select(block => block.Id).ToHashSet(StringComparer.Ordinal);
+        if (source.Blocks.Any(block => dependencies.Contains(block.Id) && block.Kind == BlockKind.Rule && !selected.Contains(block.Id)))
+            throw new InvalidOperationException("This behavior shares data stored inside another behavior. Move that data to shared settings before changing its stage settings.");
+        var result = source.Clone();
+        foreach (var block in result.Blocks.Where(block => !dependencies.Contains(block.Id)).ToArray()) result.Remove(block);
+        return result;
+    }
 
     public PresetProject Clone()
     {

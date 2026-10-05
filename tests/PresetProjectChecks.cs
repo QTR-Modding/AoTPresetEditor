@@ -68,6 +68,136 @@ internal static class PresetProjectChecks
             "Fallback behavior must use the category's fixed default filename.");
         Reject(() => PresetProject.FromDraft("{\"Version\":999,\"Name\":\"Future\",\"Entries\":[]}"));
         ExportTransaction(root, project.GetExportPath(cooking, root), project.GetExportPath(aging, root));
+        UnifiedBehaviorKinds();
+    }
+
+    private static void UnifiedBehaviorKinds()
+    {
+        var project = new PresetProject { Name = "Cooking" };
+        var source = PresetDocument.Parse("""
+            # Shared heat remains shared
+            heat: &heat
+              FormEditorID: Fire
+              duration: 0.05
+            templates:
+              cook:
+                forms: $raw
+                transformers:
+                - <<: *heat
+                  finalFormEditorID: $cooked
+            formsLists:
+            - cook(BeefGroup, CookedBeef) # first meal
+            - cook(Rabbit, CookedRabbit)
+            - forms: Potato
+              transformers:
+              - <<: *heat
+                finalFormEditorID: BakedPotato
+            """, "FOOD", PresetKind.Addon);
+        source.PendingGroups.Add(new("BeefGroup", ["RawBeef", "HorseMeat"]));
+        var entry = project.Add(source, "Cooking", "original.yml", "source hash");
+        var cooking = source.Blocks.First(block => block.Kind == BlockKind.Rule);
+        var potato = source.Blocks.Last();
+        var originalPotato = PresetYaml.Write(potato.Value);
+        Require(project.BehaviorSelectors(cooking.Id).Select(value => value.Text).SequenceEqual(["BeefGroup", "Rabbit"]),
+            "Conversion preflight must inspect every selector argument, excluding transformation results and shared triggers.");
+        var before = project.ToDraft();
+        try { project.ChangeBehaviorKind(cooking.Id, PresetKind.Custom, _ => throw new InvalidOperationException("Canceled")); }
+        catch (InvalidOperationException) { }
+        Require(project.ToDraft() == before, "A declined selector conversion must leave the entire project unchanged.");
+        var stages = project.ChangeBehaviorKind(cooking.Id, PresetKind.Custom, value =>
+        {
+            if (value.Text != "BeefGroup") return value;
+            var members = PresetValue.List();
+            members.Items.AddRange(new[] { "RawBeef", "HorseMeat" }.Select(PresetValue.Scalar));
+            return members;
+        });
+        var family = BehaviorFamily.Find(stages.Document, cooking.Id)!;
+        Require(project.Entries.Count == 2 && entry.Document.Kind == PresetKind.Addon && stages.Document.Kind == PresetKind.Custom,
+            "Adding stages to one family must split its output without retyping other behaviors.");
+        Require(entry.OpenedPath == "original.yml" && stages.OpenedPath is null &&
+            PresetYaml.Write(entry.Document.Blocks.Single(block => block.Kind == BlockKind.Rule).Value) == originalPotato,
+            "A split must preserve the remaining source file, source change guard, and unrelated rule.");
+        Require(family.Rows.Count == 2 && family.Parameters.SequenceEqual(["raw", "cooked"]) &&
+            family.Definition.Value.Get("forms") is null && family.Definition.Value.Get("owners")?.Text == "$raw",
+            "Retyping must preserve the family rows and parameter order while changing only the affected selector key.");
+        Require(BehaviorFamily.GetArgument(stages.Document, cooking.Id, "raw").Items.Select(value => value.Text)
+            .SequenceEqual(["RawBeef", "HorseMeat"]), "An explicitly approved group conversion must retain every current member.");
+        Require(stages.Document.ToYaml().Contains("first meal") && stages.Document.ToYaml().Contains("*heat") &&
+            entry.Document.ToYaml().Contains("*heat") && stages.Document.PendingGroups.Count == 1,
+            "Both outputs must preserve their shared dependencies, comments, and pending groups.");
+        Require(project.Entries.SelectMany(item => item.Document.Blocks).Select(block => block.Id).Distinct().Count() ==
+            project.Entries.Sum(item => item.Document.Blocks.Count), "Split documents need globally distinct editor IDs.");
+        var stage = PresetValue.Map(); stage.Set("no", PresetValue.Scalar("0"));
+        stage.Set("name", PresetValue.Scalar("")); stage.Set("duration", PresetValue.Scalar("1"));
+        var sequence = PresetValue.List(); sequence.Items.Add(stage);
+        family.Definition.Value.Set("stages", sequence);
+        family.Definition.Value.Set("finalFormEditorID", PresetValue.Scalar("Ash"));
+        var duration = BehaviorFamily.MakeVariable(stages.Document, cooking.Id, ["stages", "0", "duration"], "hours");
+        BehaviorFamily.SetArgument(stages.Document, cooking.Id, duration, PresetValue.Scalar("2"));
+        var triggers = project.ChangeBehaviorKind(cooking.Id, PresetKind.Addon);
+        family = BehaviorFamily.Find(triggers.Document, cooking.Id)!;
+        Require(family.Parameters.SequenceEqual(["raw", "cooked"]) && family.Definition.Value.Get("stages") is null &&
+            family.Definition.Value.Get("finalFormEditorID") is null &&
+            BehaviorFamily.GetArgument(triggers.Document, cooking.Id, "cooked").Text == "CookedBeef",
+            "Removing stages must remove their variables and rebind existing trigger arguments without shifting values.");
+        Require(triggers.FileName != entry.FileName, "Two output files with the same category and purpose need distinct basenames.");
+
+        var one = new PresetProject { Name = "Single" };
+        var single = one.Add(PresetDocument.Parse("""
+            templates:
+              selected:
+                owners: $item
+                stages:
+                - no: 0
+                  name: ""
+                  duration: $hours
+                finalFormEditorID: Ash
+            ownerLists:
+            - selected(RawBeef, 3)
+            """, "FOOD", PresetKind.Custom), "Single", "single.yml", "hash");
+        var id = single.Document.Blocks.Single(block => block.Kind == BlockKind.Rule).Id;
+        one.ChangeBehaviorKind(id, PresetKind.Default);
+        family = BehaviorFamily.Find(single.Document, id)!;
+        Require(family.Definition.Value.Get("owners") is null && family.Parameters.SequenceEqual(["hours"]) &&
+            BehaviorFamily.GetArgument(single.Document, id, "hours").Text == "3" &&
+            single.OpenedPath == "single.yml" && single.OpenedHash == "hash",
+            "An explicit type-wide scope must remove selection while preserving stage variables and prior output tracking.");
+        var yaml = single.Document.ToYaml();
+        single.Document = PresetDocument.Parse(yaml, "FOOD", PresetKind.Default);
+        one.ChangeBehaviorKind(id, PresetKind.Custom);
+        family = BehaviorFamily.Find(single.Document, id)!;
+        Require(family.IsTemplate && family.Definition.Value.Get("owners") is { Kind: ValueKind.Sequence, Items.Count: 0 } &&
+            BehaviorFamily.GetArgument(single.Document, id, "hours").Text == "3",
+            "Returning from a saved default template use must restore selected-item scope with an empty selector and intact variables.");
+        Require(PresetProject.FromDraft(one.ToDraft()).ToDraft() == one.ToDraft(), "Converted behavior output tracking must survive draft round trips.");
+        var existingDefault = one.Add(PresetDocument.Create("FOOD", PresetKind.Default), "Existing default");
+        existingDefault.Document.Add(BlockKind.Rule, "Other items", "DefaultRule");
+        var collisionSnapshot = one.ToDraft();
+        try { one.ChangeBehaviorKind(id, PresetKind.Default); }
+        catch (InvalidOperationException) { }
+        Require(one.ToDraft() == collisionSnapshot && single.Document.Kind == PresetKind.Custom,
+            "Rejecting a second type-wide behavior must preserve both existing documents.");
+
+        var inherited = new PresetProject();
+        var inheritedEntry = inherited.Add(PresetDocument.Parse("""
+            items: &items [BeefGroup]
+            base: &base
+              forms: *items
+            formsLists:
+            - <<: *base
+              transformers:
+              - FormEditorID: Fire
+                duration: 0.05
+                finalFormEditorID: CookedBeef
+            """, "FOOD", PresetKind.Addon), "Inherited");
+        var inheritedId = inheritedEntry.Document.Blocks.Single(block => block.Kind == BlockKind.Rule).Id;
+        Require(inherited.BehaviorSelectors(inheritedId).Single().Text == "BeefGroup",
+            "Selector preflight must follow shared settings and aliased lists.");
+        inherited.ChangeBehaviorKind(inheritedId, PresetKind.Custom, value => PresetValue.Scalar("RawBeef"));
+        var convertedBase = inheritedEntry.Document.Blocks.Single(block => block.Key == "base");
+        Require(convertedBase.Value.Get("forms") is null && convertedBase.Value.Get("owners")?.Items.Single().Text == "RawBeef" &&
+            inheritedEntry.Document.ToYaml().Contains("<<: *base"),
+            "Inherited selector conversion must update the shared rule layer without breaking its alias.");
     }
 
     private static void ExportTransaction(string root, string first, string second)

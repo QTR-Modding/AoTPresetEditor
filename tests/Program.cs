@@ -48,6 +48,8 @@ internal static class Program
             Check("Form applicability", FormSelectionChecks.Run);
             Check("Preset and companion export rollback", PresetExportChecks.Run);
             Check("Mixed behavior projects and export rollback", PresetProjectChecks.Run);
+            Check("Stage dependency warnings", StageAvailabilityChecks.Run);
+            Check("Unified behavior editing", UnifiedBehaviorChecks.Run);
             Check("Template field constraints and group dialog drafts", SchemaPickerChecks.Run);
             Check("Appearance preference persistence", AppearanceSettingsChecks.Run);
             Check("Embedded wiki navigation preserves editing", WikiChecks.Run);

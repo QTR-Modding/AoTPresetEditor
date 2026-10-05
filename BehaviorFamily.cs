@@ -111,6 +111,240 @@ public sealed class BehaviorFamily
         if (previous is not null) document.RebindTemplateCalls(previous);
     }
 
+    internal static void ConvertSelectors(PresetDocument document, string ruleId, Func<PresetValue, PresetValue> convert)
+    {
+        if (document.Kind == PresetKind.Default) return;
+        var family = RequireFamily(document, ruleId);
+        var key = document.Kind == PresetKind.Addon ? "forms" : "owners";
+        var parameters = document.Blocks.Where(block => block.Kind == BlockKind.Template).ToDictionary(block => block.Key,
+            block => SelectorParameters(document, block, key), StringComparer.Ordinal);
+        var layers = RuleLayers(document, family.Definition.Value).ToArray();
+        foreach (var layer in layers)
+            if (layer.Get(key) is { } selector) layer.Set(key, ConvertSelector(selector, document, convert, []));
+        foreach (var block in document.Blocks) ConvertCallSelectors(block.Value, parameters, document, convert);
+    }
+
+    private static bool[] SelectorParameters(PresetDocument document, PresetBlock template, string key)
+    {
+        var direct = RuleLayers(document, template.Value).Select(layer => layer.Get(key)).OfType<PresetValue>()
+            .SelectMany(value => TemplateCall.FindParameters(value, document)).ToHashSet(StringComparer.Ordinal);
+        return TemplateCall.FindParameters(template.Value, document).Select(parameter => direct.Contains(parameter) ||
+            PresetSchema.GetParameterField(template, parameter, document)?.RequiresEditorId == true).ToArray();
+    }
+
+    public static PresetValue? GetSetting(PresetDocument document, string ruleId, string key)
+    {
+        var family = RequireFamily(document, ruleId);
+        var setting = ResolveSetting(document, family.Definition.Value, key, !family.IsTemplate, []);
+        return setting is { Kind: ValueKind.Alias }
+            ? Substitute(setting, new Dictionary<string, PresetValue>(), document, [], !family.IsTemplate, resolveAliases: true)
+            : setting;
+    }
+
+    private static PresetValue? ResolveSetting(PresetDocument document, PresetValue value, string key,
+        bool materialize, HashSet<string> active)
+    {
+        if (value.Kind == ValueKind.Mapping)
+            return value.Get(key) ?? (value.Get("<<") is { } inherited ? ResolveSetting(document, inherited, key, materialize, active) : null);
+        if (value.Kind == ValueKind.Sequence)
+        {
+            foreach (var child in value.Items)
+                if (ResolveSetting(document, child, key, materialize, active) is { } setting) return setting;
+            return null;
+        }
+        if (value.Kind == ValueKind.Alias)
+        {
+            var source = document.Blocks.SelectMany(block => PresetDocument.Descendants(block.Value)).FirstOrDefault(node => node.Anchor == value.Text);
+            if (source is null || !active.Add("anchor:" + value.Text)) return null;
+            try { return ResolveSetting(document, source, key, materialize, active); }
+            finally { active.Remove("anchor:" + value.Text); }
+        }
+        if (!TryCall(value, out var name, out var arguments) ||
+            document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name) is not { } template ||
+            !active.Add("template:" + name)) return null;
+        try
+        {
+            var parameters = TemplateCall.FindParameters(template.Value, document);
+            if (arguments.Count > parameters.Count) return null;
+            var bindings = parameters.Select((parameter, index) => (parameter,
+                value: index < arguments.Count ? arguments[index] : PresetValue.UnsetArgument()))
+                .ToDictionary(item => item.parameter, item => item.value, StringComparer.Ordinal);
+            var resolved = Substitute(template.Value, bindings, document, [], materialize, resolveAliases: true);
+            return ResolveSetting(document, resolved, key, materialize, active);
+        }
+        finally { active.Remove("template:" + name); }
+    }
+
+    internal static void ChangeKind(PresetDocument document, string ruleId, PresetKind targetKind,
+        Func<PresetValue, PresetValue>? convertSelector)
+    {
+        var previous = document.Clone();
+        var family = RequireFamily(document, ruleId);
+        if (targetKind != PresetKind.Default && convertSelector is not null) ConvertSelectors(document, ruleId, convertSelector);
+        var sourceKey = document.Kind == PresetKind.Addon ? "forms" : "owners";
+        var targetKey = targetKind == PresetKind.Addon ? "forms" : "owners";
+        var layers = RuleLayers(document, family.Definition.Value).ToArray();
+        if (targetKind != PresetKind.Default && sourceKey != targetKey &&
+            layers.Any(layer => layer.Get(sourceKey) is not null && layer.Get(targetKey) is not null))
+            throw new InvalidOperationException("This imported behavior contains both forms and owners. Resolve those selections before changing its stages.");
+        var removed = layers.SelectMany(layer => layer.Fields)
+            .Where(field => targetKind == PresetKind.Default && field.Key == sourceKey ||
+                targetKind == PresetKind.Addon && field.Key is "stages" or "finalFormEditorID")
+            .SelectMany(field => PresetDocument.Descendants(field.Value)).ToHashSet();
+        var removedAnchors = removed.Where(value => value.Anchor.Length > 0).Select(value => value.Anchor).ToHashSet(StringComparer.Ordinal);
+        if (document.Blocks.SelectMany(block => PresetDocument.Descendants(block.Value)).Any(value =>
+            !removed.Contains(value) && value.Kind == ValueKind.Alias && removedAnchors.Contains(value.Text)))
+            throw new InvalidOperationException("A setting being removed supplies shared data used elsewhere. Remove that reference before changing these stage settings.");
+        foreach (var layer in layers)
+        {
+            var fields = layer.Fields.ToArray();
+            layer.Fields.Clear();
+            foreach (var (key, value) in fields)
+            {
+                if (key == sourceKey)
+                {
+                    if (targetKind != PresetKind.Default) layer.Set(targetKey, value);
+                    else KeepComments(value, layer);
+                }
+                else if (targetKind == PresetKind.Addon && key is "stages" or "finalFormEditorID") KeepComments(value, layer);
+                else layer.Set(key, value);
+            }
+        }
+        if (document.Kind == PresetKind.Default)
+        {
+            var fields = family.Definition.Value.Fields.ToArray();
+            family.Definition.Value.Fields.Clear();
+            family.Definition.Value.Set(targetKey, PresetValue.List());
+            foreach (var field in fields) family.Definition.Value.Set(field.Key, field.Value);
+            foreach (var row in family.Rows)
+                if (!ReferenceEquals(CallValue(document, row), row.Value))
+                {
+                    var call = CallValue(document, row).Clone();
+                    KeepComments(row.Value, call);
+                    row.Value = call;
+                }
+        }
+        foreach (var block in document.Blocks.Where(block => block.Id == family.Definition.Id ||
+            family.Rows.Contains(block) || layers.Contains(block.Value)))
+            if (PresetSchema.NormalizeContext(block.Context) == "rule") block.Context = PresetDocument.RuleContext(targetKind);
+        document.Kind = targetKind;
+        document.RebindTemplateCalls(previous);
+    }
+
+    private static IEnumerable<PresetValue> RuleLayers(PresetDocument document, PresetValue root)
+    {
+        var visited = new HashSet<PresetValue>();
+        return Visit(root);
+        IEnumerable<PresetValue> Visit(PresetValue value)
+        {
+            if (!visited.Add(value)) yield break;
+            if (value.Kind == ValueKind.Mapping)
+            {
+                yield return value;
+                if (value.Get("<<") is { } inherited)
+                    foreach (var layer in Visit(inherited)) yield return layer;
+            }
+            else if (value.Kind == ValueKind.Sequence)
+            {
+                foreach (var child in value.Items)
+                    foreach (var layer in Visit(child)) yield return layer;
+            }
+            else
+            {
+                var definition = value.Kind == ValueKind.Alias
+                    ? document.Blocks.SelectMany(block => PresetDocument.Descendants(block.Value)).FirstOrDefault(node => node.Anchor == value.Text)
+                    : TryCall(value, out var name, out _) ? document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name)?.Value : null;
+                if (definition is not null)
+                    foreach (var layer in Visit(definition)) yield return layer;
+            }
+        }
+    }
+
+    private static PresetValue ConvertSelector(PresetValue value, PresetDocument document,
+        Func<PresetValue, PresetValue> convert, HashSet<string> active)
+    {
+        if (value.Kind == ValueKind.Scalar && (value.Text.StartsWith('$') || value.IsNull || value.IsUnsetArgument)) return value;
+        if (value.Kind == ValueKind.Alias)
+        {
+            var source = document.Blocks.SelectMany(block => PresetDocument.Descendants(block.Value)).FirstOrDefault(node => node.Anchor == value.Text);
+            if (source is null || !active.Add(value.Text)) throw new InvalidDataException("The affected items refer to missing or circular shared settings.");
+            var resolved = source.Clone();
+            foreach (var node in PresetDocument.Descendants(resolved)) node.Anchor = "";
+            var converted = ConvertSelector(resolved, document, convert, active);
+            active.Remove(value.Text);
+            if (PresetYaml.Write(resolved) == PresetYaml.Write(converted)) return value;
+            PreserveSelectorAnnotations(value, converted);
+            return converted;
+        }
+        if (TryCall(value, out var name, out var arguments) &&
+            document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name) is { } template)
+        {
+            if (!active.Add("template:" + name)) throw new InvalidDataException("The affected items refer to circular templates.");
+            var parameters = TemplateCall.FindParameters(template.Value, document);
+            if (arguments.Count > parameters.Count) throw new InvalidDataException("The affected items supply too many template arguments.");
+            var bindings = parameters.Select((parameter, index) => (parameter, value: index < arguments.Count ? arguments[index] : PresetValue.UnsetArgument()))
+                .ToDictionary(item => item.parameter, item => item.value, StringComparer.Ordinal);
+            var resolved = Substitute(template.Value, bindings, document, [], false, resolveAliases: true);
+            foreach (var node in PresetDocument.Descendants(resolved)) node.Anchor = "";
+            var converted = ConvertSelector(resolved, document, convert, active);
+            active.Remove("template:" + name);
+            if (PresetYaml.Write(resolved) == PresetYaml.Write(converted)) return value;
+            PreserveSelectorAnnotations(value, converted);
+            return converted;
+        }
+        if (value.Kind == ValueKind.Sequence)
+        {
+            var result = value.Clone();
+            result.Items.Clear();
+            foreach (var item in value.Items)
+            {
+                var converted = ConvertSelector(item, document, convert, active);
+                if (converted.Kind == ValueKind.Sequence && item.Kind != ValueKind.Sequence)
+                {
+                    if (converted.Anchor.Length > 0)
+                    {
+                        if (value.Items.Count != 1 || result.Anchor.Length > 0)
+                            throw new InvalidOperationException("A selected group defines shared data inside this list. Move that shared value to its own definition before expanding the selection.");
+                        result.Anchor = converted.Anchor;
+                    }
+                    result.Items.AddRange(converted.Items);
+                    KeepComments(converted, result);
+                }
+                else result.Items.Add(converted);
+            }
+            return result;
+        }
+        var replacement = convert(value.Clone()).Clone();
+        PreserveSelectorAnnotations(value, replacement);
+        return replacement;
+    }
+
+    private static void PreserveSelectorAnnotations(PresetValue source, PresetValue target)
+    {
+        if (source.Anchor.Length > 0) target.Anchor = source.Anchor;
+        if (!source.Comments.SequenceEqual(target.Comments)) target.Comments.InsertRange(0, source.Comments);
+        if (!source.TrailingComments.SequenceEqual(target.TrailingComments)) target.TrailingComments.AddRange(source.TrailingComments);
+        if (source.InlineComment.Length == 0 || source.InlineComment == target.InlineComment) return;
+        if (target.InlineComment.Length > 0) target.TrailingComments.Add(target.InlineComment);
+        target.InlineComment = source.InlineComment;
+    }
+
+    private static void ConvertCallSelectors(PresetValue value, IReadOnlyDictionary<string, bool[]> selectors,
+        PresetDocument document, Func<PresetValue, PresetValue> convert)
+    {
+        if (TryCall(value, out var name, out var arguments) && selectors.TryGetValue(name, out var fields))
+        {
+            for (var index = 0; index < arguments.Count; index++)
+            {
+                if (index < fields.Length && fields[index]) arguments[index] =
+                    PresetDocument.CompactSelector(ConvertSelector(arguments[index], document, convert, []));
+                else ConvertCallSelectors(arguments[index], selectors, document, convert);
+            }
+            value.Text = TemplateCall.Format(name, arguments);
+        }
+        else foreach (var child in value.Fields.Values.Concat(value.Items)) ConvertCallSelectors(child, selectors, document, convert);
+    }
+
     public static string ClearVariable(PresetDocument document, string ruleId, string parameter)
     {
         var family = RequireFamily(document, ruleId);
@@ -318,7 +552,7 @@ public sealed class BehaviorFamily
 
     private static PresetValue CallValue(PresetDocument document, PresetBlock rule) =>
         document.Kind == PresetKind.Default && rule.Value.Kind == ValueKind.Mapping && rule.Value.Fields.Count == 1 &&
-        rule.Value.Get("<<") is { } call ? call : rule.Value;
+        rule.Value.Get("<<") is { } call && TryCall(call, out _, out _) ? call : rule.Value;
 
     private static bool TryCall(PresetValue value, out string name, out List<PresetValue> arguments)
     {

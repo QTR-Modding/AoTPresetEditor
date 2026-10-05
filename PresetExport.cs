@@ -19,10 +19,19 @@ public static class PresetExport
         public bool KeepBackup { get; set; }
     }
 
+    private sealed class RetiredFile(string path, byte[] original)
+    {
+        public string Path { get; } = path;
+        public byte[] Original { get; } = original;
+        public string Backup { get; } = path + "." + Guid.NewGuid().ToString("N") + ".aot-backup";
+        public bool Committed { get; set; }
+    }
+
     public static void Save(string presetPath, string source, IReadOnlyList<FormGroupDefinition> pendingGroups, string modFolder) =>
         Save([new PresetOutput(presetPath, source)], pendingGroups, modFolder);
 
-    public static void Save(IReadOnlyList<PresetOutput> outputs, IReadOnlyList<FormGroupDefinition> pendingGroups, string modFolder)
+    public static void Save(IReadOnlyList<PresetOutput> outputs, IReadOnlyList<FormGroupDefinition> pendingGroups, string modFolder,
+        IReadOnlyList<string>? retiredPaths = null)
     {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(modFolder));
         if (!Directory.Exists(root)) throw new DirectoryNotFoundException("Choose an existing destination mod folder.");
@@ -40,6 +49,7 @@ public static class PresetExport
         }
         if (files.Select(file => file.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != files.Count)
             throw new InvalidDataException("Two exported files have the same name. Give each preset file and form group a different name.");
+        var retired = PrepareRetirements(retiredPaths ?? [], files, prefix);
         foreach (var file in files)
         {
             if (Directory.Exists(file.Path)) throw new IOException($"A folder occupies the output file path: {file.Path}");
@@ -69,10 +79,11 @@ public static class PresetExport
                 File.Move(file.Temporary!, file.Path, file.Original is not null);
                 file.Committed = true;
             }
+            RetireFiles(retired);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            var recovery = RollBack(files);
+            var recovery = RollBack(files, retired);
             var message = "Could not save the preset and form groups: " + error.Message;
             if (recovery.Count > 0)
                 message += Environment.NewLine + "Some files could not be restored. Recovery details:" + Environment.NewLine + string.Join(Environment.NewLine, recovery);
@@ -93,6 +104,34 @@ public static class PresetExport
         }
     }
 
+    private static List<RetiredFile> PrepareRetirements(IReadOnlyList<string> paths, IReadOnlyList<ExportFile> outputs, string prefix)
+    {
+        var usedPaths = outputs.Select(file => file.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var retired = new List<RetiredFile>();
+        foreach (var originalPath in paths)
+        {
+            var path = Path.GetFullPath(originalPath);
+            if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("A replaced preset must be inside the selected mod folder.");
+            if (!usedPaths.Add(path))
+                throw new InvalidDataException("A replaced preset cannot also be an output file or be listed twice.");
+            if (Directory.Exists(path)) throw new IOException($"A folder occupies the replaced preset path: {path}");
+            retired.Add(new(path, File.ReadAllBytes(path)));
+        }
+        return retired;
+    }
+
+    private static void RetireFiles(IEnumerable<RetiredFile> files)
+    {
+        foreach (var file in files)
+        {
+            if (!File.ReadAllBytes(file.Path).AsSpan().SequenceEqual(file.Original))
+                throw new IOException($"The file changed while the export was being prepared: {file.Path}");
+            File.Move(file.Path, file.Backup);
+            file.Committed = true;
+        }
+    }
+
     private static void CreateDirectories(string directory, List<string> created)
     {
         if (Directory.Exists(directory)) return;
@@ -101,9 +140,22 @@ public static class PresetExport
         created.Add(directory);
     }
 
-    private static List<string> RollBack(IEnumerable<ExportFile> files)
+    private static List<string> RollBack(IEnumerable<ExportFile> files, IEnumerable<RetiredFile> retired)
     {
         var recovery = new List<string>();
+        foreach (var file in retired.Reverse().Where(file => file.Committed))
+        {
+            try
+            {
+                if (!File.ReadAllBytes(file.Backup).AsSpan().SequenceEqual(file.Original))
+                    throw new IOException("The recovery copy changed after it was created.");
+                File.Move(file.Backup, file.Path);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                recovery.Add($"Original file: {file.Path}{Environment.NewLine}Recovery copy: {file.Backup}{Environment.NewLine}{error.Message}");
+            }
+        }
         foreach (var file in files.Reverse().Where(file => file.Committed))
         {
             try

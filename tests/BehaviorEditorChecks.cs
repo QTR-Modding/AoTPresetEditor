@@ -188,6 +188,7 @@ internal static class BehaviorEditorChecks
         {
             host.Show(); SelectCell(editor, 1, 1);
             FocusGridCell(host, table, 1, 2);
+            Keyboard.ClearFocus();
             FocusManager.SetFocusedElement(host, Field<Button>(editor, "addRow"));
             Require(!table.CurrentCell.IsValid, "The paste test must leave the focused grid cell before invoking its action.");
             PasteCells(editor, "BakedChicken"); editor.Capture();
@@ -234,6 +235,7 @@ internal static class BehaviorEditorChecks
             Require(table.CurrentCell.Column == table.Columns[2], "The final-item cell must own logical focus before opening its picker.");
             var cell = Field<ValueEditorControl>(editor, "cellEditor");
             var button = Descendants<Button>(cell).Single(item => Equals(item.Content, "Choose form..."));
+            Keyboard.ClearFocus();
             FocusManager.SetFocusedElement(host, button);
             Require(!table.CurrentCell.IsValid, "Leaving the focused grid cell must exercise WPF's current-cell clearing path.");
             Require(ReferenceEquals(cell, Field<ValueEditorControl>(editor, "cellEditor")) &&

@@ -62,6 +62,7 @@ public sealed class BehaviorEditorControl : UserControl
     public string BlockName => name.Text.Trim();
     public string RuleId { get; private set; }
     public event EventHandler? Changed;
+    public event Func<PresetDocument, string, PresetKind, PresetDocument?>? KindChangeRequested;
 
     public BehaviorEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, string ruleId,
         IReadOnlyList<FormGroupDefinition>? groups = null)
@@ -171,11 +172,25 @@ public sealed class BehaviorEditorControl : UserControl
         var definition = family?.Definition ?? Rule(); commonId = definition.Id;
         commonEditor = new ValueEditorControl(document, forms, definition.Value, definition.Context,
             "Settings", parametersAllowed: family?.IsTemplate == true,
-            groups: groups, behaviorMode: true, allowVariations: family is not null, sourceForms: CommonSources(), showHeading: false);
+            groups: groups, behaviorMode: true, allowVariations: family is not null, sourceForms: CommonSources(), showHeading: false,
+            editSections: family is null ? null : ChangeSection);
         document = commonEditor.Document;
         commonEditor.Changed += (_, _) => { if (!refreshing) NotifyChanged(); };
         commonEditor.VariableChangeRequested += ChangeVariable;
         var panel = new StackPanel();
+        if (family is not null)
+        {
+            var scope = new ComboBox { ItemsSource = new[] { "Selected items", "Items without their own stages" },
+                SelectedIndex = document.Kind == PresetKind.Default ? 1 : 0, MinWidth = 200 };
+            AutomationProperties.SetName(scope, "Behavior scope");
+            scope.ToolTip = "Use these settings for selected items, or supply stages for items of this type that have none assigned elsewhere.";
+            var scopeRow = new DockPanel { Margin = new Thickness(0, 0, 0, 8), HorizontalAlignment = HorizontalAlignment.Left };
+            var scopeLabel = EditorControls.Text("Scope"); scopeLabel.Margin = new Thickness(0, 0, 10, 0);
+            scopeLabel.VerticalAlignment = VerticalAlignment.Center;
+            DockPanel.SetDock(scopeLabel, Dock.Left); scopeRow.Children.Add(scopeLabel); scopeRow.Children.Add(scope);
+            scope.SelectionChanged += (_, _) => ChangeScope(scope);
+            panel.Children.Add(scopeRow);
+        }
         if (family?.IsTemplate == true)
         {
             var otherUses = new PresetPresentation(document, forms, groups).Uses(family.Definition)
@@ -183,6 +198,97 @@ public sealed class BehaviorEditorControl : UserControl
             if (otherUses > 0) panel.Children.Add(EditorControls.Text($"These settings also affect {otherUses} other behaviors."));
         }
         panel.Children.Add(commonEditor); commonContent.Content = panel;
+    }
+
+    private bool ChangeKind(PresetKind kind)
+    {
+        if (document.Kind == kind) return true;
+        PresetDocument? changed;
+        if (KindChangeRequested is not null) changed = KindChangeRequested(document, RuleId, kind);
+        else
+        {
+            var project = new PresetProject(); project.Add(document, "Behavior");
+            changed = project.ChangeBehaviorKind(RuleId, kind).Document;
+        }
+        if (changed is null) return false;
+        document = changed; return true;
+    }
+
+    private void ChangeScope(ComboBox scope)
+    {
+        if (refreshing || scope.SelectedIndex == (document.Kind == PresetKind.Default ? 1 : 0)) return;
+        Capture();
+        try
+        {
+            var kind = scope.SelectedIndex == 1 ? PresetKind.Default : PresetKind.Custom;
+            if (!ChangeKind(kind)) { refreshing = true; scope.SelectedIndex = document.Kind == PresetKind.Default ? 1 : 0; refreshing = false; return; }
+            if (kind == PresetKind.Default) EnsureStages();
+            RuleId = BehaviorFamily.Normalize(document, RuleId);
+            Rebuild(false); NotifyChanged();
+        }
+        catch (Exception error)
+        {
+            refreshing = true; scope.SelectedIndex = document.Kind == PresetKind.Default ? 1 : 0; refreshing = false;
+            ShowError(error, "Cannot change affected items");
+        }
+    }
+
+    private void EnsureStages(bool overrideInherited = false)
+    {
+        var family = BehaviorFamily.Find(document, RuleId)!;
+        var value = family.Definition.Value.Clone();
+        if (BehaviorFamily.GetSetting(document, RuleId, "stages") is { } existing)
+        {
+            if (!overrideInherited || value.Get("stages") is not null) return;
+            value.Set("stages", existing.Clone());
+        }
+        else
+        {
+            var stages = PresetValue.List(); stages.Items.Add(ValueEditorControl.NewStage(0)); value.Set("stages", stages);
+            value.Set("finalFormEditorID", PresetValue.Scalar(""));
+        }
+        BehaviorFamily.SetCommon(document, RuleId, value);
+    }
+
+    private void ChangeSection(string key, bool add)
+    {
+        Capture();
+        try
+        {
+            var label = key switch { "stages" => "Stages", "transformers" => "Transformations", _ => "Time modifiers" };
+            if (!add && MessageBox.Show(Window.GetWindow(this), key == "stages"
+                ? "Remove these stages and their final item? Transformations and time modifiers will be kept." +
+                    (document.Kind == PresetKind.Default ? " You will need to choose which items they affect." : "")
+                : "Remove all " + label.ToLowerInvariant() + " from this behavior?", "Remove " + label.ToLowerInvariant(),
+                MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
+            if (key == "stages")
+            {
+                if (!ChangeKind(add ? document.Kind == PresetKind.Default ? PresetKind.Default : PresetKind.Custom : PresetKind.Addon)) return;
+                if (add) EnsureStages(overrideInherited: true);
+            }
+            else
+            {
+                var family = BehaviorFamily.Find(document, RuleId)!;
+                var value = family.Definition.Value.Clone();
+                if (add)
+                {
+                    var setting = BehaviorFamily.GetSetting(document, RuleId, key)?.Clone() ?? PresetValue.List();
+                    if (setting.Kind == ValueKind.Sequence && setting.Items.Count == 0) setting.Items.Add(PresetValue.Map());
+                    value.Set(key, setting);
+                }
+                else
+                {
+                    value.Remove(key);
+                    var without = document.Clone(); BehaviorFamily.SetCommon(without, RuleId, value);
+                    if (BehaviorFamily.GetSetting(without, RuleId, key) is not null) value.Set(key, PresetValue.List());
+                }
+                BehaviorFamily.SetCommon(document, RuleId, value);
+            }
+            RuleId = BehaviorFamily.Normalize(document, RuleId);
+            Rebuild(false); NotifyChanged();
+            if (add) commonEditor.FocusIssue(label + " 1");
+        }
+        catch (Exception error) { ShowError(error, "Cannot change behavior settings"); }
     }
 
     private void Rebuild(bool showVariations, string? selectRow = null, string? selectParameter = null)

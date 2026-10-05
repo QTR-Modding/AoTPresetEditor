@@ -119,7 +119,8 @@ public partial class MainWindow : Window
             var progress = new Progress<string>(text => Status.Text = text);
             var result = await Task.Run(() => FormCatalog.Load(data, progress));
             forms = result.Forms;
-            Workspace.SetCatalog(forms, groups);
+            var stages = await StageAvailability.LoadAsync(presets);
+            Workspace.SetCatalog(forms, groups, stages);
             FormBrowserAction.Visibility = forms.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             LoadOrderInfo.Text = $"{result.Plugins.Count:N0} active plugins. Order read from: {result.PluginsPath}";
             LoadOrderList.ItemsSource = result.Plugins.Select((name, i) => $"{i + 1,4}  {name}");
@@ -153,7 +154,7 @@ public partial class MainWindow : Window
                 .Order(StringComparer.OrdinalIgnoreCase)).ToArray();
         var kinds = new[] { new KeyValuePair<PresetKind?, string>(null, "All behaviors") }.Concat(presets.Select(p => p.Kind).Distinct().Order()
             .Select(kind => new KeyValuePair<PresetKind?, string>(kind, kind switch
-            { PresetKind.Default => "Fallback aging", PresetKind.Custom => "Item aging", PresetKind.Addon => "Reactions and preservation", _ => "Other" }))).ToArray();
+            { PresetKind.Default => "Stages for other items", PresetKind.Custom => "Stages for selected items", PresetKind.Addon => "Transformations and time modifiers", _ => "Other" }))).ToArray();
         PresetCategories.ItemsSource = categories;
         PresetKinds.ItemsSource = kinds;
         PresetCategories.SelectedItem = categories.FirstOrDefault(category =>

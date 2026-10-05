@@ -19,6 +19,7 @@ public sealed class ValueEditorControl : UserControl
     private readonly bool parametersAllowed;
     private readonly bool behaviorMode;
     private readonly bool allowVariations;
+    private readonly Action<string, bool>? editSections;
     private IReadOnlyList<FormRow>? sourceForms;
     private readonly string context;
     private readonly string title;
@@ -50,18 +51,19 @@ public sealed class ValueEditorControl : UserControl
     public ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed = false, PresetField? field = null, string? blockName = null,
         IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null, bool behaviorMode = false, bool allowVariations = true,
-        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true)
-        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms, showHeading) { }
+        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null)
+        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms, showHeading, editSections) { }
 
     private ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed, PresetField? field, string? blockName,
         IReadOnlyList<FormGroupDefinition> groups, ValueEditorControl? parent, Action<PresetValue>? replace, bool behaviorMode = false, bool allowVariations = true,
-        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true)
+        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null)
     {
         this.parent = parent;
         root = parent?.root ?? this;
         this.behaviorMode = parent?.behaviorMode ?? behaviorMode;
         this.allowVariations = parent?.allowVariations ?? allowVariations;
+        this.editSections = editSections;
         this.sourceForms = parent?.sourceForms ?? sourceForms;
         blockId = parent is null ? document.Blocks.FirstOrDefault(block => ReferenceEquals(block.Value, value))?.Id : root.blockId;
         this.document = parent is null ? document.Clone() : root.document;
@@ -305,6 +307,19 @@ public sealed class ValueEditorControl : UserControl
     private void RenderMap()
     {
         var descriptors = PresetSchema.GetFields(context, Document.Kind);
+        if (editSections is not null)
+        {
+            foreach (var descriptor in descriptors.Where(item => item.Key is "owners" or "forms")) RenderField(descriptor, content);
+            var add = new WrapPanel { Margin = new Thickness(0, 4, 0, 8) };
+            foreach (var (key, label) in new[] { ("stages", "Add stages"), ("transformers", "Add transformation"), ("timeModulators", "Add time modifier") })
+                if (!HasSection(key) && (key != "stages" || Document.Kind == PresetKind.Addon))
+                    add.Children.Add(EditorControls.Button(label, () => editSections(key, true)));
+            if (add.Children.Count > 0) content.Children.Add(add);
+            foreach (var key in new[] { "stages", "transformers", "timeModulators" })
+                if (descriptors.FirstOrDefault(item => item.Key == key) is { } descriptor &&
+                    (descriptor.Required || HasSection(key))) RenderField(descriptor, content);
+            descriptors = descriptors.Where(item => item.Key is not ("owners" or "forms" or "stages" or "finalFormEditorID" or "transformers" or "timeModulators")).ToArray();
+        }
         var primary = descriptors.Where(descriptor => descriptor.Required ||
             descriptor.Kind == FieldKind.ObjectList && Value.Get(descriptor.Key) is not null ||
             PresetSchema.NormalizeContext(context) == "effect").ToArray();
@@ -314,7 +329,7 @@ public sealed class ValueEditorControl : UserControl
             var panel = new StackPanel(); foreach (var descriptor in section) RenderField(descriptor, panel);
             content.Children.Add(new Expander { Header = section.Key, Tag = section.Key, Content = panel, Margin = new Thickness(0, 6, 0, 8) });
         }
-        foreach (var key in Value.Fields.Keys.Where(key => key != "<<" && !descriptors.Any(item => item.Key == key)).ToArray())
+        foreach (var key in Value.Fields.Keys.Where(key => key != "<<" && !PresetSchema.GetFields(context, Document.Kind).Any(item => item.Key == key)).ToArray())
             RenderField(new PresetField(key, key, FieldKind.Text, "Additional setting preserved from this file.",
                 ChildContext: PresetSchema.InferContext(key, Value.Fields[key])), content);
         if (descriptors.Count == 0) content.Children.Add(EditorControls.Button("Add setting...", AddSetting));
@@ -344,6 +359,12 @@ public sealed class ValueEditorControl : UserControl
         content.Children.Add(new Expander { Header = "Common settings", IsExpanded = inherited is not null, Content = panelReuse, Margin = new Thickness(0, 10, 0, 0) });
     }
 
+    private PresetValue? BehaviorSetting(string key) => Value.Get(key) ?? effective?.Get(key) ??
+        (editSections is not null && blockId is not null ? BehaviorFamily.GetSetting(Document, blockId, key) : null);
+
+    private bool HasSection(string key) => BehaviorSetting(key) is { } setting &&
+        (key == "stages" || setting.Kind != ValueKind.Sequence || setting.Items.Count > 0);
+
     private static string FieldSection(PresetField descriptor) => descriptor.Key switch
     {
         "color" or "sound" or "art_object" or "effect_shader" => "World effects",
@@ -370,7 +391,14 @@ public sealed class ValueEditorControl : UserControl
             choice.Click += (_, _) => RequestVariable(descriptor, choice, variable);
             actions.Children.Add(choice);
         }
-        if (!variable && current is not null && (!descriptor.Required || Value.Get("<<") is not null)) actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Clear" : "Use inherited value", () =>
+        var section = editSections is not null && descriptor.Key is "stages" or "transformers" or "timeModulators";
+        if (section)
+        {
+            if (current is null && BehaviorSetting(descriptor.Key) is not null)
+                actions.Children.Add(EditorControls.Button("Override here", () => editSections!(descriptor.Key, true)));
+            actions.Children.Add(EditorControls.Button("Remove section", () => editSections!(descriptor.Key, false)));
+        }
+        else if (!variable && current is not null && (!descriptor.Required || Value.Get("<<") is not null)) actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Clear" : "Use inherited value", () =>
             ReplaceField(descriptor, target, null)));
         else if (!variable && (!descriptor.Required || Value.Get("<<") is not null))
             actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Set" : "Override here", () =>
@@ -388,6 +416,8 @@ public sealed class ValueEditorControl : UserControl
                 value => Value.Set(descriptor.Key, value), resolved => resolved?.Get(descriptor.Key));
             box.Children.Add(child);
         }
+        if (section && descriptor.Key == "stages")
+            RenderField(PresetSchema.GetFields(context, Document.Kind).Single(item => item.Key == "finalFormEditorID"), box);
         var collection = descriptor.Kind == FieldKind.ObjectList;
         var card = new Border { Child = box, BorderThickness = collection ? new Thickness(0, 0, 0, 1) : new Thickness(1),
             CornerRadius = new CornerRadius(collection ? 0 : 5), Padding = collection ? new Thickness(0, 6, 0, 6) : new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 6) };
@@ -396,7 +426,7 @@ public sealed class ValueEditorControl : UserControl
         if (descriptor.Kind is FieldKind.ObjectList or FieldKind.FormList or FieldKind.IntegerList)
         {
             box.Children.Remove(row);
-            card.Child = new Expander { Header = row, Content = box, IsExpanded = true };
+            card.Child = new Expander { Header = row, Content = box, IsExpanded = !section };
         }
         var unused = new StackPanel();
         unused.Children.Add(Help(""));
@@ -453,7 +483,7 @@ public sealed class ValueEditorControl : UserControl
         var partial = IsDefinition;
         foreach (var (key, view) in fields)
         {
-            var own = Value.Get(key); var inherited = effective?.Get(key); string text; IReadOnlyList<string> errors = [];
+            var own = Value.Get(key); var inherited = effective?.Get(key) ?? (editSections is not null ? BehaviorSetting(key) : null); string text; IReadOnlyList<string> errors = [];
             var inactive = PresetSchema.InactiveReason(view.Field, Value, context, Document.Category, effective, partial);
             view.Target.Visibility = inactive is not null && own is null && inherited is null ? Visibility.Collapsed : Visibility.Visible;
             if (inactive is not null)
@@ -636,11 +666,17 @@ public sealed class ValueEditorControl : UserControl
         var child = ItemContext(); if (context == "Inheritance") return PresetValue.Map();
         var value = PresetSchema.GetFields(child, Document.Kind).Count > 0 ? PresetValue.Map() : PresetValue.Scalar("");
         if (child.Equals("stage", StringComparison.OrdinalIgnoreCase))
-        {
-            value.Set("no", PresetValue.Scalar(NextStageNumber().ToString(System.Globalization.CultureInfo.InvariantCulture)));
-            value.Set("name", new() { Kind = ValueKind.Scalar, Text = "", Style = ScalarStyle.DoubleQuoted }); value.Set("duration", PresetValue.Scalar("1"));
-        }
+            return NewStage(NextStageNumber());
         return value;
+    }
+
+    public static PresetValue NewStage(uint number)
+    {
+        var stage = PresetValue.Map();
+        stage.Set("no", PresetValue.Scalar(number.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        stage.Set("name", new() { Kind = ValueKind.Scalar, Text = "", Style = ScalarStyle.DoubleQuoted });
+        stage.Set("duration", PresetValue.Scalar("1"));
+        return stage;
     }
 
     private uint NextStageNumber()
