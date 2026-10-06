@@ -369,6 +369,9 @@ internal static class EditorInteractionChecks
             var list = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == key);
             Require(Field<ListBox>(list, "entryList").SelectedIndex == 1,
                 "An issue produced by validation must open the affected transformation or time modifier.");
+            var triggerEditor = Descendants<ValueEditorControl>(list).First(child => child.Value.Kind == ValueKind.Mapping);
+            Require(Ancestors<Expander>(FieldCard(triggerEditor, "allowed_stages")).All(section => section.IsExpanded),
+                "An undefined-stage issue must reveal its Allowed stages field inside Filters.");
         }
     }
 
@@ -720,6 +723,11 @@ internal static class EditorInteractionChecks
         Require(editor.FocusIssue("Stages 2: Duration (game hours): enter a number.") && section.IsExpanded &&
             list.SelectedIndex == 1 && details.Visibility == Visibility.Visible,
             "Issue navigation must open the collapsed collection and the requested entry together.");
+        section.IsExpanded = false;
+        editor.Value.Get("stages")!.Items[1].Set("no", PresetValue.Scalar("7"));
+        Require(editor.FocusIssue("Stage 7: this replacement item is already used by another stage.") && section.IsExpanded &&
+            list.SelectedIndex == 1 && details.Visibility == Visibility.Visible,
+            "A stage-number issue must navigate by the configured stage number instead of treating it as a list position.");
         var selected = details.Children.OfType<ValueEditorControl>().Single();
         section.IsExpanded = false;
         var evolution = Descendants<Border>(editor).Single(card => Descendants<TextBlock>(card).Any(text => text.Text.StartsWith("Containers", StringComparison.Ordinal)));

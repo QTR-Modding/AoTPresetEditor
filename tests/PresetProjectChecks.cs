@@ -58,7 +58,7 @@ internal static class PresetProjectChecks
         var duplicate = project.Add(addon.Clone(), "ImportedCooking");
         Require(duplicate.FileName != cooking.FileName && duplicate.Document.Blocks.All(block =>
             addon.Blocks.All(original => original.Id != block.Id)), "Imported duplicates need distinct output names and selectable block IDs.");
-        Reject(() => project.Add(PresetDocument.Create("INGR", PresetKind.Default), "Another fallback"));
+        Reject(() => project.Add(fallback.Document.Clone(), "Another fallback"));
         var root = Path.Combine(Path.GetTempPath(), "AoTPresetEditor-project-" + Guid.NewGuid().ToString("N"));
         Require(project.GetExportPath(cooking, root) == Path.Combine(root, "SKSE", "Plugins", "AlchemyOfTime", "FOOD", "addon", "ImportedCooking.yml"),
             "Triggered behaviors must retain their original basename in the addon directory.");
@@ -69,6 +69,76 @@ internal static class PresetProjectChecks
         Reject(() => PresetProject.FromDraft("{\"Version\":999,\"Name\":\"Future\",\"Entries\":[]}"));
         ExportTransaction(root, project.GetExportPath(cooking, root), project.GetExportPath(aging, root));
         UnifiedBehaviorKinds();
+        RemoveBehaviors();
+    }
+
+    private static void RemoveBehaviors()
+    {
+        var project = new PresetProject();
+        var kept = project.Add(PresetDocument.Parse("formsLists: [{forms: Beef}]", "FOOD", PresetKind.Addon), "Cooking");
+        var removed = project.Add(PresetDocument.Parse("ownerLists: [{owners: Beef}]", "FOOD", PresetKind.Custom), "Stages");
+        project.RemoveBehavior(removed.Document.Blocks.Single().Id);
+        Require(!removed.HasBehaviors && removed.IsInactive && !removed.PendingRemoval && kept.HasBehaviors,
+            "Deleting the last unsaved behavior must leave an inactive entry, not an invisible validation blocker.");
+        Require(project.RemoveEmptyEntries().SequenceEqual([removed.Id]) && project.Entries.SequenceEqual([kept]),
+            "An abandoned empty generated file must be removed while the other behaviors stay intact.");
+
+        var originalEmpty = project.Add(PresetDocument.Create("FOOD", PresetKind.Custom), "Imported empty", "empty.yml", "empty hash");
+        Require(!originalEmpty.IsInactive && !originalEmpty.PendingRemoval,
+            "Opening an empty source file must not silently mark it for deletion or suppress its errors.");
+        var imported = project.Add(PresetDocument.Parse("""
+            # Retain these definitions
+            heat: &heat {FormEditorID: Fire, duration: 1}
+            templates:
+              cook:
+                forms: $item
+                transformers: [{<<: *heat, finalFormEditorID: Cooked}]
+            formsLists:
+            - cook(Beef)
+            - cook(Goat)
+            """, "FOOD", PresetKind.Addon), "Imported", "imported.yml", "original hash");
+        imported.Document.PendingGroups.Add(new("Heat", ["Fire"]));
+        project.RemoveBehavior(imported.Document.Blocks.First(block => block.Kind == BlockKind.Rule).Id);
+        Require(imported.PendingRemoval && imported.IsInactive && imported.OpenedPath == "imported.yml" &&
+            imported.OpenedHash == "original hash" && imported.Document.Blocks.Single().Key == "heat",
+            "Deleting a template behavior must remove all its rows and unused definition, while retaining source tracking and unrelated definitions.");
+        var restored = PresetProject.FromDraft(project.ToDraft());
+        Require(restored.ToDraft() == project.ToDraft() && project.Clone().ToDraft() == project.ToDraft(),
+            "Drafts and clones must preserve explicit pending removals, original hashes, and retained data.");
+        imported.OpenedPath = null; imported.OpenedHash = null; imported.PendingRemoval = false;
+        project.RemoveEmptyEntries();
+        Require(project.Entries.Contains(imported) && imported.Document.PendingGroups.Count == 1,
+            "Successful retirement cleanup must preserve definitions and form groups in the project.");
+
+        var comments = project.Add(PresetDocument.Parse("""
+            # Rule-list notes
+            ownerLists:
+            - owners: Beef
+            """, "MISC", PresetKind.Custom), "Comments");
+        project.RemoveBehavior(comments.Document.Blocks.Single().Id);
+        project.RemoveEmptyEntries();
+        Require(project.Entries.Contains(comments), "Cleanup must preserve comments on an emptied rule list.");
+
+        var variable = project.Add(PresetDocument.Parse("templates: {pick: {forms: $item}}\nformsLists: [pick(Beef)]",
+            "FOOD", PresetKind.Addon), "Variables");
+        BehaviorFamily.RemoveUse(variable.Document, variable.Document.Blocks.Single(block => block.Kind == BlockKind.Rule).Id);
+        Require(variable.HasBehaviors && !variable.IsInactive,
+            "An empty Variables table must remain an editable behavior, with its settings and validation intact.");
+
+        var defaults = new PresetProject();
+        var oldDefault = defaults.Add(PresetDocument.Parse("stages: [{no: 0, duration: 1}]", "FOOD", PresetKind.Default),
+            "Default", "default.yml", "default hash");
+        defaults.RemoveBehavior(oldDefault.Document.Blocks.Single().Id);
+        var replacement = defaults.Add(PresetDocument.Parse("stages: [{no: 0, duration: 2}]", "FOOD", PresetKind.Default), "Default");
+        Require(defaults.Find("FOOD", PresetKind.Default) == replacement &&
+            defaults.GetExportPath(oldDefault, Path.GetTempPath()) == defaults.GetExportPath(replacement, Path.GetTempPath()),
+            "A pending default removal must permit its replacement at the same canonical output path.");
+        defaults.Entries.Reverse();
+        Require(PresetProject.FromDraft(defaults.ToDraft()).ToDraft() == defaults.ToDraft(),
+            "A draft must restore an active default followed by its pending removal without collision or renaming.");
+        defaults.Entries.Remove(replacement);
+        Require(defaults.GetOrCreate("FOOD", PresetKind.Default) == oldDefault,
+            "Adding new settings may reuse a pending entry without losing its source tracking.");
     }
 
     private static void UnifiedBehaviorKinds()
@@ -218,6 +288,24 @@ internal static class PresetProjectChecks
             Require(File.ReadAllText(first) == "first original" &&
                 !Directory.EnumerateFiles(root, "*.aot-*", SearchOption.AllDirectories).Any(),
                 "Rejected output collisions and recovered exports must leave no partial writes or staging files.");
+            Reject(() => PresetExport.Save([], [], root));
+            Reject(() => PresetExport.Save([], [], root, [Path.Combine(Path.GetDirectoryName(root)!, "outside.yml")]));
+            Reject(() => PresetExport.Save([new(first, "replacement")], [], root, [first]));
+            using (var locked = File.Open(second, FileMode.Open, FileAccess.Read, FileShare.Read))
+                Reject(() => PresetExport.Save([], [], root, [first, second]));
+            Require(File.ReadAllText(first) == "first original" && File.ReadAllText(second) == "second original" &&
+                !Directory.EnumerateFiles(root, "*.aot-*", SearchOption.AllDirectories).Any(),
+                "A failed retirement-only save must restore previously retired files and reject out-of-root or colliding paths.");
+            PresetExport.Save([], [], root, [first, second]);
+            Require(!File.Exists(first) && !File.Exists(second) &&
+                Directory.EnumerateFiles(root, "*.aot-backup", SearchOption.AllDirectories).Select(File.ReadAllText)
+                    .Order().SequenceEqual(new[] { "first original", "second original" }),
+                "Deleting the last saved behaviors must retain recoverable backups without writing an empty preset.");
+            PresetExport.Save([], [], root, [first, Path.Combine(root, "missing-directory", "removed.yml")]);
+            Require(Directory.EnumerateFiles(root, "*.aot-backup", SearchOption.AllDirectories).Count() == 2 &&
+                !Directory.Exists(Path.Combine(root, "missing-directory")),
+                "Saving explicit removals must also resolve files already removed manually, without creating new files or backups.");
+            Reject(() => PresetExport.Save([], [], root, [Path.GetDirectoryName(first)!]));
         }
         finally
         {

@@ -183,7 +183,12 @@ public sealed class PresetWorkspace : UserControl
             details.Content = welcome;
             return;
         }
-        welcome.Children.Add(EditorControls.Text("Describe what happens to your items", true));
+        if (project?.Entries.Any(entry => entry.IsInactive && entry.OpenedPath is not null) == true)
+        {
+            welcome.Children.Add(EditorControls.Text("All behaviors have been removed", true));
+            welcome.Children.Add(EditorControls.Text("Save to mod to review the files to disable. Their contents will be kept as inactive backups."));
+        }
+        else welcome.Children.Add(EditorControls.Text("Describe what happens to your items", true));
         welcome.Children.Add(EditorControls.Text("Add a behavior, choose the items it affects, then set how they change."));
         var start = new WrapPanel();
         if (project is null)
@@ -205,6 +210,7 @@ public sealed class PresetWorkspace : UserControl
     }
 
     private bool Ready => project is { Entries.Count: > 0 }
+        && project.Entries.Any(entry => !entry.IsInactive || entry.OpenedPath is not null)
         && project.Entries.All(entry => validations.GetValueOrDefault(entry.Id)?.IsValid == true);
 
     private static string CategoryLabel(string category)
@@ -217,8 +223,10 @@ public sealed class PresetWorkspace : UserControl
     {
         var count = validations.Values.Sum(result => result.FileErrors.Count + result.Errors.Values.Sum(errors => errors.Count));
         var warningCount = warnings.Values.Sum(items => items.Count);
+        var removals = project?.Entries.Count(entry => entry.IsInactive && entry.OpenedPath is not null) ?? 0;
         return (Ready ? "✓ Ready to save to a mod" : count > 0 ? $"{count} {(count == 1 ? "issue" : "issues")}" : "Add or complete a behavior")
             + (warningCount > 0 ? $" · {warningCount} {(warningCount == 1 ? "warning" : "warnings")}" : "")
+            + (removals > 0 ? $" · {removals} {(removals == 1 ? "file" : "files")} to remove on save" : "")
             + (dirty ? " · Unsaved changes" : "");
     }
 
@@ -403,6 +411,7 @@ public sealed class PresetWorkspace : UserControl
         ResetEditor(); activeEntry = entry; document = entry.Document; presentation = null;
         var context = PresetDocument.RuleContext(kind);
         var added = document.Add(BlockKind.Rule, name.Text.Trim(), context); added.Value = ValueEditorWindow.NewValue(context);
+        entry.PendingRemoval = false;
         added.Value.Set("forms", PresetValue.List());
         validations.Remove(entry.Id); dirty = true; await Refresh(added.Id);
     }
@@ -421,7 +430,13 @@ public sealed class PresetWorkspace : UserControl
         var needsValidation = editorDirty;
         if (!CommitEditor()) { RenderBlocks(editingId); return; }
         var entry = id is null ? null : project?.FindByBlockId(id);
-        if (entry is null || id is null) { editor = null; editingId = null; ShowWelcome(); UpdateActions(); return; }
+        if (entry is null || id is null)
+        {
+            editor = null; editingId = null;
+            if (project?.Entries.FirstOrDefault(candidate => candidate.Id == id) is { } fileEntry) ShowFileIssues(fileEntry);
+            else ShowWelcome();
+            UpdateActions(); return;
+        }
         activeEntry = entry; document = entry.Document; validation = validations.GetValueOrDefault(entry.Id);
         presentation = new PresetPresentation(document, forms, groups, validation?.Expanded);
         editor = new BehaviorEditorControl(document, forms, id, groups);
@@ -514,13 +529,7 @@ public sealed class PresetWorkspace : UserControl
         var family = BehaviorFamily.Find(document, id);
         var affected = family?.Rows.ToArray() ?? [block];
         if (MessageBox.Show(Host, $"Delete '{family?.Definition.Name ?? block.Name}'" + (affected.Length > 1 ? $" and its {affected.Length} rows?" : "?"), "Delete behavior", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
-        ResetEditor(); foreach (var row in affected) document.Remove(row);
-        if (family is { IsTemplate: true })
-        {
-            family.Definition.IsBehavior = false;
-            if (affected.Length == 0 && new PresetPresentation(document, forms, groups).Uses(family.Definition).Count == 0)
-                document.Remove(family.Definition);
-        }
+        ResetEditor(); project!.RemoveBehavior(id);
         if (activeEntry is not null) validations.Remove(activeEntry.Id);
         dirty = true; await Refresh();
     }
@@ -542,9 +551,16 @@ public sealed class PresetWorkspace : UserControl
     private async Task Refresh(string? selection = null)
     {
         editTimer.Stop(); checking?.Cancel(); EnsureProject();
+        if (project is not null)
+            foreach (var id in project.RemoveEmptyEntries())
+            {
+                validations.Remove(id);
+                if (activeEntry?.Id != id) continue;
+                ResetEditor(); activeEntry = null; document = null; presentation = null;
+            }
         title.Text = filename + (dirty ? " *" : "");
         if (project is null || project.Entries.Count == 0)
-        { RenderBlocks(null); ShowWelcome(); state.Text = "Add your first behavior"; UpdateActions(); return; }
+        { RenderBlocks(null); ShowWelcome(); state.Text = "Add your first behavior"; UpdateActions(); RenderIssues(); return; }
         state.Text = "Checking behaviors..."; UpdateActions();
         UpdatePresentation(); RenderBlocks(selection); SelectBlock();
         using var request = new CancellationTokenSource(); checking = request;
@@ -552,6 +568,11 @@ public sealed class PresetWorkspace : UserControl
         {
             foreach (var entry in project.Entries)
             {
+                if (entry.IsInactive)
+                {
+                    validations[entry.Id] = new("", "", new(), PresetValidation.GroupErrors(entry.Document));
+                    continue;
+                }
                 if (validations.ContainsKey(entry.Id)) continue;
                 var catalog = new PresetPresentation(entry.Document, forms, groups);
                 var result = await PresetValidation.Check(entry.Document.Clone(), request.Token, catalog);
@@ -562,7 +583,7 @@ public sealed class PresetWorkspace : UserControl
             state.Text = StatusText();
             state.ToolTip = "Checks values and form compatibility. Test the saved behavior in game.";
             UpdatePresentation(validation?.Expanded);
-            RenderBlocks(editingId ?? SelectedId); UpdateActions(); RenderIssues();
+            RenderBlocks(editingId ?? SelectedId); SelectBlock(); UpdateActions(); RenderIssues();
             if (editor is not null && editingId is not null && presentation is not null && document is not null)
             {
                 var block = document.Blocks.FirstOrDefault(entry => entry.Id == editingId);
@@ -587,27 +608,19 @@ public sealed class PresetWorkspace : UserControl
         foreach (var entry in project.Entries)
         {
             if (!validations.TryGetValue(entry.Id, out var result)) continue;
-            foreach (var error in result.FileErrors) issueList.Children.Add(EditorControls.Text(entry.FileName + ": " + error));
+            var catalog = new PresetPresentation(entry.Document, forms, groups, result.Expanded);
+            foreach (var error in result.FileErrors)
+                issueList.Children.Add(IssueButton(FileLocation(entry), error, () => SelectFileIssue(entry)));
             foreach (var block in entry.Document.Blocks)
                 foreach (var error in result.Errors.GetValueOrDefault(block.Id) ?? [])
                 {
-                    var button = EditorControls.Button(block.Name + ": " + error, () =>
-                    {
-                        var family = BehaviorFamily.Find(entry.Document, block.Id);
-                        var id = family?.Rows.FirstOrDefault()?.Id ?? block.Id;
-                        var item = blocks.Items.OfType<ListBoxItem>().FirstOrDefault(item => Equals(item.Tag, id));
-                        if (item is null)
-                        {
-                            var catalog = new PresetPresentation(entry.Document, forms, groups);
-                            var use = catalog.Uses(block).FirstOrDefault(use => use.Kind == BlockKind.Rule);
-                            if (use is not null) item = blocks.Items.OfType<ListBoxItem>().FirstOrDefault(item => Equals(item.Tag, BehaviorFamily.Find(entry.Document, use.Id)?.Rows.FirstOrDefault()?.Id ?? use.Id));
-                        }
-                        if (item is not null) blocks.SelectedItem = item;
-                        editor?.FocusIssue(error, block.Id);
-                    });
-                    button.HorizontalAlignment = HorizontalAlignment.Left; issueList.Children.Add(button);
+                    issueList.Children.Add(IssueButton(BehaviorEditorControl.IssueLocation(entry.Document, block.Id, error, catalog.EffectiveValue(block)),
+                        error, () => SelectIssue(entry, block, error)));
                 }
         }
+        var removals = project.Entries.Where(entry => entry.IsInactive && entry.OpenedPath is not null).ToArray();
+        foreach (var entry in removals)
+            issueList.Children.Add(EditorControls.Text(FileLocation(entry) + "\nAll behaviors removed. Save to mod will ask before disabling this file."));
         foreach (var entry in project.Entries)
             foreach (var block in entry.Document.Blocks)
                 foreach (var warning in warnings.GetValueOrDefault(block.Id) ?? [])
@@ -619,9 +632,103 @@ public sealed class PresetWorkspace : UserControl
         var errors = validations.Values.Sum(result => result.FileErrors.Count + result.Errors.Values.Sum(items => items.Count));
         var warningCount = warnings.Values.Sum(items => items.Count);
         issues.Header = errors > 0 ? $"Review issues ({errors})" + (warningCount > 0 ? $" · Warnings ({warningCount})" : "")
-            : $"Warnings ({warningCount})"; reviewIssues.Content = issues.Header;
+            : warningCount > 0 ? $"Warnings ({warningCount})" : $"Pending file removals ({removals.Length})";
+        reviewIssues.Content = issues.Header;
         reviewIssues.Visibility = issueList.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         issues.Visibility = issueList.Children.Count > 0 && issues.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private static Button IssueButton(string location, string message, Action open)
+    {
+        var content = new StackPanel();
+        content.Children.Add(EditorControls.Text(location, true));
+        content.Children.Add(EditorControls.Text(message));
+        var button = EditorControls.Button("", open);
+        button.Content = content; button.HorizontalContentAlignment = HorizontalAlignment.Left;
+        return button;
+    }
+
+    private string FileLocation(PresetProjectEntry entry)
+    {
+        if (entry.OpenedPath is not null) return entry.OpenedPath;
+        var root = exportRoot ?? AppContext.BaseDirectory;
+        return Path.GetRelativePath(Path.Combine(root, "SKSE", "Plugins", "AlchemyOfTime"), project!.GetExportPath(entry, root));
+    }
+
+    private void SelectIssue(PresetProjectEntry entry, PresetBlock block, string error)
+    {
+        if (!CommitEditor()) return;
+        block = entry.Document.Blocks.FirstOrDefault(candidate => candidate.Id == block.Id) ?? block;
+        var family = BehaviorFamily.Find(entry.Document, block.Id);
+        if (block.Kind != BlockKind.Rule && family is null) { EditDefinitionIssue(entry, block, error); return; }
+        var id = family?.Rows.FirstOrDefault()?.Id ?? block.Id;
+        var item = blocks.Items.OfType<ListBoxItem>().FirstOrDefault(item => Equals(item.Tag, id));
+        if (item is null) { SelectFileIssue(entry); return; }
+        blocks.SelectedItem = item;
+        editor?.FocusIssue(error, block.Id);
+    }
+
+    private async void EditDefinitionIssue(PresetProjectEntry entry, PresetBlock block, string error)
+    {
+        var view = new ValueEditorWindow(entry.Document, forms, block.Value, block.Context, "Shared settings",
+            parametersAllowed: block.Kind == BlockKind.Template, blockName: block.Name,
+            issues: validations.GetValueOrDefault(entry.Id)?.Errors.GetValueOrDefault(block.Id), groups: groups) { Owner = Host };
+        view.Loaded += (_, _) => view.Editor.FocusIssue(error);
+        if (view.ShowDialog() != true) return;
+        try
+        {
+            var updated = view.Document; var previous = updated.Clone();
+            var changed = updated.Blocks.First(candidate => candidate.Id == block.Id);
+            changed.Value = view.Value; changed.Name = view.BlockName;
+            updated.RebindTemplateCalls(previous);
+            var selected = SelectedId;
+            ResetEditor(); entry.Document = updated;
+            if (activeEntry == entry) { document = updated; presentation = null; }
+            validations.Remove(entry.Id); dirty = true; await Refresh(selected);
+        }
+        catch (Exception failure) { MessageBox.Show(Host, failure.Message, "Cannot apply shared settings", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private void SelectFileIssue(PresetProjectEntry entry)
+    {
+        if (!CommitEditor()) return;
+        var item = blocks.Items.OfType<ListBoxItem>().FirstOrDefault(item => Equals(item.Tag, entry.Id));
+        if (ReferenceEquals(blocks.SelectedItem, item)) SelectBlock();
+        else blocks.SelectedItem = item;
+    }
+
+    private static IReadOnlyList<string> FileIssues(PresetProjectEntry entry, PresetValidationResult? result)
+    {
+        if (result is null) return [];
+        var catalog = new PresetPresentation(entry.Document, []);
+        return [.. result.FileErrors, .. entry.Document.Blocks.Where(block => block.Kind != BlockKind.Rule && !block.IsBehavior &&
+            !catalog.Uses(block).Any(use => use.Kind == BlockKind.Rule)).SelectMany(block =>
+                (result.Errors.GetValueOrDefault(block.Id) ?? []).Select(error => block.Name + ": " + error))];
+    }
+
+    private void ShowFileIssues(PresetProjectEntry entry)
+    {
+        activeEntry = entry; document = entry.Document; validation = validations.GetValueOrDefault(entry.Id);
+        var panel = new StackPanel { Margin = new Thickness(12) };
+        panel.Children.Add(EditorControls.Text("File: " + entry.FileName + ".yml", true));
+        panel.Children.Add(EditorControls.Text(FileLocation(entry)));
+        foreach (var message in FileIssues(entry, validation)) panel.Children.Add(EditorControls.Text(message));
+        if (!entry.HasBehaviors && !entry.IsInactive && entry.OpenedPath is not null)
+        {
+            panel.Children.Add(EditorControls.Text("This file has no behaviors. Removing it on save keeps an inactive backup of the original file."));
+            panel.Children.Add(EditorControls.Button("Remove file on save", () => QueueEmptyFileRemoval(entry)));
+        }
+        if (validation is { Source.Length: > 0 } result)
+            panel.Children.Add(EditorControls.Button("View YAML...", () =>
+                new YamlPreviewWindow(entry.FileName, result.Source, result.Expanded) { Owner = Host }.ShowDialog()));
+        details.Content = panel;
+    }
+
+    private async void QueueEmptyFileRemoval(PresetProjectEntry entry)
+    {
+        if (entry.HasBehaviors || entry.OpenedPath is null) return;
+        entry.PendingRemoval = true; validations.Remove(entry.Id); dirty = true;
+        await Refresh();
     }
 
     private void RenderBlocks(string? selected)
@@ -640,7 +747,7 @@ public sealed class PresetWorkspace : UserControl
                     var errors = (rows.Count == 0 ? [block] : rows).SelectMany(row =>
                         validations.GetValueOrDefault(entry.Id)?.Errors.GetValueOrDefault(row.Id) ?? []).ToArray();
                     var result = validations.GetValueOrDefault(entry.Id);
-                    var status = result is null ? "•" : errors.Length > 0 ? "!" : result.FileErrors.Count > 0 ? "•" : "✓";
+                    var status = result is null ? "•" : errors.Length > 0 || result.FileErrors.Count > 0 ? "!" : "✓";
                     var rowPanel = new DockPanel { Margin = new Thickness(4, 5, 4, 5), MinHeight = 40 };
                     var mark = EditorControls.Text(status); mark.FontSize = 20; mark.Width = 27; DockPanel.SetDock(mark, Dock.Left); rowPanel.Children.Add(mark);
                     var text = new StackPanel();
@@ -655,6 +762,16 @@ public sealed class PresetWorkspace : UserControl
                         ToolTip = label + Environment.NewLine + description + (errors.Length > 0 ? Environment.NewLine + string.Join(Environment.NewLine, errors) : "") };
                     blocks.Items.Add(item);
                     if (block.Id == selected || rows.Any(row => row.Id == selected)) blocks.SelectedItem = item;
+                }
+                if (FileIssues(entry, validations.GetValueOrDefault(entry.Id)) is { Count: > 0 } fileIssues)
+                {
+                    var content = new StackPanel { Margin = new Thickness(4, 5, 4, 5) };
+                    content.Children.Add(EditorControls.Text("! File: " + entry.FileName + ".yml", true));
+                    content.Children.Add(EditorControls.Text($"{fileIssues.Count} {(fileIssues.Count == 1 ? "issue" : "issues")} · {entry.Document.Category}"));
+                    var item = new ListBoxItem { Content = content, Tag = entry.Id, ToolTip = FileLocation(entry),
+                        HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                    blocks.Items.Add(item);
+                    if (entry.Id == selected) blocks.SelectedItem = item;
                 }
             }
             if (blocks.SelectedItem is null) blocks.SelectedItem = blocks.Items.OfType<ListBoxItem>().FirstOrDefault();
@@ -671,7 +788,7 @@ public sealed class PresetWorkspace : UserControl
         focus.Visibility = blocks.Items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         save.Visibility = Ready ? Visibility.Visible : Visibility.Collapsed;
         CommandManager.InvalidateRequerySuggested();
-        yaml.Visibility = Ready ? Visibility.Visible : Visibility.Collapsed;
+        yaml.Visibility = Ready && project!.Entries.Any(entry => !entry.IsInactive) ? Visibility.Visible : Visibility.Collapsed;
         fileDraft.Visibility = project is not null ? Visibility.Visible : Visibility.Collapsed;
         draftSave.Visibility = project is not null && !Ready ? Visibility.Visible : Visibility.Collapsed;
         reset.Visibility = project is { Entries.Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
@@ -692,7 +809,7 @@ public sealed class PresetWorkspace : UserControl
     private void ShowYaml()
     {
         if (!Ready || project is null) return;
-        var entries = project.Entries.ToArray();
+        var entries = project.Entries.Where(entry => !entry.IsInactive).ToArray();
         if (entries.Length == 0) return;
         if (entries.Length == 1)
         {
@@ -749,25 +866,28 @@ public sealed class PresetWorkspace : UserControl
             foreach (var entry in project.Entries)
                 if (entry.OpenedPath is not null && File.Exists(entry.OpenedPath) && entry.OpenedHash != Hash(Encoding.UTF8.GetBytes(File.ReadAllText(entry.OpenedPath))))
                     throw new IOException("A source file changed after you opened it: " + entry.OpenedPath);
-            var changes = project.Entries.Select(entry => (Entry: entry,
+            var changes = project.Entries.Where(entry => !entry.IsInactive).Select(entry => (Entry: entry,
                 Output: new PresetOutput(project.GetExportPath(entry, picker.FolderName), validations[entry.Id].Source))).ToArray();
             var outputs = changes.Select(change => change.Output).ToArray();
             var existing = outputs.Where(output => File.Exists(output.Path)).ToArray();
             var destination = Path.TrimEndingDirectorySeparator(Path.GetFullPath(picker.FolderName)) + Path.DirectorySeparatorChar;
-            var retired = changes.Select(change => change.Entry.OpenedPath).OfType<string>()
-                .Where(path => Path.GetFullPath(path).StartsWith(destination, StringComparison.OrdinalIgnoreCase) && File.Exists(path) &&
+            var retired = project.Entries.Select(entry => entry.OpenedPath).OfType<string>()
+                .Where(path => Path.GetFullPath(path).StartsWith(destination, StringComparison.OrdinalIgnoreCase) &&
                     !outputs.Any(output => Path.GetFullPath(output.Path).Equals(Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase)))
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (outputs.Length == 0 && retired.Length == 0)
+                throw new IOException("Choose the mod folder containing the files marked for removal.");
             var confirmation = existing.Length > 0 ? "Update these files?\n" + string.Join("\n", existing.Select(output => output.Path)) : "";
             if (retired.Length > 0) confirmation += (confirmation.Length > 0 ? "\n\n" : "") +
-                "These behaviors now belong in different files. Move their previous files to retained .aot-backup copies so AoT does not load both versions?\n" + string.Join("\n", retired);
-            var externalSources = changes.Select(change => change.Entry.OpenedPath).OfType<string>()
-                .Where(path => File.Exists(path) && !Path.GetFullPath(path).StartsWith(destination, StringComparison.OrdinalIgnoreCase) &&
-                    !outputs.Any(output => Path.GetFullPath(path).EndsWith(Path.DirectorySeparatorChar +
-                        Path.GetRelativePath(destination, output.Path), StringComparison.OrdinalIgnoreCase)))
+                "Disable these files? Existing files will be kept as inactive .aot-backup copies.\n" + string.Join("\n", retired);
+            var externalSources = project.Entries.Where(entry => entry.OpenedPath is { } path && File.Exists(path) &&
+                    !Path.GetFullPath(path).StartsWith(destination, StringComparison.OrdinalIgnoreCase) &&
+                    (entry.IsInactive || !outputs.Any(output => Path.GetFullPath(path).EndsWith(Path.DirectorySeparatorChar +
+                        Path.GetRelativePath(destination, output.Path), StringComparison.OrdinalIgnoreCase))))
+                .Select(entry => entry.OpenedPath!)
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             if (externalSources.Length > 0) confirmation += (confirmation.Length > 0 ? "\n\n" : "") +
-                "Saving creates new files and leaves these originals unchanged. To replace installed presets, disable their old files in the owning mods so AoT does not load both versions:\n" +
+                "These original files are outside the chosen mod folder and will stay unchanged. Disable them in their owning mods to replace or remove their behaviors:\n" +
                 string.Join("\n", externalSources);
             if (confirmation.Length > 0 && MessageBox.Show(Host, confirmation, "Save preset", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
             var pending = project.Entries.SelectMany(entry => entry.Document.PendingGroups).GroupBy(group => group.Name, StringComparer.OrdinalIgnoreCase).Select(group =>
@@ -777,9 +897,13 @@ public sealed class PresetWorkspace : UserControl
                 return first;
             }).ToArray();
             PresetExport.Save(outputs, pending, picker.FolderName, retired);
+            foreach (var entry in project.Entries.Where(entry => entry.IsInactive && entry.OpenedPath is not null))
+                if (retired.Concat(outputs.Select(output => output.Path)).Any(path =>
+                    Path.GetFullPath(path).Equals(Path.GetFullPath(entry.OpenedPath!), StringComparison.OrdinalIgnoreCase)))
+                { entry.OpenedPath = null; entry.OpenedHash = null; entry.PendingRemoval = false; }
             foreach (var change in changes)
             { change.Entry.OpenedPath = change.Output.Path; change.Entry.OpenedHash = Hash(Encoding.UTF8.GetBytes(change.Output.Source)); }
-            exportRoot = picker.FolderName; dirty = false; location.Text = "Saved to: " + exportRoot;
+            exportRoot = picker.FolderName; dirty = project.Entries.Any(entry => entry.PendingRemoval); location.Text = "Saved to: " + exportRoot;
             title.Text = filename; state.Text = "✓ Saved to mod";
             _ = Refresh(editingId);
         }

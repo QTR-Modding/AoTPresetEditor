@@ -73,6 +73,10 @@ public sealed class PresetDocument
     private List<string> templateComments = [];
     private List<string> ruleTrailingComments = [];
     private List<string> templateTrailingComments = [];
+    [JsonIgnore]
+    public bool HasRetainedContent => Blocks.Count > 0 || PendingGroups.Count > 0 || Comments.Count > 0 ||
+        TrailingComments.Count > 0 || ruleComments.Count > 0 || templateComments.Count > 0 ||
+        ruleTrailingComments.Count > 0 || templateTrailingComments.Count > 0;
 
     private sealed record BlockMetadata(string Id, string Name, string Key, string Context, BlockKind Kind,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool IsBehavior = false);

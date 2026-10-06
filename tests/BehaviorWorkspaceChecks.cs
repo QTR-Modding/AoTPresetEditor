@@ -124,6 +124,131 @@ internal static class BehaviorWorkspaceChecks
             SynchronizationContext.SetSynchronizationContext(previousContext);
         }
         EmptyBehaviorWorkspace();
+        IssueNavigationAndRemoval();
+    }
+
+    private static void IssueNavigationAndRemoval()
+    {
+        var project = new PresetProject { Name = "Issue locations" };
+        var empty = project.Add(PresetDocument.Parse("ownerLists: []", "FOOD", PresetKind.Custom),
+            "Empty stages", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "AoT-empty-stages.yml"));
+        var workspace = new PresetWorkspace();
+        SetField(workspace, "project", project); SetField(workspace, "activeEntry", empty);
+        SetField(workspace, "document", empty.Document);
+        try
+        {
+            RefreshWorkspace(workspace);
+            var list = Field<ListBox>(workspace, "blocks");
+            var details = Field<ContentControl>(workspace, "details");
+            Require(Equals(((ListBoxItem)list.SelectedItem).Tag, empty.Id) &&
+                Descendants<TextBlock>(details).Any(text => text.Text == empty.OpenedPath) &&
+                Descendants<Button>(details).Any(button => Equals(button.Content, "Remove file on save")),
+                "First validation of an empty imported file must show its selected file issue and source path, not leave Welcome visible.");
+            var issues = Field<StackPanel>(workspace, "issueList");
+            issues.Children.OfType<Button>().First().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(Descendants<TextBlock>(details).Any(text => text.Text == empty.OpenedPath),
+                "Clicking a file issue already selected in the sidebar must still open its details.");
+
+            var cooking = project.Add(PresetDocument.Parse("""
+                heat: &heat
+                  FormEditorID: Fire
+                  finalFormEditorID: FoodBeefCooked
+                  duration: -1
+                formsLists:
+                - forms: FoodBeef
+                  transformers:
+                  - FormEditorID: Frost
+                    finalFormEditorID: FoodBeefCooked
+                    duration: 1
+                  - *heat
+                """, "FOOD", PresetKind.Addon), "Cooking");
+            var stages = project.Add(PresetDocument.Parse("""
+                ownerLists:
+                - owners: IngredientA
+                  stages:
+                  - no: 0
+                    duration: invalid
+                  finalFormEditorID: IngredientB
+                """, "INGR", PresetKind.Custom), "Stages");
+            var stageBlock = stages.Document.Blocks.Single(); stageBlock.Name = "Ingredient stages";
+            RefreshWorkspace(workspace);
+            list.SelectedItem = list.Items.OfType<ListBoxItem>().Single(item => Equals(item.Tag, cooking.Document.Blocks.Single(block => block.Kind == BlockKind.Rule).Id));
+            var sharedIssue = issues.Children.OfType<Button>().Single(button => Descendants<TextBlock>(button)
+                .Any(text => text.Text == "heat → Duration (game hours)"));
+            Exception? dialogFailure = null;
+            workspace.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                var view = PresentationSource.CurrentSources.Cast<PresentationSource>().Select(source => source.RootVisual)
+                    .OfType<ValueEditorWindow>().Single();
+                try
+                {
+                    Require(view.Value.Get("duration")?.Text == "-1" && view.Value.Anchor == "heat",
+                        "A shared-setting issue must open its definition, not the first transformation's similarly named field.");
+                    var duration = Descendants<ValueEditorControl>(view.Editor).Single(control => Field<PresetField?>(control, "field")?.Key == "duration");
+                    Descendants<TextBox>(duration).Single().Text = "2";
+                    Descendants<Button>(view).Single(button => Equals(button.Content, "Apply")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                }
+                catch (Exception failure) { dialogFailure = failure; view.DialogResult = false; }
+            }));
+            sharedIssue.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (dialogFailure is not null) throw dialogFailure;
+            RefreshWorkspace(workspace);
+            Require(cooking.Document.Blocks.Single(block => block.Kind == BlockKind.Shared).Value.Get("duration")?.Text == "2" &&
+                cooking.Document.Blocks.Single(block => block.Kind == BlockKind.Rule).Value.Get("transformers")!.Items[0].Get("duration")?.Text == "1",
+                "Correcting a shared definition must preserve the unrelated transformation and its reference.");
+            var issue = issues.Children.OfType<Button>().Single(button => Descendants<TextBlock>(button)
+                .Any(text => text.Text == "Ingredient stages → Stages → Stage 0 → Duration (game hours)"));
+            issue.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var editor = Field<BehaviorEditorControl>(workspace, "editor");
+            Require(Field<PresetProjectEntry>(workspace, "activeEntry") == stages &&
+                Duration(editor).Text == "invalid" &&
+                Descendants<Expander>(editor).Where(expander => Descendants<TextBox>(expander).Contains(Duration(editor))).All(expander => expander.IsExpanded),
+                "A setting issue must select the affected behavior and reveal its nested stage field.");
+
+            Invoke(workspace, "ResetEditor"); project.RemoveBehavior(stageBlock.Id);
+            RefreshWorkspace(workspace);
+            Require(!project.Entries.Contains(stages) && !Field<Dictionary<string, PresetValidationResult>>(workspace, "validations").ContainsKey(stages.Id) &&
+                issues.Children.OfType<Button>().Count() == 1,
+                "Deleting the final unsaved behavior must remove its file and stale issues while retaining a genuine imported-file issue.");
+            var fileIssue = issues.Children.OfType<Button>().Single();
+            fileIssue.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(Equals(((ListBoxItem)list.SelectedItem).Tag, empty.Id),
+                "A file issue must remain reachable from another selected behavior.");
+            Descendants<Button>(details).Single(button => Equals(button.Content, "Remove file on save"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            RefreshWorkspace(workspace);
+            Require(empty.PendingRemoval && Field<Button>(workspace, "save").Visibility == Visibility.Visible &&
+                !issues.Children.OfType<Button>().Any() &&
+                Field<TextBlock>(workspace, "state").Text.Contains("1 file to remove on save"),
+                "Explicitly removing an empty imported file must preserve its source tracking, unblock saving, and show the pending removal.");
+
+            Invoke(workspace, "ResetEditor");
+            project.RemoveBehavior(cooking.Document.Blocks.Single(block => block.Kind == BlockKind.Rule).Id);
+            RefreshWorkspace(workspace);
+            Require(Field<Button>(workspace, "save").Visibility == Visibility.Visible &&
+                Field<Button>(workspace, "yaml").Visibility == Visibility.Collapsed && list.Items.Count == 0,
+                "Removing every behavior must allow the tracked file removal to be saved without offering empty YAML.");
+        }
+        finally { Invoke(workspace, "ResetEditor"); }
+    }
+
+    private static void RefreshWorkspace(PresetWorkspace workspace)
+    {
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(workspace.Dispatcher));
+        try
+        {
+            var task = (Task)typeof(PresetWorkspace).GetMethod("Refresh", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(workspace, [null])!;
+            if (!task.IsCompleted)
+            {
+                var frame = new DispatcherFrame();
+                _ = task.ContinueWith(_ => workspace.Dispatcher.BeginInvoke(new Action(() => frame.Continue = false)), TaskScheduler.Default);
+                Dispatcher.PushFrame(frame);
+            }
+            task.GetAwaiter().GetResult();
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
     }
 
     private static void EmptyBehaviorWorkspace()

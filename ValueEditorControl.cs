@@ -127,6 +127,8 @@ public sealed class ValueEditorControl : UserControl
 
     public bool FocusIssue(string message)
     {
+        var path = IssuePath(effective ?? Value, context, Document.Kind, message);
+        if (path.Count > 0 && FocusPath(path)) return true;
         var openedEntry = false;
         if (entryList is not null)
         {
@@ -154,10 +156,109 @@ public sealed class ValueEditorControl : UserControl
         return openedEntry;
     }
 
+    internal static IReadOnlyList<string> IssuePath(PresetValue? value, string context, PresetKind kind, string message)
+    {
+        context = PresetSchema.NormalizeContext(context);
+        if (context == "rule" && value?.Get("stages") is { Kind: ValueKind.Sequence } stages)
+        {
+            var stage = Regex.Match(message, @"^Stage (number )?(\d+)(?::| is used)", RegexOptions.IgnoreCase);
+            if (stage.Success && uint.TryParse(stage.Groups[2].Value, out var number))
+            {
+                var index = stages.Items.FindLastIndex(item => item.Get("no") is { } stageNumber && PresetSchema.TryUnsigned(stageNumber.Text, out var candidate) && candidate == number);
+                if (index >= 0) return ["stages", index.ToString(), stage.Groups[1].Success ? "no" : "FormEditorID"];
+            }
+            if (message.StartsWith("Stage numbers must", StringComparison.OrdinalIgnoreCase)) return ["stages"];
+        }
+        if (context is "transformer" or "modulator" && Regex.IsMatch(message, @"^stage \d+ is not defined", RegexOptions.IgnoreCase))
+            return ["allowed_stages"];
+        foreach (var descriptor in PresetSchema.GetFields(context, kind))
+        {
+            var match = Regex.Match(message, "^(?:" + Regex.Escape(descriptor.Label) + "|" + Regex.Escape(descriptor.Key) + @")(?=$|[:\s])\s*", RegexOptions.IgnoreCase);
+            if (!match.Success) continue;
+            var rest = message[match.Length..].TrimStart(':', ' ');
+            if (descriptor.Kind == FieldKind.ObjectList)
+            {
+                var entry = Regex.Match(rest, @"^(\d+):?\s*");
+                if (entry.Success && int.TryParse(entry.Groups[1].Value, out var number) && number > 0)
+                {
+                    var items = value?.Get(descriptor.Key)?.Items;
+                    var item = items is not null && number <= items.Count ? items[number - 1] : null;
+                    return [descriptor.Key, (number - 1).ToString(), .. IssuePath(item, descriptor.ChildContext, kind, rest[entry.Length..])];
+                }
+            }
+            return [descriptor.Key];
+        }
+        return [];
+    }
+
+    internal static (string? Parameter, int PathLength) IssueParameter(PresetDocument document, PresetValue? value,
+        IReadOnlyList<string> path) => IssueParameter(document, value, path, []);
+
+    private static (string? Parameter, int PathLength) IssueParameter(PresetDocument document, PresetValue? value,
+        IReadOnlyList<string> path, HashSet<PresetValue> active)
+    {
+        if (value is null || !active.Add(value)) return (null, 0);
+        try
+        {
+            if (value.Kind == ValueKind.Alias)
+                return IssueParameter(document, document.Blocks.SelectMany(block => PresetDocument.Descendants(block.Value))
+                    .FirstOrDefault(candidate => candidate.Anchor == value.Text), path, active);
+            if (value.Kind == ValueKind.Scalar)
+            {
+                if (value.Text.StartsWith('$') && TemplateCall.IsName(value.Text[1..])) return (value.Text[1..], 0);
+                if (value.Tag != "tag:yaml.org,2002:str" && TemplateCall.TryParse(value.Text, out var name, out var arguments) &&
+                    document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name) is { } template)
+                {
+                    var inner = IssueParameter(document, template.Value, path, active);
+                    var index = TemplateCall.FindParameters(template.Value, document).ToList().IndexOf(inner.Parameter ?? "");
+                    if (index < 0 || index >= arguments.Count) return (null, 0);
+                    var bound = IssueParameter(document, arguments[index], path.Skip(inner.PathLength).ToArray(), active);
+                    return (bound.Parameter, inner.PathLength + bound.PathLength);
+                }
+            }
+            if (path.Count == 0) return (null, 0);
+            var child = value.Kind == ValueKind.Mapping ? value.Get(path[0])
+                : value.Kind == ValueKind.Sequence && int.TryParse(path[0], out var position) && position >= 0 && position < value.Items.Count ? value.Items[position] : null;
+            var result = IssueParameter(document, child, path.Skip(1).ToArray(), active);
+            return (result.Parameter, result.PathLength + 1);
+        }
+        finally { active.Remove(value); }
+    }
+
+    internal bool FocusPath(IReadOnlyList<string> path)
+    {
+        if (path.Count == 0) { Reveal(this); SelectFocusedText(); return true; }
+        if (IsCall(Value, out var template, out _))
+        {
+            var parameter = IssueParameter(Document, template!.Value, path);
+            var argumentIndex = TemplateCall.FindParameters(template.Value, Document).ToList().IndexOf(parameter.Parameter ?? "");
+            if (argumentIndex >= 0 && argumentIndex < children.Count) return children[argumentIndex].Editor.FocusPath(path.Skip(parameter.PathLength).ToArray());
+        }
+        if (entryList is not null && int.TryParse(path[0], out var index) && index >= 0 && index < Value.Items.Count)
+        {
+            entryList.SelectedIndex = index; revealEntry?.Invoke();
+            return children.LastOrDefault().Editor?.FocusPath(path.Skip(1).ToArray()) == true;
+        }
+        if (!fields.TryGetValue(path[0], out var view)) return false;
+        if (view.Target.Child != view.Unused && path.Count > 1 &&
+            children.FirstOrDefault(child => child.Editor.field?.Key == path[0]).Editor is { } nested && nested.FocusPath(path.Skip(1).ToArray())) return true;
+        Reveal(view.Target);
+        if (view.Target.Child != view.Unused && children.FirstOrDefault(child => child.Editor.field?.Key == path[0]).Editor is { } input)
+            input.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+        SelectFocusedText();
+        return true;
+    }
+
+    private static void SelectFocusedText()
+    {
+        if (Keyboard.FocusedElement is TextBox input) input.SelectAll();
+    }
+
     private static void Reveal(FrameworkElement target)
     {
         for (DependencyObject? current = target; current is not null; current = LogicalTreeHelper.GetParent(current))
             if (current is Expander expander) expander.IsExpanded = true;
+        target.UpdateLayout();
         target.BringIntoView(); target.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
     }
 

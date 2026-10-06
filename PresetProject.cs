@@ -10,11 +10,15 @@ public sealed class PresetProjectEntry
     public PresetDocument Document { get; set; } = new();
     public string? OpenedPath { get; set; }
     public string? OpenedHash { get; set; }
+    public bool PendingRemoval { get; set; }
+    public bool HasBehaviors => Document.Blocks.Any(block => block.Kind == BlockKind.Rule ||
+        block.Kind == BlockKind.Template && block.IsBehavior);
+    public bool IsInactive => !HasBehaviors && (OpenedPath is null || PendingRemoval);
 
     public PresetProjectEntry Clone() => new()
     {
         Id = Id, FileName = FileName, Document = Document.Clone(),
-        OpenedPath = OpenedPath, OpenedHash = OpenedHash
+        OpenedPath = OpenedPath, OpenedHash = OpenedHash, PendingRemoval = PendingRemoval
     };
 }
 
@@ -23,25 +27,32 @@ public sealed class PresetProject
     public string Name { get; set; } = "New preset";
     public List<PresetProjectEntry> Entries { get; } = [];
 
-    public PresetProjectEntry Add(PresetDocument document, string fileName, string? openedPath = null, string? openedHash = null)
+    public PresetProjectEntry Add(PresetDocument document, string fileName, string? openedPath = null, string? openedHash = null,
+        bool pendingRemoval = false)
     {
-        if (document.Kind == PresetKind.Default && Find(document.Category, document.Kind) is not null)
+        var result = new PresetProjectEntry { Document = document, OpenedPath = openedPath,
+            OpenedHash = openedHash, PendingRemoval = pendingRemoval };
+        if (pendingRemoval && (openedPath is null || result.HasBehaviors))
+            throw new InvalidDataException("Only an emptied source file can be marked for removal.");
+        if (!result.IsInactive && document.Kind == PresetKind.Default && Entries.Any(entry =>
+            !entry.IsInactive && SamePurpose(entry.Document, document.Category, document.Kind)))
             throw new InvalidDataException("This preset already defines stages for other " + document.Category + " items.");
         var name = fileName;
         if (!ValidFileName(name)) throw new InvalidDataException("Give the preset file a valid name without path separators.");
         var suffix = 2;
-        while (Entries.Any(entry => SamePurpose(entry.Document, document.Category, document.Kind) &&
+        while (!pendingRemoval && Entries.Any(entry => !entry.IsInactive && SamePurpose(entry.Document, document.Category, document.Kind) &&
             entry.FileName.Equals(name, StringComparison.OrdinalIgnoreCase)))
             name = fileName + " " + suffix++;
         var ids = Entries.SelectMany(entry => entry.Document.Blocks).Select(block => block.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var block in document.Blocks)
             while (!ids.Add(block.Id)) block.Id = Guid.NewGuid().ToString("N");
-        var result = new PresetProjectEntry { FileName = name, Document = document, OpenedPath = openedPath, OpenedHash = openedHash };
+        result.FileName = name;
         Entries.Add(result);
         return result;
     }
 
     public PresetProjectEntry? Find(string category, PresetKind kind) =>
+        Entries.FirstOrDefault(entry => !entry.IsInactive && SamePurpose(entry.Document, category, kind)) ??
         Entries.FirstOrDefault(entry => SamePurpose(entry.Document, category, kind));
 
     public PresetProjectEntry? FindByBlockId(string id) =>
@@ -49,6 +60,29 @@ public sealed class PresetProject
 
     public PresetProjectEntry GetOrCreate(string category, PresetKind kind) =>
         Find(category, kind) ?? Add(PresetDocument.Create(category, kind), Name);
+
+    public void RemoveBehavior(string id)
+    {
+        var entry = FindByBlockId(id) ?? throw new InvalidOperationException("This behavior is no longer present.");
+        var document = entry.Document;
+        var block = document.Blocks.First(block => block.Id == id);
+        var family = BehaviorFamily.Find(document, id);
+        foreach (var row in family?.Rows.ToArray() ?? [block]) document.Remove(row);
+        if (family is { IsTemplate: true })
+        {
+            family.Definition.IsBehavior = false;
+            if (new PresetPresentation(document, []).Uses(family.Definition).Count == 0)
+                document.Remove(family.Definition);
+        }
+        entry.PendingRemoval = !entry.HasBehaviors && entry.OpenedPath is not null;
+    }
+
+    public IReadOnlyList<string> RemoveEmptyEntries()
+    {
+        var empty = Entries.Where(entry => entry.OpenedPath is null && !entry.Document.HasRetainedContent).ToArray();
+        foreach (var entry in empty) Entries.Remove(entry);
+        return empty.Select(entry => entry.Id).ToArray();
+    }
 
     public IReadOnlyList<PresetValue> BehaviorSelectors(string ruleId)
     {
@@ -66,7 +100,7 @@ public sealed class PresetProject
             throw new InvalidOperationException("Choose whether this behavior defines stages for selected items or other items of this type.");
         var entry = FindByBlockId(ruleId) ?? throw new InvalidOperationException("This behavior is no longer present.");
         if (entry.Document.Kind == targetKind) return entry;
-        if (targetKind == PresetKind.Default && Entries.Any(other => other != entry &&
+        if (targetKind == PresetKind.Default && Entries.Any(other => other != entry && !other.IsInactive &&
             SamePurpose(other.Document, entry.Document.Category, PresetKind.Default)))
             throw new InvalidOperationException("This preset already defines stages for other items of this type.");
         var target = BehaviorDocument(entry.Document, ruleId, out var familyIds);
@@ -91,7 +125,7 @@ public sealed class PresetProject
             entry.Document = target;
             var stem = entry.FileName;
             var suffix = 2;
-            while (Entries.Any(other => other != entry && SamePurpose(other.Document, target.Category, target.Kind) &&
+            while (Entries.Any(other => other != entry && !other.IsInactive && SamePurpose(other.Document, target.Category, target.Kind) &&
                 other.FileName.Equals(entry.FileName, StringComparison.OrdinalIgnoreCase))) entry.FileName = stem + " " + suffix++;
             return entry;
         }
@@ -140,13 +174,15 @@ public sealed class PresetProject
         return Path.Combine(directory, folder, entry.FileName + ".yml");
     }
 
-    private sealed record DraftEntry(string Id, string FileName, string Document, string? OpenedPath, string? OpenedHash);
+    private sealed record DraftEntry(string Id, string FileName, string Document, string? OpenedPath, string? OpenedHash,
+        bool PendingRemoval = false);
     private sealed record DraftData(int Version, string Name, IReadOnlyList<DraftEntry> Entries);
     private const int DraftVersion = 1;
     private static readonly JsonSerializerOptions DraftOptions = new() { WriteIndented = true };
 
     public string ToDraft() => JsonSerializer.Serialize(new DraftData(DraftVersion, Name,
-        Entries.Select(entry => new DraftEntry(entry.Id, entry.FileName, entry.Document.ToDraft(), entry.OpenedPath, entry.OpenedHash)).ToArray()), DraftOptions);
+        Entries.Select(entry => new DraftEntry(entry.Id, entry.FileName, entry.Document.ToDraft(), entry.OpenedPath, entry.OpenedHash,
+            entry.PendingRemoval)).ToArray()), DraftOptions);
 
     public static PresetProject FromDraft(string source, string fallbackName = "Untitled")
     {
@@ -169,7 +205,8 @@ public sealed class PresetProject
             if (saved is null || string.IsNullOrWhiteSpace(saved.Id) || !entryIds.Add(saved.Id) ||
                 saved.Document is null || saved.FileName is null)
                 throw new InvalidDataException("The draft contains an invalid preset entry.");
-            var entry = project.Add(PresetDocument.FromDraft(saved.Document), saved.FileName, saved.OpenedPath, saved.OpenedHash);
+            var entry = project.Add(PresetDocument.FromDraft(saved.Document), saved.FileName, saved.OpenedPath, saved.OpenedHash,
+                saved.PendingRemoval);
             entry.Id = saved.Id;
         }
         return project;

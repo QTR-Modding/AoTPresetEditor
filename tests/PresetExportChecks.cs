@@ -98,11 +98,13 @@ internal static class PresetExportChecks
         Reject(() => PresetExport.Save(outputs, [], root, [original, original.ToUpperInvariant()]));
         Reject(() => PresetExport.Save(outputs, [], root, [Path.Combine(root + "-outside", "previous.yml")]));
         Reject(() => PresetExport.Save(outputs, [], root, [Path.Combine(root, "..", "outside.yml")]));
-        Reject(() => PresetExport.Save(outputs, [], root, [Path.Combine(root, "missing.yml")]));
         Reject(() => PresetExport.Save(outputs, [], root, [root]));
         Require(File.ReadAllText(original) == "original\n" && File.ReadAllText(output) == "current\n",
             "Invalid retirement paths allowed output changes.");
         Require(!File.Exists(groupPath), "An invalid retirement path allowed a companion group to be written.");
+        PresetExport.Save(outputs, [], root, [Path.Combine(root, "missing.yml")]);
+        Require(File.ReadAllText(output) == "changed\n" && File.ReadAllText(original) == "original\n",
+            "An already-removed source must not prevent saving the remaining behaviors.");
     }
 
     private static void Require(bool condition, string message)

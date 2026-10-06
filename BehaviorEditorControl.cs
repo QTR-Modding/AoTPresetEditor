@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -145,17 +144,14 @@ public sealed class BehaviorEditorControl : UserControl
         {
             if (family.Rows.Count == 0) { tabs.SelectedIndex = 1; table.Focus(); return true; }
             var row = family.Rows.FirstOrDefault(candidate => candidate.Id == rowId) ?? family.Rows[0];
-            var normalized = NormalizeLabel(message);
-            var column = message.StartsWith("Fill the missing values", StringComparison.OrdinalIgnoreCase)
-                ? columns.FirstOrDefault(candidate => BehaviorFamily.GetArgument(document, row.Id, candidate.Parameter).IsUnsetArgument)
-                : columns.FirstOrDefault(candidate => ParameterLabel(family.Definition.Value, family.Definition.Context, candidate.Parameter) is { } label &&
-                    normalized.Contains(NormalizeLabel(label.Split(" / ")[^1]), StringComparison.Ordinal));
-            column ??= columns.FirstOrDefault(candidate => (" " + normalized + " ").Contains(" " + NormalizeLabel(candidate.Label) + " ", StringComparison.Ordinal));
+            var path = ValueEditorControl.IssuePath(presentation.EffectiveValue(row.Id) ?? family.Definition.Value, family.Definition.Context, document.Kind, message);
+            var variable = IssueVariable(document, family, row.Id, message, path);
+            var column = columns.FirstOrDefault(candidate => candidate.Parameter == variable.Parameter);
             if (column is not null)
             {
                 tabs.SelectedIndex = 1; SelectCell(row.Id, column.Parameter);
                 cellSection.BringIntoView();
-                if (cellEditor?.FocusIssue(message) != true) cellEditor?.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+                cellEditor?.FocusPath(path.Skip(variable.PathLength).ToArray());
                 return true;
             }
         }
@@ -163,8 +159,66 @@ public sealed class BehaviorEditorControl : UserControl
         return commonEditor.FocusIssue(message);
     }
 
-    private static string NormalizeLabel(string label) =>
-        string.Join(" ", Regex.Matches(label.ToLowerInvariant(), @"[\p{L}\p{N}]+").Select(match => match.Value));
+    public static string IssueLocation(PresetDocument document, string blockId, string message, PresetValue? effectiveValue = null)
+    {
+        var block = document.Blocks.FirstOrDefault(candidate => candidate.Id == blockId);
+        if (block is null) return "Preset";
+        var family = BehaviorFamily.Find(document, blockId);
+        var definition = family?.Definition ?? block;
+        var labels = new List<string> { definition.Name };
+        if (message.StartsWith("Give this", StringComparison.OrdinalIgnoreCase) && message.Contains("name", StringComparison.OrdinalIgnoreCase))
+            labels.Add("Behavior name");
+        else if (family is { IsTemplate: true, Rows.Count: 0 }) labels.Add("Variables");
+        else
+        {
+            var path = ValueEditorControl.IssuePath(effectiveValue ?? definition.Value, definition.Context, document.Kind, message);
+            var value = effectiveValue ?? definition.Value; var context = definition.Context;
+            var row = family?.Rows.FirstOrDefault(candidate => candidate.Id == blockId) ?? family?.Rows.FirstOrDefault();
+            if (family is { IsTemplate: true } && row is not null && IssueVariable(document, family, row.Id, message, path) is { Parameter: { } parameter } variable)
+            {
+                labels.Add("Variables"); labels.Add("Row " + (family.Rows.ToList().IndexOf(row) + 1)); labels.Add(parameter);
+                value = BehaviorFamily.GetArgument(document, row.Id, parameter);
+                context = PresetSchema.GetParameterField(definition, parameter, document)?.ChildContext ?? "";
+                path = path.Skip(variable.PathLength).ToArray();
+            }
+            if (family is not null && path.FirstOrDefault() == "finalFormEditorID" && PresetSchema.NormalizeContext(context) == "rule") labels.Add("Stages");
+            labels.AddRange(IssuePathLabels(value, context, document.Kind, path));
+        }
+        return string.Join(" → ", labels);
+    }
+
+    private static (string? Parameter, int PathLength) IssueVariable(PresetDocument document, BehaviorFamily family,
+        string rowId, string message, IReadOnlyList<string> path)
+    {
+        if (message.StartsWith("Fill the missing values", StringComparison.OrdinalIgnoreCase))
+            return (family.Parameters.FirstOrDefault(parameter => BehaviorFamily.GetArgument(document, rowId, parameter).IsUnsetArgument), path.Count);
+        var variable = ValueEditorControl.IssueParameter(document, family.Definition.Value, path);
+        return variable.Parameter is not null && family.Parameters.Contains(variable.Parameter) ? variable : (null, 0);
+    }
+
+    private static IEnumerable<string> IssuePathLabels(PresetValue? value, string context, PresetKind kind, IReadOnlyList<string> path)
+    {
+        foreach (var part in path)
+        {
+            if (int.TryParse(part, out var index))
+            {
+                value = value is { Kind: ValueKind.Sequence } && index < value.Items.Count ? value.Items[index] : null;
+                yield return PresetSchema.NormalizeContext(context) switch
+                {
+                    "stage" => "Stage " + (value?.Get("no")?.Text ?? "?"),
+                    "transformer" => "Transformation " + (index + 1),
+                    "modulator" => "Time modifier " + (index + 1),
+                    "effect" => "Magic effect " + (index + 1),
+                    _ => "Entry " + (index + 1)
+                };
+                continue;
+            }
+            var descriptor = PresetSchema.GetFields(context, kind).FirstOrDefault(candidate => candidate.Key == part);
+            if (part is "containers" or "allowed_stages") yield return "Filters";
+            yield return descriptor?.Label ?? part;
+            value = value?.Get(part); context = descriptor?.ChildContext ?? "";
+        }
+    }
 
     private void BuildCommonEditor()
     {
@@ -426,25 +480,6 @@ public sealed class BehaviorEditorControl : UserControl
             item.Click += (_, _) => AddItems(column); addMenu.Items.Add(item);
         }
         refreshing = wasRefreshing; UpdateActions();
-    }
-
-    private string? ParameterLabel(PresetValue value, string context, string parameter)
-    {
-        if (value.Kind == ValueKind.Scalar) return value.Text == "$" + parameter ? "" : null;
-        if (value.Kind == ValueKind.Sequence)
-        {
-            for (var index = 0; index < value.Items.Count; index++)
-                if (ParameterLabel(value.Items[index], context, parameter) is { } child)
-                    return $"{index + 1}" + (child.Length == 0 ? "" : " / " + child);
-        }
-        else
-            foreach (var (key, child) in value.Fields)
-            {
-                var field = PresetSchema.GetFields(context, document.Kind).FirstOrDefault(candidate => candidate.Key == key);
-                if (ParameterLabel(child, field?.ChildContext ?? PresetSchema.InferContext(key, child), parameter) is { } label)
-                    return (field?.Label ?? key) + (label.Length == 0 ? "" : " / " + label);
-            }
-        return null;
     }
 
     private string CellSummary(string rowId, VariationColumn column)

@@ -58,6 +58,11 @@ internal static class StageAvailabilityChecks
         project.Entries[0].Document.Blocks.Single().Value.Remove("timeModulators");
         Require(Messages(empty, project, Validate(project)).Count == 0, "A rule with no transformations or modifiers needs no stage warning.");
 
+        project = Addon("FoodBeef");
+        project.Add(PresetDocument.Create("FOOD", PresetKind.Custom), "Unused stages");
+        Require(Messages(empty, project, Validate(project)).Single().StartsWith("No stages", StringComparison.Ordinal),
+            "An inactive generated stage file must not make known missing stages uncertain.");
+
         LoadedPresets();
     }
 
@@ -100,6 +105,9 @@ internal static class StageAvailabilityChecks
                 "Changed stages", path);
             Require(Messages(loaded, project, Validate(project)).Single().StartsWith("No stages", StringComparison.Ordinal),
                 "Editing an installed preset must replace its old stage coverage in the check.");
+            project.RemoveBehavior(replacement.Document.Blocks.Single().Id);
+            Require(Messages(loaded, project, Validate(project)).Single().StartsWith("No stages", StringComparison.Ordinal),
+                "Deleting the last installed stage behavior must mask its old coverage without introducing uncertainty.");
             project.Entries.Remove(replacement);
             loaded = StageAvailability.LoadAsync([preset with { RelativePath = Path.Combine("FOOD", "custom", "nested", "stages.yml") }]).GetAwaiter().GetResult();
             Require(Messages(loaded, project, Validate(project)).Single().StartsWith("No stages", StringComparison.Ordinal),

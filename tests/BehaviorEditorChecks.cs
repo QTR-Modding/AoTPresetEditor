@@ -22,6 +22,8 @@ internal static class BehaviorEditorChecks
         CollectionVariations();
         StageApplicability();
         ValidationSources();
+        IssueLocations();
+        ReferencedIssueVariables();
         SourceFilters();
         BehaviorSummaries();
     }
@@ -463,6 +465,105 @@ internal static class BehaviorEditorChecks
         Require(!missing.Contains("template", StringComparison.OrdinalIgnoreCase) && editor.FocusIssue(missing, added.Id) &&
             Field<string>(editor, "cellRowId") == added.Id,
             "The plain-language missing-value issue must still open the missing cell in the affected row.");
+    }
+
+    private static void IssueLocations()
+    {
+        var stageDocument = PresetDocument.Parse("""
+            ownerLists:
+            - owners: FoodBeef
+              stages:
+              - {no: 0, name: Fresh, duration: 0}
+              - {no: 3, name: Stale, duration: 1}
+              finalFormEditorID: FoodCookedBeef
+            """, "FOOD", PresetKind.Custom);
+        var stageRule = stageDocument.Blocks.Single(); stageRule.Name = "Beef stages";
+        Require(BehaviorEditorControl.IssueLocation(stageDocument, stageRule.Id, "Stages 1: Duration (game hours): duration must be greater than zero.") ==
+            "Beef stages → Stages → Stage 0 → Duration (game hours)",
+            "A stage issue must identify its actual stage number rather than its one-based list position.");
+        Require(BehaviorEditorControl.IssueLocation(stageDocument, stageRule.Id, "Stage 3: this replacement item is already used by another stage.") ==
+            "Beef stages → Stages → Stage 3 → Stage item",
+            "A cross-stage validation issue must identify the affected stage item.");
+        Require(BehaviorEditorControl.IssueLocation(stageDocument, stageRule.Id, "Final item: choose an item.") ==
+            "Beef stages → Stages → Final item",
+            "A final-item issue must include the section containing its input.");
+
+        var document = PresetDocument.Parse("""
+            templates:
+              cook:
+                forms: $raw
+                transformers:
+                - {FormEditorID: Fire, finalFormEditorID: CookedBeef, duration: $first}
+                - {FormEditorID: Frost, finalFormEditorID: FrozenBeef, duration: $second}
+                - {FormEditorID: Other, finalFormEditorID: BurntBeef, duration: -3}
+            formsLists:
+            - cook(FoodBeef, 1, 2)
+            - cook(FoodChicken, 1, -1)
+            """, "FOOD", PresetKind.Addon);
+        var rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
+        var family = BehaviorFamily.Find(document, rules[0].Id)!; family.Definition.Name = "Cooking";
+        var editor = new BehaviorEditorControl(document, [], rules[0].Id);
+        var result = PresetValidation.Check(document, CancellationToken.None).GetAwaiter().GetResult();
+        var variableError = result.Errors[rules[1].Id].Single(error => error.StartsWith("Transformations 2:", StringComparison.Ordinal));
+        Require(BehaviorEditorControl.IssueLocation(document, rules[1].Id, variableError) == "Cooking → Variables → Row 2 → second",
+            "The issue location must name the offending row and variable when several fields have the same label.");
+        Require(editor.FocusIssue(variableError, rules[1].Id) && Field<string>(editor, "cellParameter") == "second" &&
+            Field<string>(editor, "cellRowId") == rules[1].Id && CellInput(editor).Text == "-1",
+            "A second transformation's duration issue must open its own variable, not the first duration column.");
+        var commonError = result.Errors[rules[1].Id].Single(error => error.StartsWith("Transformations 3:", StringComparison.Ordinal));
+        Require(editor.FocusIssue(commonError, rules[1].Id) && Field<TabControl>(editor, "tabs").SelectedIndex == 0 &&
+            BehaviorEditorControl.IssueLocation(document, rules[1].Id, commonError) == "Cooking → Transformations → Transformation 3 → Duration (game hours)",
+            "An invalid common setting must open Settings even when another field with the same label is variable.");
+    }
+
+    private static void ReferencedIssueVariables()
+    {
+        var document = PresetDocument.Parse("""
+            templates:
+              stages:
+                owners: FoodBeef
+                stages:
+                - {no: 0, name: Fresh, duration: 1}
+                - {no: $stage_number, name: Stale, duration: 1}
+                finalFormEditorID: FoodCookedBeef
+            ownerLists:
+            - stages(1)
+            - stages(0)
+            """, "FOOD", PresetKind.Custom);
+        var rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
+        var result = PresetValidation.Check(document, CancellationToken.None).GetAwaiter().GetResult();
+        var presentation = new PresetPresentation(document, [], expandedYaml: result.Expanded);
+        var issue = result.Errors[rules[1].Id].Single(error => error.StartsWith("Stage number 0 is used", StringComparison.Ordinal));
+        var editor = new BehaviorEditorControl(document, [], rules[0].Id); editor.UpdatePresentation(presentation);
+        Require(BehaviorEditorControl.IssueLocation(document, rules[1].Id, issue, presentation.EffectiveValue(rules[1])) ==
+            "stages → Variables → Row 2 → stage_number" && editor.FocusIssue(issue, rules[1].Id) &&
+            Field<string>(editor, "cellParameter") == "stage_number" && Field<string>(editor, "cellRowId") == rules[1].Id && CellInput(editor).Text == "0",
+            "A duplicate stage number supplied by a variable must target its expanded row, not the common initial stage.");
+
+        document = PresetDocument.Parse("""
+            templates:
+              transformation:
+                FormEditorID: Fire
+                finalFormEditorID: $item
+                duration: $time
+              cooking:
+                forms: FoodBeef
+                transformers:
+                - {FormEditorID: Frost, finalFormEditorID: FrozenBeef, duration: 2}
+                - transformation(CookedBeef, $hours)
+            formsLists:
+            - cooking(1)
+            - cooking(-1)
+            """, "FOOD", PresetKind.Addon);
+        rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
+        result = PresetValidation.Check(document, CancellationToken.None).GetAwaiter().GetResult();
+        presentation = new PresetPresentation(document, [], expandedYaml: result.Expanded);
+        issue = result.Errors[rules[1].Id].Single(error => error.StartsWith("Transformations 2:", StringComparison.Ordinal));
+        editor = new BehaviorEditorControl(document, [], rules[0].Id); editor.UpdatePresentation(presentation);
+        Require(BehaviorEditorControl.IssueLocation(document, rules[1].Id, issue, presentation.EffectiveValue(rules[1])) ==
+            "cooking → Variables → Row 2 → hours" && editor.FocusIssue(issue, rules[1].Id) &&
+            Field<string>(editor, "cellParameter") == "hours" && Field<string>(editor, "cellRowId") == rules[1].Id && CellInput(editor).Text == "-1",
+            "An invalid argument passed through a nested template must navigate to the outer behavior's actual variable row.");
     }
 
     private static void BehaviorSummaries()

@@ -35,7 +35,8 @@ public static class PresetExport
     {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(modFolder));
         if (!Directory.Exists(root)) throw new DirectoryNotFoundException("Choose an existing destination mod folder.");
-        if (outputs.Count == 0) throw new InvalidDataException("Add a behavior before exporting the preset.");
+        if (outputs.Count == 0 && retiredPaths is not { Count: > 0 })
+            throw new InvalidDataException("Add a behavior before exporting the preset.");
         var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
         var encoding = new UTF8Encoding(false);
         var files = pendingGroups.Select(group => new ExportFile(FormGroupCatalog.GetExportPath(root, group.Name),
@@ -116,7 +117,9 @@ public static class PresetExport
             if (!usedPaths.Add(path))
                 throw new InvalidDataException("A replaced preset cannot also be an output file or be listed twice.");
             if (Directory.Exists(path)) throw new IOException($"A folder occupies the replaced preset path: {path}");
-            retired.Add(new(path, File.ReadAllBytes(path)));
+            try { retired.Add(new(path, File.ReadAllBytes(path))); }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
         }
         return retired;
     }

@@ -8,6 +8,15 @@ public sealed record PresetValidationResult(string Source, string Expanded,
 
 public static class PresetValidation
 {
+    public static IReadOnlyList<string> GroupErrors(PresetDocument document)
+    {
+        var errors = document.PendingGroups.SelectMany(group => FormGroupCatalog.Validate(group)
+            .Select(error => group.Name + ": " + error)).ToList();
+        if (document.PendingGroups.Select(group => group.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != document.PendingGroups.Count)
+            errors.Add("Each new form group needs a different name.");
+        return errors;
+    }
+
     public static async Task<PresetValidationResult> Check(PresetDocument document, CancellationToken token, PresetPresentation? catalog = null)
     {
         var errors = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
@@ -21,10 +30,7 @@ public static class PresetValidation
         if (document.Kind == PresetKind.Other) fileErrors.Add("Choose Default, Custom, or Addon as the preset kind.");
         if (document.Blocks.Select(block => block.Id).Distinct(StringComparer.Ordinal).Count() != document.Blocks.Count)
             fileErrors.Add("Two blocks have the same editor identifier. Reopen a copy of the preset before editing.");
-        foreach (var group in document.PendingGroups)
-            fileErrors.AddRange(FormGroupCatalog.Validate(group).Select(error => group.Name + ": " + error));
-        if (document.PendingGroups.Select(group => group.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != document.PendingGroups.Count)
-            fileErrors.Add("Each new form group needs a different name.");
+        fileErrors.AddRange(GroupErrors(document));
         foreach (var block in document.Blocks)
         {
             var blockErrors = new List<string>();

@@ -35,7 +35,7 @@ public sealed class StageAvailability
         var providers = new List<(PresetDocument Document, PresetValue Rule)>();
         var uncertainCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var openedPaths = project.Entries.Select(entry => entry.OpenedPath).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var defaults = project.Entries.Where(entry => entry.Document.Kind == PresetKind.Default)
+        var defaults = project.Entries.Where(entry => !entry.IsInactive && entry.Document.Kind == PresetKind.Default)
             .Select(entry => entry.Document.Category).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var (file, document) in installed)
         {
@@ -43,7 +43,7 @@ public sealed class StageAvailability
             if (document is null) uncertainCategories.Add(file.Category);
             else AddProviders(document, providers);
         }
-        foreach (var entry in project.Entries.Where(entry => entry.Document.Kind is PresetKind.Custom or PresetKind.Default))
+        foreach (var entry in project.Entries.Where(entry => !entry.IsInactive && entry.Document.Kind is PresetKind.Custom or PresetKind.Default))
         {
             if (validations.GetValueOrDefault(entry.Id) is not { Expanded.Length: > 0 } validation)
             { uncertainCategories.Add(entry.Document.Category); continue; }
@@ -53,7 +53,7 @@ public sealed class StageAvailability
         var allGroups = groups.Concat(project.Entries.SelectMany(entry => entry.Document.PendingGroups))
             .GroupBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
         var catalog = new PresetPresentation(new PresetDocument(), forms, allGroups.Values.ToArray());
-        foreach (var entry in project.Entries.Where(entry => entry.Document.Kind == PresetKind.Addon))
+        foreach (var entry in project.Entries.Where(entry => !entry.IsInactive && entry.Document.Kind == PresetKind.Addon))
         {
             if (validations.GetValueOrDefault(entry.Id) is not { Expanded.Length: > 0 } validation) continue;
             var presentation = new PresetPresentation(entry.Document, forms, allGroups.Values.ToArray(), validation.Expanded);
