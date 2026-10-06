@@ -60,6 +60,17 @@ public sealed class WikiView : UserControl, IDisposable
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.IsWebMessageEnabled = false;
             core.Settings.AreDevToolsEnabled = false;
+            // GitHub follows scrollIntoView with scrollBy, which cancels a smooth heading jump.
+            await core.AddScriptToExecuteOnDocumentCreatedAsync($$"""
+                const wiki = new URL('{{WikiAddress}}');
+                if (location.origin === wiki.origin &&
+                    (location.pathname === wiki.pathname || location.pathname.startsWith(wiki.pathname + '/'))) {
+                    document.addEventListener('DOMContentLoaded', () => {
+                        document.documentElement.style.scrollBehavior = 'auto';
+                    }, { once: true });
+                }
+                """);
+            if (disposed) return;
             core.NewWindowRequested += (_, args) =>
             {
                 args.Handled = true;
