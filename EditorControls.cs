@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Automation;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 
 namespace AoTPresetEditor;
 
@@ -35,6 +36,20 @@ internal static class EditorControls
     {
         var button = new Button { Content = title, IsCancel = isCancel, IsDefault = isDefault };
         button.Click += (_, _) => action();
+        return button;
+    }
+    public static Button IconButton(string glyph, string label, Action action)
+    {
+        var button = Button("", action);
+        button.Content = new TextBlock { Text = glyph, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 16 };
+        button.Width = button.Height = 32;
+        button.MinWidth = button.MinHeight = 0;
+        button.Padding = new Thickness(0); button.Margin = new Thickness(0, 0, 4, 0);
+        button.HorizontalContentAlignment = HorizontalAlignment.Center;
+        button.VerticalContentAlignment = VerticalAlignment.Center;
+        button.ToolTip = label;
+        AutomationProperties.SetName(button, label);
+        ToolTipService.SetShowOnDisabled(button, true);
         return button;
     }
     public static Button Info(string label, string explanation)

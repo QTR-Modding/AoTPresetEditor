@@ -22,7 +22,7 @@ public sealed class PresetWorkspace : UserControl
     private readonly TextBlock location = EditorControls.Text("");
     private readonly ListBox blocks = new() { BorderThickness = new Thickness(0), Margin = new Thickness(0, 4, 0, 4) };
     private readonly Button addBehavior;
-    private readonly StackPanel blockActions = new();
+    private readonly StackPanel blockActions = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 3) };
     private readonly DockPanel blockSidebar = new() { Name = "BlockSidebar" };
     private readonly ColumnDefinition sidebarColumn = new() { Width = new GridLength(240), MinWidth = 180, MaxWidth = 400 };
     private readonly ColumnDefinition splitterColumn = new() { Width = new GridLength(8) };
@@ -34,10 +34,8 @@ public sealed class PresetWorkspace : UserControl
     private readonly Button save;
     private readonly Button yaml;
     private readonly Button delete;
-    private readonly Menu blockActionsMenu = new();
-    private readonly MenuItem blockMenu = new();
-    private readonly MenuItem up = new() { Header = "Move up" };
-    private readonly MenuItem down = new() { Header = "Move down" };
+    private readonly Button up;
+    private readonly Button down;
     private readonly MenuItem fileDraft = new() { Header = "Save draft..." };
     private readonly Button draftSave;
     private readonly Button reset;
@@ -114,17 +112,14 @@ public sealed class PresetWorkspace : UserControl
         contextRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
         contextRow.Children.Add(title); Grid.SetColumn(state, 1); contextRow.Children.Add(state);
         header.Children.Add(toolbar); header.Children.Add(contextRow);
-        addBehavior = EditorControls.Button("Add behavior...", AddBehavior);
-        addBehavior.Margin = new Thickness(0, 3, 0, 3);
+        addBehavior = EditorControls.IconButton("\uE710", "Add behavior", AddBehavior);
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
-        delete = EditorControls.Button("Delete", Remove);
-        var remove = new MenuItem { Header = "Delete..." };
-        remove.Click += (_, _) => Remove();
-        up.Click += (_, _) => Move(-1);
-        down.Click += (_, _) => Move(1);
-        blockMenu.Items.Add(up); blockMenu.Items.Add(down); blockMenu.Items.Add(remove);
-        blockActionsMenu.Items.Add(blockMenu);
-        blockActions.Children.Add(blockActionsMenu);
+        up = EditorControls.IconButton("\uE74A", "Move behavior up", () => Move(-1));
+        down = EditorControls.IconButton("\uE74B", "Move behavior down", () => Move(1));
+        delete = EditorControls.IconButton("\uE74D", "Delete behavior", Remove);
+        blockActions.Children.Add(addBehavior);
+        blockActions.Children.Add(up);
+        blockActions.Children.Add(down);
         blockActions.Children.Add(delete);
         blocks.ToolTip = "Select a behavior to edit.";
         issueScroll.Content = issueList; issues.Content = issueScroll;
@@ -142,8 +137,7 @@ public sealed class PresetWorkspace : UserControl
         columns.ColumnDefinitions.Add(sidebarColumn);
         columns.ColumnDefinitions.Add(splitterColumn);
         columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 400 });
-        DockPanel.SetDock(addBehavior, Dock.Top); blockSidebar.Children.Add(addBehavior);
-        DockPanel.SetDock(blockActions, Dock.Bottom); blockSidebar.Children.Add(blockActions); blockSidebar.Children.Add(blocks);
+        DockPanel.SetDock(blockActions, Dock.Top); blockSidebar.Children.Add(blockActions); blockSidebar.Children.Add(blocks);
         columns.Children.Add(blockSidebar);
         splitter.SetResourceReference(BackgroundProperty, "DividerStrokeColorDefaultBrush");
         Grid.SetColumn(splitter, 1); columns.Children.Add(splitter);
@@ -545,14 +539,27 @@ public sealed class PresetWorkspace : UserControl
         dirty = true; await Refresh();
     }
 
+    private PresetBlock? GetMoveTarget(int direction)
+    {
+        if (document is null) return null;
+        var siblings = blocks.Items.OfType<ListBoxItem>()
+            .Select(item => document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Rule && Equals(item.Tag, block.Id)))
+            .OfType<PresetBlock>().ToArray();
+        var index = Array.FindIndex(siblings, block => block.Id == SelectedId);
+        var next = index + direction;
+        return index >= 0 && next >= 0 && next < siblings.Length ? siblings[next] : null;
+    }
+
     private async void Move(int direction)
     {
-        if (document is null || !CommitEditor() || SelectedId is not { } id) return;
-        var index = document.Blocks.FindIndex(entry => entry.Id == id);
-        var next = index + direction;
-        while (next >= 0 && next < document.Blocks.Count && document.Blocks[next].Kind != BlockKind.Rule) next += direction;
-        if (next < 0 || next >= document.Blocks.Count) return;
-        ResetEditor(); (document.Blocks[index], document.Blocks[next]) = (document.Blocks[next], document.Blocks[index]);
+        if (document is null || !CommitEditor() || SelectedId is not { } id || GetMoveTarget(direction) is not { } target) return;
+        var rows = BehaviorFamily.Find(document, id)?.Rows ?? [document.Blocks.First(block => block.Id == id)];
+        var targetRows = BehaviorFamily.Find(document, target.Id)?.Rows ?? [target];
+        var index = Math.Min(document.Blocks.IndexOf(rows[0]), document.Blocks.IndexOf(targetRows[0]));
+        var reordered = (direction < 0 ? rows.Concat(targetRows) : targetRows.Concat(rows)).ToArray();
+        ResetEditor();
+        foreach (var row in reordered) document.Blocks.Remove(row);
+        document.Blocks.InsertRange(index, reordered);
         if (activeEntry is not null) validations.Remove(activeEntry.Id);
         dirty = true; await Refresh(id);
     }
@@ -829,16 +836,9 @@ public sealed class PresetWorkspace : UserControl
         draftSave.Visibility = project is not null && !Ready ? Visibility.Visible : Visibility.Collapsed;
         reset.Visibility = project is { Entries.Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
         var selected = document?.Blocks.FirstOrDefault(block => block.Id == SelectedId);
-        var siblings = document?.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray() ?? [];
-        var index = Array.IndexOf(siblings, selected);
-        var single = selected is not null && (BehaviorFamily.Find(document!, selected.Id)?.Rows.Count ?? 1) == 1;
-        blockActions.Visibility = selected is not null ? Visibility.Visible : Visibility.Collapsed;
-        blockMenu.Header = "Behavior actions";
-        up.Visibility = single && index > 0 ? Visibility.Visible : Visibility.Collapsed;
-        down.Visibility = single && index >= 0 && index < siblings.Length - 1 ? Visibility.Visible : Visibility.Collapsed;
-        var canMove = up.Visibility == Visibility.Visible || down.Visibility == Visibility.Visible;
-        blockActionsMenu.Visibility = canMove ? Visibility.Visible : Visibility.Collapsed;
-        delete.Visibility = canMove ? Visibility.Collapsed : Visibility.Visible;
+        up.IsEnabled = GetMoveTarget(-1) is not null;
+        down.IsEnabled = GetMoveTarget(1) is not null;
+        delete.IsEnabled = selected is not null;
         if (validations.Count == 0) reviewIssues.Visibility = Visibility.Collapsed;
         UpdateIssuePanel();
     }

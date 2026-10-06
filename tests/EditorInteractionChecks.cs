@@ -328,7 +328,7 @@ internal static class EditorInteractionChecks
         var project = new PresetProject { Name = "Several behaviors" };
         SetField(workspace, "project", project);
         Invoke(workspace, "UpdateActions");
-        Require(actions.Visibility == Visibility.Visible && actions.Content is "Add behavior...",
+        Require(actions.Visibility == Visibility.Visible && AutomationProperties.GetName(actions) == "Add behavior",
             "A new project must offer its first behavior without exposing YAML block types.");
         var document = PresetDocument.Create("FOOD", PresetKind.Default);
         var entry = project.Add(document, "Fallback");

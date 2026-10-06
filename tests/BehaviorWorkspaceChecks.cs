@@ -125,6 +125,7 @@ internal static class BehaviorWorkspaceChecks
         }
         EmptyBehaviorWorkspace();
         IssueNavigationAndRemoval();
+        BehaviorMovement();
     }
 
     private static void IssueNavigationAndRemoval()
@@ -144,6 +145,9 @@ internal static class BehaviorWorkspaceChecks
                 Descendants<TextBlock>(details).Any(text => text.Text == empty.OpenedPath) &&
                 Descendants<Button>(details).Any(button => Equals(button.Content, "Remove file on save")),
                 "First validation of an empty imported file must show its selected file issue and source path, not leave Welcome visible.");
+            Require(!Field<Button>(workspace, "delete").IsEnabled && !Field<Button>(workspace, "up").IsEnabled &&
+                !Field<Button>(workspace, "down").IsEnabled,
+                "A file issue is not a behavior and must not enable deletion or movement.");
             var issues = Field<StackPanel>(workspace, "issueList");
             issues.Children.OfType<Button>().First().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Require(Descendants<TextBlock>(details).Any(text => text.Text == empty.OpenedPath),
@@ -232,14 +236,14 @@ internal static class BehaviorWorkspaceChecks
         finally { Invoke(workspace, "ResetEditor"); }
     }
 
-    private static void RefreshWorkspace(PresetWorkspace workspace)
+    private static void RefreshWorkspace(PresetWorkspace workspace, string? selection = null)
     {
         var previous = SynchronizationContext.Current;
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(workspace.Dispatcher));
         try
         {
             var task = (Task)typeof(PresetWorkspace).GetMethod("Refresh", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(workspace, [null])!;
+                .Invoke(workspace, [selection])!;
             if (!task.IsCompleted)
             {
                 var frame = new DispatcherFrame();
@@ -249,6 +253,103 @@ internal static class BehaviorWorkspaceChecks
             task.GetAwaiter().GetResult();
         }
         finally { SynchronizationContext.SetSynchronizationContext(previous); }
+    }
+
+    private static void BehaviorMovement()
+    {
+        var document = PresetDocument.Parse("""
+            templates:
+              A:
+                forms: $raw
+                transformers:
+                - FormEditorID: Fire
+                  finalFormEditorID: $cooked
+                  duration: 1
+            formsLists:
+            - A(RawA1, CookedA1)
+            - A(RawA2, CookedA2)
+            - forms: RawB
+              transformers:
+              - FormEditorID: Fire
+                finalFormEditorID: CookedB
+                duration: 2
+            """, "FOOD", PresetKind.Addon);
+        var original = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
+        var a1 = original[0]; var a2 = original[1]; var b = original[2];
+        var project = new PresetProject { Name = "Movement" };
+        var entry = project.Add(document, "Movement");
+        var other = project.Add(PresetDocument.Parse("""
+            formsLists:
+            - forms: IngredientA
+              timeModulators:
+              - FormEditorID: Ice
+                magnitude: 0
+            """, "INGR", PresetKind.Addon), "Other document");
+        var workspace = new PresetWorkspace();
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(workspace.Dispatcher));
+        SetField(workspace, "project", project); SetField(workspace, "activeEntry", entry);
+        SetField(workspace, "document", document); SetField(workspace, "filename", project.Name);
+        try
+        {
+            RefreshWorkspace(workspace, b.Id);
+            var list = Field<ListBox>(workspace, "blocks");
+            Require(Field<Button>(workspace, "up").IsEnabled && !Field<Button>(workspace, "down").IsEnabled,
+                "The last behavior in a document must not move into the next document shown in the sidebar.");
+            Move("up", b.Id);
+            Require(Order().SequenceEqual([b.Id, a1.Id, a2.Id]) &&
+                new PresetPresentation(document, []).Behaviors().Select(block => block.Id).SequenceEqual([b.Id, a1.Id]),
+                "Moving B above two-row A must move above the whole behavior, not split A's rows or leave the sidebar order unchanged.");
+            Require(!Field<Button>(workspace, "up").IsEnabled && Field<Button>(workspace, "down").IsEnabled,
+                "Moving to the first behavior must update the arrow boundaries.");
+            Move("down", b.Id);
+            Require(Order().SequenceEqual([a1.Id, a2.Id, b.Id]), "Moving B back down must restore both rows of A before B.");
+
+            list.SelectedItem = list.Items.OfType<ListBoxItem>().Single(item => Equals(item.Tag, a1.Id));
+            Move("down", a1.Id);
+            Require(Order().SequenceEqual([b.Id, a1.Id, a2.Id]), "Moving a two-row behavior down must move both rows together.");
+
+            Invoke(workspace, "ResetEditor");
+            var c = document.Add(BlockKind.Rule, "C", "AddonRule"); c.Value = b.Value.Clone(); c.Value.Set("forms", PresetValue.Scalar("RawC"));
+            document.Blocks.Remove(a1); document.Blocks.Insert(document.Blocks.IndexOf(b), a1);
+            Require(Order().SequenceEqual([a1.Id, b.Id, a2.Id, c.Id]), "The imported-order fixture must interleave A's rows around B.");
+            RefreshWorkspace(workspace, a1.Id);
+            Move("down", a1.Id);
+            Require(Order().SequenceEqual([b.Id, a1.Id, a2.Id, c.Id]),
+                "Moving an interleaved family must keep its rows together and preserve all other behaviors' relative order.");
+
+            Invoke(workspace, "ResetEditor");
+            document.Blocks.Remove(c); document.Blocks.Insert(document.Blocks.IndexOf(a2), c);
+            Require(Order().SequenceEqual([b.Id, a1.Id, c.Id, a2.Id]), "The target-family fixture must place C between A's rows.");
+            RefreshWorkspace(workspace, b.Id);
+            Move("down", b.Id);
+            Require(Order().SequenceEqual([a1.Id, a2.Id, b.Id, c.Id]) &&
+                new PresetPresentation(document, []).Behaviors().Select(block => block.Id).SequenceEqual([a1.Id, b.Id, c.Id]),
+                "Moving B past interleaved A must swap adjacent behaviors without jumping past C in the sidebar.");
+            Require(BehaviorFamily.GetArgument(document, a1.Id, "raw").Text == "RawA1" &&
+                BehaviorFamily.GetArgument(document, a1.Id, "cooked").Text == "CookedA1" &&
+                BehaviorFamily.GetArgument(document, a2.Id, "raw").Text == "RawA2" &&
+                BehaviorFamily.GetArgument(document, a2.Id, "cooked").Text == "CookedA2" &&
+                b.Value.Get("transformers")!.Items.Single().Get("duration")!.Text == "2" && other.Document.Blocks.Count == 1,
+                "Behavior movement must preserve each row's arguments, shared settings, and other documents.");
+
+            string[] Order() => document.Blocks.Where(block => block.Kind == BlockKind.Rule).Select(block => block.Id).ToArray();
+            void Move(string buttonName, string selectedId)
+            {
+                var button = Field<Button>(workspace, buttonName);
+                Require(button.IsEnabled, "The requested behavior movement must be available.");
+                button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                var selection = ((ListBoxItem)list.SelectedItem).Tag as string;
+                RefreshWorkspace(workspace, selection);
+                Require(selection == selectedId && Equals(((ListBoxItem)list.SelectedItem).Tag, selectedId),
+                    "Moving a behavior must keep that behavior selected before and after validation.");
+            }
+        }
+        finally
+        {
+            Invoke(workspace, "ResetEditor");
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
     }
 
     private static void EmptyBehaviorWorkspace()
@@ -288,8 +389,8 @@ internal static class BehaviorWorkspaceChecks
                 Field<DataGrid>(editor, "table").Items.Count == 0,
                 "Deleting all variable rows must preserve the active behavior and empty table during workspace refresh.");
             Require(Field<StackPanel>(workspace, "blockActions").Visibility == Visibility.Visible &&
-                Field<MenuItem>(workspace, "up").Visibility == Visibility.Collapsed &&
-                Field<MenuItem>(workspace, "down").Visibility == Visibility.Collapsed,
+                Field<Button>(workspace, "delete").IsEnabled && !Field<Button>(workspace, "up").IsEnabled &&
+                !Field<Button>(workspace, "down").IsEnabled,
                 "An empty behavior must remain selectable and deletable without offering rule-priority movement.");
 
             var restored = PresetProject.FromDraft(project.ToDraft());
