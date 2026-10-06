@@ -116,6 +116,70 @@ internal static class Program
         var value = PresetYaml.Parse(yaml);
         Require(value.Get("absent")!.IsNull && !value.Get("text")!.IsNull, "Null and text are confused.");
         Require(Equivalent(yaml, PresetYaml.Write(value)), "Scalar types changed on export.");
+        ExpandedStringFormatting();
+    }
+    private static void ExpandedStringFormatting()
+    {
+        var output = Expand("""
+            templates:
+              cook: {item: $raw}
+              identity: $value
+            stages:
+            - no: 0
+              name: ""
+              duration: 1
+            quoted_null: "null"
+            null_value: null
+            quoted_bool: "false"
+            bool_value: false
+            quoted_number: "12"
+            number_value: 12
+            quoted_zeros: "001"
+            canonical_text: !!str ordinary
+            multiline: |-
+              first
+              second
+            escapes: "quote: \"yes\"; path: C:\\test"
+            dollar: identity("$literal")
+            "<<": "literal merge key"
+            explicit_number: !!int 3
+            custom: !author text
+            custom_list: !author [one, two]
+            literal_call: !!str 'cook(raw)'
+            unknown_call: "later(raw)"
+            incomplete_call: !!str 'later('
+            known_call: "cook(raw)"
+            """);
+        Require(output.Contains("name: \"\""), "An empty expanded stage name must be written as name: \"\".");
+        var value = PresetYaml.Parse(output);
+        var stageName = value.Get("stages")!.Items.Single().Get("name")!;
+        Require(stageName.Text.Length == 0 &&
+            stageName.Style == ScalarStyle.DoubleQuoted && stageName.Tag.Length == 0 && !stageName.IsNull,
+            "An empty expanded stage name must be an ordinary quoted string without an explicit type tag.");
+        foreach (var (key, expected) in new[] { ("quoted_null", "null"), ("quoted_bool", "false"),
+            ("quoted_number", "12"), ("quoted_zeros", "001"), ("canonical_text", "ordinary"),
+            ("multiline", "first\nsecond"), ("escapes", "quote: \"yes\"; path: C:\\test") })
+        {
+            var scalar = value.Get(key)!;
+            Require(scalar.Text == expected && scalar.Style == ScalarStyle.DoubleQuoted && scalar.Tag.Length == 0 && !scalar.IsNull,
+                "Expanded string formatting must preserve the value and string type of " + key + " without a redundant tag.");
+        }
+        Require(value.Get("null_value")!.IsNull && value.Get("bool_value") is { Text: "false", Style: ScalarStyle.Plain, Tag.Length: 0 } &&
+            value.Get("number_value") is { Text: "12", Style: ScalarStyle.Plain, Tag.Length: 0 },
+            "Quoting an expanded string must not change the following implicit null, boolean, or number.");
+        Require(value.Get("dollar")!.Text == "$literal" && value.Get("<<")!.Text == "literal merge key" &&
+            value.Get("known_call")!.Get("item")!.Text == "raw",
+            "Formatting must preserve substituted dollar text, quoted merge keys, and expansion of known quoted calls.");
+        Require(value.Get("explicit_number")!.Tag == "tag:yaml.org,2002:int" &&
+            value.Get("custom")!.Tag == "!author" && value.Get("custom_list")!.Tag == "!author",
+            "Expanded output must retain explicit non-string and custom tags.");
+        foreach (var key in new[] { "literal_call", "unknown_call", "incomplete_call" })
+            Require(value.Get(key)!.Tag == "tag:yaml.org,2002:str",
+                "Call-shaped expanded strings must retain their existing literal protection: " + key);
+        var repeated = PresetYaml.Parse(Expand("templates:\n  cook: {rewritten: yes}\n  later: {rewritten: yes}\n" + output));
+        Require(repeated.Get("literal_call")!.Text == "cook(raw)" && repeated.Get("unknown_call")!.Text == "later(raw)" &&
+            repeated.Get("incomplete_call")!.Text == "later(",
+            "Literal and previously unknown call-shaped strings must stay literal when matching templates are later introduced.");
     }
     private static void FlowComments()
     {
