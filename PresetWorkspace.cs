@@ -33,6 +33,8 @@ public sealed class PresetWorkspace : UserControl
     private bool focused;
     private readonly Button save;
     private readonly Button yaml;
+    private readonly Button delete;
+    private readonly Menu blockActionsMenu = new();
     private readonly MenuItem blockMenu = new();
     private readonly MenuItem up = new() { Header = "Move up" };
     private readonly MenuItem down = new() { Header = "Move down" };
@@ -112,14 +114,15 @@ public sealed class PresetWorkspace : UserControl
         addBehavior = EditorControls.Button("Add behavior...", AddBehavior);
         addBehavior.Margin = new Thickness(0, 3, 0, 3);
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
-        var actions = new Menu();
+        delete = EditorControls.Button("Delete", Remove);
         var remove = new MenuItem { Header = "Delete..." };
         remove.Click += (_, _) => Remove();
         up.Click += (_, _) => Move(-1);
         down.Click += (_, _) => Move(1);
         blockMenu.Items.Add(up); blockMenu.Items.Add(down); blockMenu.Items.Add(remove);
-        actions.Items.Add(blockMenu);
-        blockActions.Children.Add(actions);
+        blockActionsMenu.Items.Add(blockMenu);
+        blockActions.Children.Add(blockActionsMenu);
+        blockActions.Children.Add(delete);
         blocks.ToolTip = "Select a behavior to edit.";
         issues.Content = new ScrollViewer { Content = issueList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         issues.Collapsed += (_, _) => issues.Visibility = Visibility.Collapsed;
@@ -680,6 +683,9 @@ public sealed class PresetWorkspace : UserControl
         blockMenu.Header = "Behavior actions";
         up.Visibility = single && index > 0 ? Visibility.Visible : Visibility.Collapsed;
         down.Visibility = single && index >= 0 && index < siblings.Length - 1 ? Visibility.Visible : Visibility.Collapsed;
+        var canMove = up.Visibility == Visibility.Visible || down.Visibility == Visibility.Visible;
+        blockActionsMenu.Visibility = canMove ? Visibility.Visible : Visibility.Collapsed;
+        delete.Visibility = canMove ? Visibility.Collapsed : Visibility.Visible;
         if (validations.Count == 0) issues.Visibility = reviewIssues.Visibility = Visibility.Collapsed;
     }
 
