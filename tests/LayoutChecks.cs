@@ -2,6 +2,8 @@ using System.Reflection;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using AoTPresetEditor;
 
 internal static class LayoutChecks
@@ -129,6 +131,7 @@ internal static class LayoutChecks
             }
 
             if (scenario == "Valid") CheckVariationNavigation(editor, client, viewport);
+            else CheckIssuePanel(workspace, entry, validation, client, viewport);
 
             var windowViewport = Field<ScrollViewer>(main, "WindowViewport");
             foreach (var size in new[] { new Size(600, 400), new Size(320, 240) })
@@ -186,6 +189,109 @@ internal static class LayoutChecks
                 "An empty preset must have one visible Add behavior action and no empty sidebar.");
         }
         finally { main.Close(); if (File.Exists(placementPath)) File.Delete(placementPath); }
+    }
+
+    private static void CheckIssuePanel(PresetWorkspace workspace, PresetProjectEntry entry,
+        PresetValidationResult validation, FrameworkElement client, ScrollViewer editorViewport)
+    {
+        const int issueCount = 10;
+        const int longIssueIndex = 3;
+        var originalError = validation.Errors.Single().Value.Single();
+        var errors = Enumerable.Range(0, issueCount).Select(index => originalError +
+            (index == longIssueIndex ? " " + string.Join(" ", Enumerable.Repeat("Detailed context for this affected setting.", 160))
+                : index % 2 == 0 ? " Check the item selected for this behavior before saving it." : "")).ToArray();
+        SetValidation(workspace, entry, new(validation.Source, validation.Expanded,
+            new() { [entry.Document.Blocks.Single().Id] = errors }, []));
+        Invoke(workspace, "RenderIssues");
+        var issues = Field<Expander>(workspace, "issues");
+        var scroll = Field<ScrollViewer>(workspace, "issueScroll");
+        var list = Field<StackPanel>(workspace, "issueList");
+        var splitter = Field<GridSplitter>(workspace, "issueSplitter");
+        var review = Field<Button>(workspace, "reviewIssues");
+        var details = Field<ContentControl>(workspace, "details").Content;
+        var size = new Size(1400, 900);
+        review.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Measure(client, size);
+        var entries = list.Children.Cast<FrameworkElement>().ToArray();
+        Require(entries.Length == issueCount && Equals(issues.Header, "Review issues (10)") &&
+            entries.Select((control, index) => Descendants<TextBlock>(control).Any(text => text.Text.Trim() == (index + 1) + ".")).All(numbered => numbered),
+            "Every displayed issue must have a consecutive visible number matching the issue count.");
+        Require(splitter.Visibility == Visibility.Visible && scroll.ScrollableHeight > 0 &&
+            entries.Select(control => Math.Round(control.ActualHeight)).Distinct().Count() > 1,
+            "The issue navigation fixture must contain differently sized entries in a resizable, overflowing panel.");
+
+        double Boundary(int index) => entries[index].TranslatePoint(new Point(), list).Y - entries[index].Margin.Top;
+        void Wheel(int direction, bool measure = true)
+        {
+            var args = new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, direction)
+                { RoutedEvent = UIElement.PreviewMouseWheelEvent };
+            scroll.RaiseEvent(args);
+            if (measure) Measure(client, size);
+            Require(args.Handled, "The issues viewport must consume wheel input, including at its ends.");
+        }
+        scroll.ScrollToTop(); Measure(client, size);
+        Wheel(-120);
+        Require(Math.Abs(scroll.VerticalOffset - Boundary(1)) < 1,
+            "One wheel movement must show the next whole issue rather than an arbitrary pixel or multi-issue distance.");
+        Wheel(-120);
+        Require(Math.Abs(scroll.VerticalOffset - Boundary(2)) < 1,
+            "Repeated wheel movements must advance one issue at a time across different entry heights.");
+        Wheel(120);
+        Require(Math.Abs(scroll.VerticalOffset - Boundary(1)) < 1,
+            "Scrolling upward must return to the previous issue boundary.");
+        scroll.ScrollToTop(); Measure(client, size);
+        Wheel(-120, false); Wheel(-120, false); Measure(client, size);
+        Require(Math.Abs(scroll.VerticalOffset - Boundary(2)) < 1,
+            "Two wheel events received before the next layout must advance two issues without losing a step.");
+        scroll.ScrollToTop(); Measure(client, size); Wheel(120);
+        Require(scroll.VerticalOffset == 0, "Scrolling above the first issue must stop at the beginning.");
+        var wheelOffsets = new List<double>();
+        for (var index = 0; index < issueCount + 1; ++index)
+        {
+            Wheel(-120); wheelOffsets.Add(scroll.VerticalOffset);
+        }
+        Require(Math.Abs(scroll.VerticalOffset - scroll.ScrollableHeight) < 1,
+            "Stepping through all issues must reach the last entry and stop at the bottom. " +
+            $"Offset={scroll.VerticalOffset:R}; maximum={scroll.ScrollableHeight:R}; viewport={scroll.ViewportHeight:R}; " +
+            "boundaries=[" + string.Join(", ", Enumerable.Range(0, issueCount).Select(index => Boundary(index).ToString("R"))) +
+            "]; steps=[" + string.Join(", ", wheelOffsets.Select(offset => offset.ToString("R"))) + "].");
+        Require(ReferenceEquals(details, Field<ContentControl>(workspace, "details").Content),
+            "Reading issues with the wheel must not navigate away from or recreate the current editor.");
+
+        Require(entries[longIssueIndex].ActualHeight > scroll.ViewportHeight,
+            "The long-message fixture must exceed the issue viewport height.");
+        var insideLongIssue = Boundary(longIssueIndex) + scroll.ViewportHeight / 2;
+        scroll.ScrollToVerticalOffset(insideLongIssue); Measure(client, size);
+        Require(Math.Abs(scroll.VerticalOffset - insideLongIssue) < 1 && scroll.ScrollableWidth == 0,
+            "The scrollbar must retain pixel movement inside a long wrapped issue without horizontal overflow.");
+        Wheel(-120);
+        Require(Math.Abs(scroll.VerticalOffset - Math.Min(Boundary(longIssueIndex + 1), scroll.ScrollableHeight)) < 1,
+            "After reading within a long issue, scrolling down must advance to the next issue.");
+
+        var originalHeight = issues.ActualHeight;
+        var editorHeight = editorViewport.ActualHeight;
+        const double resizeAmount = 80;
+        splitter.RaiseEvent(new DragStartedEventArgs(0, 0) { RoutedEvent = Thumb.DragStartedEvent });
+        splitter.RaiseEvent(new DragDeltaEventArgs(0, -resizeAmount) { RoutedEvent = Thumb.DragDeltaEvent });
+        splitter.RaiseEvent(new DragCompletedEventArgs(0, -resizeAmount, false) { RoutedEvent = Thumb.DragCompletedEvent });
+        Measure(client, size);
+        var resizedHeight = issues.ActualHeight;
+        Require(resizedHeight > 150 && Math.Abs(resizedHeight - originalHeight - resizeAmount) < 2 &&
+            Math.Abs(editorHeight - editorViewport.ActualHeight - resizeAmount) < 2,
+            "Dragging the divider upward must enlarge Review issues and give it the corresponding editor space.");
+        issues.IsExpanded = false; Measure(client, size);
+        Require(splitter.Visibility == Visibility.Collapsed && Field<RowDefinition>(workspace, "issueRow").ActualHeight == 0 &&
+            editorViewport.ActualHeight > editorHeight,
+            "Collapsing Review issues must remove its divider and return its full area to the editor.");
+        review.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Measure(client, size);
+        Require(Math.Abs(issues.ActualHeight - resizedHeight) < 2,
+            "Reopening Review issues must retain its resized height.");
+        Measure(client, new Size(600, 400));
+        Require(issues.ActualHeight >= 80 && editorViewport.ActualHeight >= 120 && scroll.ScrollableWidth == 0,
+            "A compact window must keep both panels usable and wrap issue text inside their available width.");
+        issues.IsExpanded = false;
+        SetValidation(workspace, entry, validation); Invoke(workspace, "RenderIssues");
+        Measure(client, size);
     }
 
     private static void CheckBrowseNavigation(MainWindow main, PresetWorkspace workspace, BehaviorEditorControl editor, FrameworkElement client)

@@ -43,7 +43,14 @@ public sealed class PresetWorkspace : UserControl
     private readonly Button reset;
     private readonly ContentControl details = new();
     private readonly StackPanel issueList = new();
-    private readonly Expander issues = new() { Header = "Review issues", MaxHeight = 150 };
+    private readonly Expander issues = new() { Header = "Review issues", Visibility = Visibility.Collapsed };
+    private readonly ScrollViewer issueScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+    private readonly RowDefinition issueRow = new() { Height = new GridLength(0) };
+    private readonly GridSplitter issueSplitter = new() { Height = 6, HorizontalAlignment = HorizontalAlignment.Stretch,
+        ResizeDirection = GridResizeDirection.Rows, ResizeBehavior = GridResizeBehavior.PreviousAndNext,
+        Visibility = Visibility.Collapsed, ToolTip = "Drag to resize the issues panel" };
+    private GridLength issueHeight = new(0.4, GridUnitType.Star);
     private readonly DispatcherTimer editTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private BehaviorEditorControl? editor;
     private PresetProject? project;
@@ -77,11 +84,7 @@ public sealed class PresetWorkspace : UserControl
         focus = EditorControls.Button("Focus editor", ToggleFocusMode);
         focus.ToolTip = "Hide the behavior list to give the selected settings the full width.";
         DockPanel.SetDock(focus, Dock.Right); toolbar.Children.Add(focus);
-        reviewIssues = EditorControls.Button("Review issues", () =>
-        {
-            issues.IsExpanded = !issues.IsExpanded;
-            issues.Visibility = issues.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
-        });
+        reviewIssues = EditorControls.Button("Review issues", () => issues.IsExpanded = !issues.IsExpanded);
         DockPanel.SetDock(reviewIssues, Dock.Right); toolbar.Children.Add(reviewIssues);
         reset = EditorControls.Button("Reset...", ResetPreset);
         reset.ToolTip = "Clear the whole preset and start again.";
@@ -124,9 +127,17 @@ public sealed class PresetWorkspace : UserControl
         blockActions.Children.Add(blockActionsMenu);
         blockActions.Children.Add(delete);
         blocks.ToolTip = "Select a behavior to edit.";
-        issues.Content = new ScrollViewer { Content = issueList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        issues.Collapsed += (_, _) => issues.Visibility = Visibility.Collapsed;
-        DockPanel.SetDock(issues, Dock.Bottom); layout.Children.Add(issues);
+        issueScroll.Content = issueList; issues.Content = issueScroll;
+        issueScroll.PreviewMouseWheel += ScrollIssue;
+        issues.Expanded += (_, _) => UpdateIssuePanel();
+        issues.Collapsed += (_, _) => UpdateIssuePanel();
+        var body = new Grid();
+        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 120 });
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        body.RowDefinitions.Add(issueRow);
+        issueSplitter.SetResourceReference(BackgroundProperty, "DividerStrokeColorDefaultBrush");
+        Grid.SetRow(issueSplitter, 1); body.Children.Add(issueSplitter);
+        Grid.SetRow(issues, 2); body.Children.Add(issues);
         var columns = new Grid();
         columns.ColumnDefinitions.Add(sidebarColumn);
         columns.ColumnDefinitions.Add(splitterColumn);
@@ -148,7 +159,7 @@ public sealed class PresetWorkspace : UserControl
                 project.Entries.Any(entry => !validations.ContainsKey(entry.Id))) editTimer.Start();
         };
         Unloaded += (_, _) => { editTimer.Stop(); checking?.Cancel(); };
-        layout.Children.Add(columns); Content = layout;
+        body.Children.Add(columns); layout.Children.Add(body); Content = layout;
         ShowWelcome();
         UpdateActions();
     }
@@ -610,11 +621,11 @@ public sealed class PresetWorkspace : UserControl
             if (!validations.TryGetValue(entry.Id, out var result)) continue;
             var catalog = new PresetPresentation(entry.Document, forms, groups, result.Expanded);
             foreach (var error in result.FileErrors)
-                issueList.Children.Add(IssueButton(FileLocation(entry), error, () => SelectFileIssue(entry)));
+                issueList.Children.Add(IssueButton(issueList.Children.Count + 1, FileLocation(entry), error, () => SelectFileIssue(entry)));
             foreach (var block in entry.Document.Blocks)
                 foreach (var error in result.Errors.GetValueOrDefault(block.Id) ?? [])
                 {
-                    issueList.Children.Add(IssueButton(BehaviorEditorControl.IssueLocation(entry.Document, block.Id, error, catalog.EffectiveValue(block)),
+                    issueList.Children.Add(IssueButton(issueList.Children.Count + 1, BehaviorEditorControl.IssueLocation(entry.Document, block.Id, error, catalog.EffectiveValue(block)),
                         error, () => SelectIssue(entry, block, error)));
                 }
         }
@@ -635,16 +646,41 @@ public sealed class PresetWorkspace : UserControl
             : warningCount > 0 ? $"Warnings ({warningCount})" : $"Pending file removals ({removals.Length})";
         reviewIssues.Content = issues.Header;
         reviewIssues.Visibility = issueList.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        issues.Visibility = issueList.Children.Count > 0 && issues.IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+        UpdateIssuePanel();
     }
 
-    private static Button IssueButton(string location, string message, Action open)
+    private void UpdateIssuePanel()
+    {
+        var visible = issueList.Children.Count > 0 && validations.Count > 0 && issues.IsExpanded;
+        if (visible == (issues.Visibility == Visibility.Visible)) return;
+        if (visible) { issueRow.MinHeight = 80; issueRow.Height = issueHeight; }
+        else { issueHeight = issueRow.Height; issueRow.MinHeight = 0; issueRow.Height = new GridLength(0); }
+        issues.Visibility = issueSplitter.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void ScrollIssue(object sender, MouseWheelEventArgs args)
+    {
+        if (args.Delta == 0) return;
+        issueScroll.UpdateLayout();
+        var starts = issueList.Children.OfType<FrameworkElement>()
+            .Select(child => child.TranslatePoint(new Point(), issueList).Y - child.Margin.Top).ToArray();
+        var offset = Math.Round(issueScroll.VerticalOffset);
+        var target = args.Delta < 0 ? starts.FirstOrDefault(start => Math.Round(start) > offset, issueScroll.ExtentHeight)
+            : starts.LastOrDefault(start => Math.Round(start) < offset, 0);
+        issueScroll.ScrollToVerticalOffset(target);
+        args.Handled = true;
+    }
+
+    private static Button IssueButton(int number, string location, string message, Action open)
     {
         var content = new StackPanel();
-        content.Children.Add(EditorControls.Text(location, true));
+        var heading = new DockPanel();
+        heading.Children.Add(EditorControls.Text(number + ". ", true));
+        heading.Children.Add(EditorControls.Text(location, true));
+        content.Children.Add(heading);
         content.Children.Add(EditorControls.Text(message));
         var button = EditorControls.Button("", open);
-        button.Content = content; button.HorizontalContentAlignment = HorizontalAlignment.Left;
+        button.Content = content; button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         return button;
     }
 
@@ -803,7 +839,8 @@ public sealed class PresetWorkspace : UserControl
         var canMove = up.Visibility == Visibility.Visible || down.Visibility == Visibility.Visible;
         blockActionsMenu.Visibility = canMove ? Visibility.Visible : Visibility.Collapsed;
         delete.Visibility = canMove ? Visibility.Collapsed : Visibility.Visible;
-        if (validations.Count == 0) issues.Visibility = reviewIssues.Visibility = Visibility.Collapsed;
+        if (validations.Count == 0) reviewIssues.Visibility = Visibility.Collapsed;
+        UpdateIssuePanel();
     }
 
     private void ShowYaml()
