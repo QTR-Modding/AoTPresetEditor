@@ -264,38 +264,61 @@ public sealed class PresetWorkspace : UserControl
         return dialog.ShowDialog() == true;
     }
 
-    public async Task<bool> Open(PresetFile file) => await Open(file, false);
+    public Task<bool> Open(PresetFile file) => OpenPresets([file], false, Path.GetFileNameWithoutExtension(file.FullPath));
 
-    private async Task<bool> Open(PresetFile file, bool import)
+    private async Task<bool> OpenPresets(IReadOnlyList<PresetFile> files, bool import, string projectName)
     {
         if (!import && !CanLeave() || import && !CommitEditor()) return false;
         try
         {
-            var source = await File.ReadAllTextAsync(file.FullPath);
-            var kind = file.Kind;
-            if (kind == PresetKind.Other)
+            var opened = new PresetProject { Name = projectName };
+            var simplified = false;
+            foreach (var file in files)
             {
-                var root = PresetYaml.Parse(source);
-                kind = root.Get("formsLists") is not null ? PresetKind.Addon
-                    : root.Get("ownerLists") is not null ? PresetKind.Custom : PresetKind.Default;
+                try
+                {
+                    var source = await File.ReadAllTextAsync(file.FullPath);
+                    var kind = file.Kind;
+                    if (kind == PresetKind.Other)
+                    {
+                        var root = PresetYaml.Parse(source);
+                        kind = root.Get("formsLists") is not null ? PresetKind.Addon
+                            : root.Get("ownerLists") is not null ? PresetKind.Custom : PresetKind.Default;
+                    }
+                    var category = file.Category;
+                    if (!Categories.Contains(category))
+                    {
+                        category = ChooseCategory(file.FullPath);
+                        if (category is null) return false;
+                    }
+                    var parsed = PresetDocument.Parse(source, category, kind);
+                    simplified |= SimplifyBehaviors(parsed);
+                    opened.Add(parsed, Path.GetFileNameWithoutExtension(file.FullPath),
+                        file.FullPath, Hash(Encoding.UTF8.GetBytes(source)));
+                }
+                catch (Exception error) { throw new InvalidDataException(file.FullPath + Environment.NewLine + error.Message, error); }
             }
-            var category = file.Category;
-            if (!Categories.Contains(category))
+            var selected = opened.Entries.First();
+            if (import && project is not null)
             {
-                category = ChooseCategory();
-                if (category is null) return false;
+                if (!CommitEditor()) return false;
+                var combined = project.Clone();
+                foreach (var entry in opened.Entries)
+                {
+                    try
+                    {
+                        var added = combined.Add(entry.Document, entry.FileName, entry.OpenedPath, entry.OpenedHash);
+                        if (entry == selected) selected = added;
+                    }
+                    catch (Exception error) { throw new InvalidDataException(entry.OpenedPath + Environment.NewLine + error.Message, error); }
+                }
+                opened = combined;
             }
-            var parsed = PresetDocument.Parse(source, category, kind);
-            var simplified = SimplifyBehaviors(parsed);
-            var name = Path.GetFileNameWithoutExtension(file.FullPath);
-            if (import && !CommitEditor()) return false;
-            if (!import || project is null) project = new PresetProject { Name = name };
-            var entry = project.Add(parsed, name, file.FullPath, Hash(Encoding.UTF8.GetBytes(source)));
-            ResetEditor(); activeEntry = entry; document = parsed; filename = project.Name;
-            exportRoot = null; draftPath = null; dirty = import || simplified;
+            ResetEditor(); project = opened; activeEntry = selected; document = activeEntry.Document;
+            filename = project.Name; exportRoot = null; draftPath = null; dirty = import || simplified;
             validations.Clear(); presentation = null;
-            location.Text = "Opened from: " + file.FullPath;
-            Opened?.Invoke(); await Refresh(parsed.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Rule)?.Id);
+            location.Text = files.Count == 1 ? "Opened from: " + files[0].FullPath : $"Opened {files.Count} preset files";
+            Opened?.Invoke(); await Refresh(document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Rule)?.Id);
             return true;
         }
         catch (Exception error) { MessageBox.Show(Host, error.Message, "Cannot open preset", MessageBoxButton.OK, MessageBoxImage.Error); return false; }
@@ -306,46 +329,52 @@ public sealed class PresetWorkspace : UserControl
 
     private async void PickFile(bool import)
     {
-        var picker = new OpenFileDialog { Title = import ? "Import behaviors" : "Open AoT preset or draft",
-            Filter = import ? "YAML presets|*.yml;*.yaml" : "Presets and drafts|*.yml;*.yaml;*.aotdraft|YAML presets|*.yml;*.yaml|Editor drafts|*.aotdraft" };
-        if (picker.ShowDialog(Host) != true) return;
-        if (Path.GetExtension(picker.FileName).Equals(".aotdraft", StringComparison.OrdinalIgnoreCase))
+        try
         {
-            if (!CanLeave()) return;
-            try
+            var paths = PresetOpenDialog.Show(Host, includeDrafts: !import);
+            if (paths is null) return;
+            var files = await Task.Run(() => PresetCatalog.DiscoverSelection(paths, Categories));
+            if (Path.GetExtension(files[0].FullPath).Equals(".aotdraft", StringComparison.OrdinalIgnoreCase))
             {
-                var parsed = PresetProject.FromDraft(await File.ReadAllTextAsync(picker.FileName), Path.GetFileNameWithoutExtension(picker.FileName));
-                var simplified = false;
-                foreach (var entry in parsed.Entries) simplified |= SimplifyBehaviors(entry.Document);
-                ResetEditor(); project = parsed; activeEntry = project.Entries.FirstOrDefault(); document = activeEntry?.Document;
-                filename = project.Name; draftPath = picker.FileName; exportRoot = null; dirty = simplified;
-                validations.Clear(); presentation = null;
-                location.Text = "Draft: " + draftPath;
-                Opened?.Invoke(); await Refresh();
+                await OpenDraft(files[0].FullPath);
+                return;
             }
-            catch (Exception error) { MessageBox.Show(Host, error.Message, "Cannot open draft", MessageBoxButton.OK, MessageBoxImage.Error); }
-            return;
+            var name = paths.Count == 1
+                ? (Directory.Exists(paths[0]) ? Path.GetFileName(Path.TrimEndingDirectorySeparator(paths[0]))
+                    : Path.GetFileNameWithoutExtension(paths[0])) : "Imported presets";
+            if (!ValidFilename(name)) name = "Imported presets";
+            await OpenPresets(files, import, name);
         }
-        var relative = picker.FileName;
-        var marker = "AlchemyOfTime" + Path.DirectorySeparatorChar;
-        var start = relative.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        relative = start >= 0 ? relative[(start + marker.Length)..] : Path.GetFileName(relative);
-        await Open(new PresetFile(picker.FileName, relative), import);
+        catch (Exception error) { MessageBox.Show(Host, error.Message, "Cannot open preset", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
-    private string? ChooseCategory()
+    private async Task OpenDraft(string path)
+    {
+        if (!CanLeave()) return;
+        var parsed = PresetProject.FromDraft(await File.ReadAllTextAsync(path), Path.GetFileNameWithoutExtension(path));
+        var simplified = false;
+        foreach (var entry in parsed.Entries) simplified |= SimplifyBehaviors(entry.Document);
+        ResetEditor(); project = parsed; activeEntry = project.Entries.FirstOrDefault(); document = activeEntry?.Document;
+        filename = project.Name; draftPath = path; exportRoot = null; dirty = simplified;
+        validations.Clear(); presentation = null;
+        location.Text = "Draft: " + draftPath;
+        Opened?.Invoke(); await Refresh();
+    }
+
+    private string? ChooseCategory(string path)
     {
         var dialog = new Window { Title = "Which items does this file affect?", Owner = Host, Width = 460,
             SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(20) };
+        panel.Children.Add(EditorControls.Text(Path.GetFileName(path)));
         panel.Children.Add(EditorControls.Text("Item type"));
         var types = new ComboBox { ItemsSource = CategoryNames, SelectedIndex = 0 }; panel.Children.Add(types);
-        EditorControls.Footer(panel, EditorControls.Button("Open", () => dialog.DialogResult = true),
+        EditorControls.Footer(panel, EditorControls.Button("Open", () => dialog.DialogResult = true, isDefault: true),
             EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel;
+        dialog.ToolTip = path;
         return dialog.ShowDialog() == true ? Categories[types.SelectedIndex] : null;
     }
-
     private static bool SimplifyBehaviors(PresetDocument preset)
     {
         var before = preset.Blocks.Count;

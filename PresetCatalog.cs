@@ -53,6 +53,62 @@ public static class PresetCatalog
             .OrderBy(file => file.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
+    public static IReadOnlyList<PresetFile> DiscoverSelection(IEnumerable<string> paths, IReadOnlyList<string> categories)
+    {
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var selected = new List<string>();
+        foreach (var input in paths)
+        {
+            var path = Path.GetFullPath(input);
+            if (Directory.Exists(path))
+            {
+                var options = new EnumerationOptions { RecurseSubdirectories = true,
+                    IgnoreInaccessible = false, AttributesToSkip = FileAttributes.ReparsePoint };
+                foreach (var file in Directory.EnumerateFiles(path, "*", options).Where(IsYaml)
+                    .Order(StringComparer.OrdinalIgnoreCase))
+                    if (files.Add(file)) selected.Add(file);
+            }
+            else
+            {
+                if (!File.Exists(path)) throw new FileNotFoundException("The selected file or folder no longer exists.", path);
+                if (!IsYaml(path) && !Path.GetExtension(path).Equals(".aotdraft", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Choose a YAML preset, an editor draft, or a folder containing presets.");
+                if (files.Add(path)) selected.Add(path);
+            }
+        }
+        if (selected.Count == 0) throw new InvalidDataException("The selected folders contain no .yml or .yaml presets.");
+        if (selected.Count > 1 && selected.Any(path => Path.GetExtension(path).Equals(".aotdraft", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidDataException("Open one editor draft at a time. To open several presets together, select YAML files or folders.");
+        return selected.Select(path => DescribeFile(path, categories)).ToArray();
+    }
+
+    private static bool IsYaml(string path) => Path.GetExtension(path).Equals(".yml", StringComparison.OrdinalIgnoreCase)
+        || Path.GetExtension(path).Equals(".yaml", StringComparison.OrdinalIgnoreCase);
+
+    private static PresetFile DescribeFile(string path, IReadOnlyList<string> categories)
+    {
+        var marker = Path.DirectorySeparatorChar + "AlchemyOfTime" + Path.DirectorySeparatorChar;
+        var start = path.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (start >= 0)
+        {
+            var knownPath = path[(start + marker.Length)..];
+            var separator = knownPath.IndexOf(Path.DirectorySeparatorChar);
+            var category = categories.FirstOrDefault(value => separator >= 0 &&
+                value.Equals(knownPath[..separator], StringComparison.OrdinalIgnoreCase));
+            return new PresetFile(path, category is null ? knownPath : category + knownPath[separator..]);
+        }
+        var relative = Path.GetFileName(path);
+        for (var parent = Directory.GetParent(path); parent is not null; parent = parent.Parent)
+        {
+            var category = categories.FirstOrDefault(value => value.Equals(parent.Name, StringComparison.OrdinalIgnoreCase));
+            if (category is not null) return new PresetFile(path, Path.Combine(category, relative));
+            relative = Path.Combine(parent.Name, relative);
+        }
+        var name = Path.GetFileNameWithoutExtension(path);
+        var defaultCategory = categories.FirstOrDefault(category => name.Equals("AoT_default" + category, StringComparison.OrdinalIgnoreCase));
+        return new PresetFile(path, defaultCategory is null ? Path.GetFileName(path)
+            : Path.Combine(defaultCategory, Path.GetFileName(path)));
+    }
     public static async Task<string> Expand(string yaml, CancellationToken cancellationToken)
     {
         var start = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "AoTYaml.exe"))
