@@ -6,6 +6,9 @@ internal static class YamlFormattingChecks
     {
         CompactLists();
         CompactListReferences();
+        RuleFieldOrder();
+        OrderedTemplateArguments();
+        OrderingDependenciesAndMerges();
         const string source = """
             # Shared cooking settings.
             cooking: &cooking
@@ -197,9 +200,169 @@ internal static class YamlFormattingChecks
             "Formatting changed native template or alias expansion.");
     }
 
+    private static void RuleFieldOrder()
+    {
+        const string settings = """
+            containers: Barrel
+            timeModulators:
+            - FormEditorID: Salt
+              magnitude: 0.5
+            transformers:
+            - FormEditorID: Fire
+              finalFormEditorID: CookedBeef
+              duration: 0.1
+            - FormEditorID: Frost
+              finalFormEditorID: FrozenBeef
+              duration: 0.2
+            finalFormEditorID: SpoiledBeef
+            stages:
+            - no: 0
+              name: Fresh
+              duration: 2
+            - no: 1
+              name: Old
+              duration: 3
+            """;
+        foreach (var kind in new[] { PresetKind.Custom, PresetKind.Addon, PresetKind.Default })
+        {
+            var list = kind == PresetKind.Addon ? "formsLists" : "ownerLists";
+            var selector = kind == PresetKind.Addon ? "forms" : "owners";
+            var source = kind == PresetKind.Default ? settings : list + ":\n- " + settings.Replace("\n", "\n  ") +
+                "\n  " + selector + ": RawBeef\n  extraSecond: {z: 2, a: 1}\n  extraFirst: retained\n";
+            var document = PresetDocument.Parse(source, "FOOD", kind);
+            var draft = document.ToDraft();
+            var output = document.ToYaml();
+            var root = PresetYaml.Parse(output);
+            var rule = kind == PresetKind.Default ? root : root.Get(list)!.Items.Single();
+            string[] expected = kind == PresetKind.Default
+                ? ["stages", "finalFormEditorID", "transformers", "timeModulators", "containers"]
+                : [selector, "stages", "finalFormEditorID", "transformers", "timeModulators", "containers", "extraSecond", "extraFirst"];
+            Require(rule.Fields.Keys.SequenceEqual(expected), "Saved " + kind + " fields must follow the main-field order and retain the remaining field order.");
+            var expandedRoot = Expand(output);
+            var expanded = kind == PresetKind.Default ? expandedRoot : expandedRoot.Get(list)!.Items.Single();
+            Require(expanded.Fields.Keys.SequenceEqual(expected), "Expanded " + kind + " rules must use the same field order.");
+            Require(expanded.Get("stages")!.Items.Select(stage => stage.Get("no")!.Text).SequenceEqual(["0", "1"]) &&
+                expanded.Get("transformers")!.Items.Select(trigger => trigger.Get("FormEditorID")!.Text).SequenceEqual(["Fire", "Frost"]),
+                "Ordering main fields must not change stage or transformer priority.");
+            if (kind != PresetKind.Default)
+                Require(rule.Get("extraSecond")!.Fields.Keys.SequenceEqual(["z", "a"]), "Unrelated nested mappings must retain their original key order.");
+            Require(Semantics(Expand(source)) == Semantics(expandedRoot), "Ordering direct rules changed their expanded values.");
+            Require(document.ToDraft() == draft && PresetDocument.Parse(output, "FOOD", kind).ToYaml() == output,
+                "Ordering direct rules must leave the draft untouched and remain stable after reopening.");
+        }
+    }
+
+    private static void OrderedTemplateArguments()
+    {
+        const string source = """
+            heat: &heat
+              FormEditorID: Fire
+            templates:
+              identity: $item
+              cookFood:
+                # Cooking settings stay with their triggers.
+                transformers:
+                - <<: *heat
+                  finalFormEditorID: $cooked
+                  duration: $cookHours
+                stages:
+                - no: 0
+                  name: $stageName # Stage name
+                  duration: $ageHours
+                forms: $raw
+                finalFormEditorID: $spoiled
+                timeModulators:
+                - FormEditorID: Salt
+                  magnitude: 0.5
+                containers: Barrel
+              wrapped: cookFood($cooked, $cookHours, $stageName, $ageHours, $raw, $spoiled)
+            # Keep food priority and pair descriptions.
+            formsLists:
+            - cookFood(CookedBeef, 0.1, Fresh, 2, RawBeef, SpoiledBeef) # Raw Beef -> Cooked Beef
+            - wrapped(CookedVenison, 0.2, Fresh, 3, RawVenison, SpoiledVenison) # Raw Venison -> Cooked Venison
+            - cookFood(identity(CookedGoat), 0.3, Fresh, 4, identity(RawGoat), SpoiledGoat) # Raw Goat -> Cooked Goat
+            """;
+        var document = PresetDocument.Parse(source, "FOOD", PresetKind.Addon);
+        var draft = document.ToDraft();
+        var output = document.ToYaml();
+        var root = PresetYaml.Parse(output);
+        var template = root.Get("templates")!.Get("cookFood")!;
+        Require(template.Fields.Keys.SequenceEqual(["forms", "stages", "finalFormEditorID", "transformers", "timeModulators", "containers"]),
+            "A cooking template must put selected items and stages before transformations in saved YAML.");
+        var reopened = PresetDocument.Parse(output, "FOOD", PresetKind.Addon);
+        Require(TemplateCall.FindParameters(template, reopened).SequenceEqual(["raw", "stageName", "ageHours", "spoiled", "cooked", "cookHours"]) &&
+            TemplateCall.TryParse(root.Get("formsLists")!.Items[0].Text, out _, out var arguments) &&
+            arguments.Select(argument => argument.Text).SequenceEqual(["RawBeef", "Fresh", "2", "SpoiledBeef", "CookedBeef", "0.1"]),
+            "Moving parameter-bearing fields must rebind call arguments by parameter identity.");
+        var expanded = Expand(output);
+        Require(Semantics(Expand(source)) == Semantics(expanded),
+            "Field ordering must retain argument meanings through wrapper templates and nested template calls.");
+        var rules = expanded.Get("formsLists")!.Items;
+        Require(rules.Select(rule => rule.Get("forms")!.Text).SequenceEqual(["RawBeef", "RawVenison", "RawGoat"]) &&
+            rules.Select(rule => rule.Get("transformers")!.Items.Single().Get("finalFormEditorID")!.Text)
+                .SequenceEqual(["CookedBeef", "CookedVenison", "CookedGoat"]),
+            "All three raw-to-cooked pairs and their rule priority must survive reordering.");
+        Require(rules.All(rule => rule.Fields.Keys.SequenceEqual(template.Fields.Keys)),
+            "Expanded template rules must use the same main-field order as the saved template.");
+        foreach (var comment in new[] { "Cooking settings stay with their triggers.", "Stage name", "Keep food priority and pair descriptions.",
+            "Raw Beef -> Cooked Beef", "Raw Venison -> Cooked Venison", "Raw Goat -> Cooked Goat" })
+            Require(output.Contains("# " + comment), "Field ordering lost a comment: " + comment);
+        Require(output.Contains("&heat") && output.Contains("<<: *heat") && document.ToDraft() == draft &&
+            document.ToYaml() == output && reopened.ToYaml() == output,
+            "Formatting must preserve shared references, leave the editable draft unchanged, and be stable after reopening.");
+    }
+
+    private static void OrderingDependenciesAndMerges()
+    {
+        const string anchored = """
+            formsLists:
+            - forms: RawBeef
+              transformers:
+              - FormEditorID: Fire
+                finalFormEditorID: &cooked CookedBeef
+                duration: 0.1
+              stages:
+              - no: 0
+                name: Fresh
+                duration: 2
+                FormEditorID: *cooked
+            """;
+        var document = PresetDocument.Parse(anchored, "FOOD", PresetKind.Addon);
+        var output = document.ToYaml();
+        Require(PresetYaml.Parse(output).Get("formsLists")!.Items.Single().Fields.Keys.SequenceEqual(["forms", "transformers", "stages"]) &&
+            output.Contains("&cooked") && output.Contains("*cooked"),
+            "An anchor's defining field must precede the field that uses it, even when the preferred field order differs.");
+        Require(Semantics(Expand(anchored)) == Semantics(Expand(output)) &&
+            PresetDocument.Parse(output, "FOOD", PresetKind.Addon).ToYaml() == output,
+            "Dependency-aware field ordering must preserve alias expansion and stay stable.");
+
+        const string shared = """
+            aging: &aging
+              stages: [{no: 0, name: Fresh, duration: 2}]
+              finalFormEditorID: SpoiledBeef
+            """;
+        foreach (var list in new[] { "ownerLists", "formsLists", "" })
+        {
+            var selector = list == "ownerLists" ? "owners" : "forms";
+            var settings = "transformers: [{FormEditorID: Fire, finalFormEditorID: CookedBeef, duration: 0.1}]\n" +
+                (list.Length == 0 ? "" : selector + ": RawBeef\n") + "<<: *aging\ncontainers: Barrel\ntimeModulators: []";
+            var source = shared + "\n" + (list.Length == 0 ? settings : list + ":\n- " + settings.Replace("\n", "\n  "));
+            var root = Expand(source);
+            var rule = list.Length == 0 ? root : root.Get(list)!.Items.Single();
+            var preferred = new[] { "owners", "forms", "stages", "finalFormEditorID", "transformers", "timeModulators" };
+            var expected = list.Length == 0 ? preferred.Skip(2) : new[] { selector }.Concat(preferred.Skip(2));
+            Require(rule.Fields.Keys.Where(preferred.Contains).SequenceEqual(expected),
+                "Native expansion must reorder fields appended by a merge in default, custom, and addon rules.");
+            Require(rule.Get("stages")!.Items.Single().Get("duration")!.Text == "2" && rule.Get("finalFormEditorID")!.Text == "SpoiledBeef",
+                "Reordering merge-provided fields must preserve their values.");
+        }
+    }
+
+    private static PresetValue Expand(string source) =>
+        PresetYaml.Parse(PresetCatalog.Expand(source, CancellationToken.None).GetAwaiter().GetResult());
     private static string Semantics(PresetValue value) => value.Kind switch
     {
-        ValueKind.Mapping => "{" + string.Join(',', value.Fields.Select(field => field.Key + ":" + Semantics(field.Value))) + "}",
+        ValueKind.Mapping => "{" + string.Join(',', value.Fields.OrderBy(field => field.Key, StringComparer.Ordinal).Select(field => field.Key + ":" + Semantics(field.Value))) + "}",
         ValueKind.Sequence => "[" + string.Join(',', value.Items.Select(Semantics)) + "]",
         _ => value.Kind + ":" + value.Tag + ":" + value.Text
     };

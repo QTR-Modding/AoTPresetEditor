@@ -199,6 +199,14 @@ public sealed class PresetDocument
 
     public string ToYaml()
     {
+        var formatted = Clone();
+        foreach (var block in formatted.Blocks) formatted.FormatSettings(block.Value, block.Context);
+        formatted.RebindTemplateCalls(this);
+        return formatted.WriteYaml();
+    }
+
+    private string WriteYaml()
+    {
         var root = PresetValue.Map();
         root.Comments.AddRange(Comments);
         root.TrailingComments.AddRange(TrailingComments);
@@ -210,8 +218,7 @@ public sealed class PresetDocument
         rules.TrailingComments.AddRange(ruleTrailingComments);
         foreach (var block in Blocks)
         {
-            var value = block.Value.Clone();
-            CompactSettings(value, block.Context);
+            var value = block.Value;
             switch (block.Kind)
             {
                 case BlockKind.Shared:
@@ -251,7 +258,7 @@ public sealed class PresetDocument
         return MetadataPrefix + JsonSerializer.Serialize(names) + Environment.NewLine + PresetYaml.Write(root);
     }
 
-    private void CompactSettings(PresetValue value, string context)
+    private void FormatSettings(PresetValue value, string context)
     {
         if (value.Kind == ValueKind.Sequence)
         {
@@ -261,7 +268,7 @@ public sealed class PresetDocument
                     "rules" => RuleContext(Kind), "stages" => "stage", "transformers" => "transformer",
                     "modulators" => "modulator", "effects" => "effect", _ => ""
                 };
-            foreach (var item in value.Items) CompactSettings(item, itemContext.Length > 0 ? itemContext : InferContext(item, Kind));
+            foreach (var item in value.Items) FormatSettings(item, itemContext.Length > 0 ? itemContext : InferContext(item, Kind));
             return;
         }
         foreach (var field in PresetSchema.GetFields(context, Kind))
@@ -276,8 +283,23 @@ public sealed class PresetDocument
                         !item.Text.Contains('\n') && !item.Text.Contains('\r') && item.Comments.Count == 0 &&
                         item.InlineComment.Length == 0 && item.TrailingComments.Count == 0)) child.Flow = true;
             }
-            else if (field.Kind == FieldKind.ObjectList) CompactSettings(child, field.ChildContext);
+            else if (field.Kind == FieldKind.ObjectList) FormatSettings(child, field.ChildContext);
         }
+        if (value.Kind == ValueKind.Mapping && PresetSchema.NormalizeContext(context) == "rule") OrderRuleFields(value);
+    }
+
+    private static void OrderRuleFields(PresetValue value)
+    {
+        string[] priority = ["owners", "forms", "stages", "finalFormEditorID", "transformers", "timeModulators"];
+        var ordered = value.Fields.OrderBy(entry =>
+        {
+            var index = Array.IndexOf(priority, entry.Key);
+            return index < 0 ? priority.Length : index;
+        }).ToArray();
+        value.Fields.Clear();
+        foreach (var entry in ordered) value.Fields.Add(entry.Key, entry.Value);
+        // An anchor must still be written before any field that refers to it.
+        OrderDefinitions(value);
     }
 
     internal static PresetValue CompactSelector(PresetValue value)
