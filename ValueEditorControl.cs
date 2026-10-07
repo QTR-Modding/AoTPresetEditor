@@ -483,8 +483,9 @@ public sealed class ValueEditorControl : UserControl
         if (descriptor.Help.Length > 0) caption.Children.Add(EditorControls.Info(descriptor.Label, PresetSchema.FieldHelp(descriptor, context, Document.Kind)));
         var actions = new WrapPanel();
         var variable = behaviorMode && allowVariations && IsVariable(current);
-        if (behaviorMode && allowVariations && descriptor.Key is not ("<<" or "stages") &&
-            (current is null || !PresetDocument.Descendants(current).Any(value => value.Anchor.Length > 0)))
+        var canVary = behaviorMode && allowVariations && descriptor.Key is not ("<<" or "stages") &&
+            (current is null || !PresetDocument.Descendants(current).Any(value => value.Anchor.Length > 0));
+        if (canVary)
         {
             var choice = new CheckBox { Content = "Variable", IsChecked = variable, VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(8, 0, 4, 0) };
@@ -509,7 +510,7 @@ public sealed class ValueEditorControl : UserControl
             }));
         DockPanel.SetDock(actions, Dock.Right); row.Children.Add(actions); row.Children.Add(caption); box.Children.Add(row);
         var status = Help(""); box.Children.Add(status);
-        if (current is not null || descriptor.Required && Value.Get("<<") is null)
+        if (!(variable && canVary) && (current is not null || descriptor.Required && Value.Get("<<") is null))
         {
             var editable = current ?? NewValue(descriptor.ChildContext, descriptor);
             if (current is null && editable.Kind == ValueKind.Scalar) editable.Text = "";
@@ -524,7 +525,7 @@ public sealed class ValueEditorControl : UserControl
             CornerRadius = new CornerRadius(collection ? 0 : 5), Padding = collection ? new Thickness(0, 6, 0, 6) : new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 6) };
         if (!collection) card.SetResourceReference(Border.BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
         card.SetResourceReference(Border.BorderBrushProperty, "CardStrokeColorDefaultBrush");
-        if (descriptor.Kind is FieldKind.ObjectList or FieldKind.FormList or FieldKind.IntegerList)
+        if (!(variable && canVary) && descriptor.Kind is (FieldKind.ObjectList or FieldKind.FormList or FieldKind.IntegerList))
         {
             box.Children.Remove(row);
             card.Child = new Expander { Header = row, Content = box, IsExpanded = !section };
@@ -605,8 +606,7 @@ public sealed class ValueEditorControl : UserControl
                     partial: parametersAllowed || Value.Get("<<") is not null || IsReference(own));
                 text = errors.Count > 0 ? string.Join(Environment.NewLine, errors)
                     : own.Kind == ValueKind.Scalar && view.Field.Kind is FieldKind.Form or FieldKind.FormList
-                        ? behaviorMode && parametersAllowed && own.Text.StartsWith('$')
-                            ? presentation.Summary(own, view.Field.ChildContext, behaviorMode, parametersAllowed) : presentation.FormLabel(own.Text, true) : "";
+                        ? behaviorMode && IsVariable(own) ? "" : presentation.FormLabel(own.Text, true) : "";
             }
             else if (inherited is not null && Value.Get("<<") is { } source) text = presentation.Summary(inherited, view.Field.ChildContext, behaviorMode) + " · from " + presentation.ReferenceLabel(source, behaviorMode);
             else if (Value.Get("<<") is not null && effective is null) text = "Inherited value will appear after validation.";

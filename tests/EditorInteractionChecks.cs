@@ -527,6 +527,35 @@ internal static class EditorInteractionChecks
         Require(cleared && checkedVariable.IsChecked == true && named.Value.Get("duration")!.Text == "$hours",
             "A rejected removal must preserve the existing variable and checked state.");
 
+        foreach (var (context, yaml, keys) in new (string, string, string[])[]
+        {
+            ("AddonRule", "forms: $raw\ntransformers: $changes\n", ["forms", "transformers"]),
+            ("Transformer", "FormEditorID: Fire\nfinalFormEditorID: $result\nduration: $hours\nallowed_stages: $numbers\n",
+                ["finalFormEditorID", "duration", "allowed_stages"])
+        })
+        {
+            var values = PresetYaml.Parse(yaml);
+            var compact = new ValueEditorControl(document, Forms, values, context, "Settings",
+                parametersAllowed: true, behaviorMode: true);
+            compact.UpdatePresentation(new PresetPresentation(compact.Document, Forms));
+            foreach (var key in keys)
+            {
+                var card = FieldCard(compact, key);
+                Require(Descendants<CheckBox>(card).Single().IsChecked == true &&
+                    card.Child is StackPanel body && body.Children.OfType<FrameworkElement>()
+                        .Where(child => child.Visibility != Visibility.Collapsed).All(child => child is DockPanel) &&
+                    !Descendants<ValueEditorControl>(card).Any() && !Descendants<Expander>(card).Any() &&
+                    !Descendants<TextBlock>(card).Any(text => text.Text == "Varies per item"),
+                    "A checked variable must show its field header and checkbox without a duplicate status or empty expandable body: " + key);
+            }
+            compact.Capture();
+            Require(keys.All(key => compact.Value.Get(key)!.Text == values.Get(key)!.Text),
+                "Removing variable display bodies must preserve their parameter values when settings are captured.");
+        }
+        Require(Descendants<TextBlock>(FieldCard(named, "value")).Any(text =>
+            text.Visibility == Visibility.Visible && text.Text.Contains("stage 0", StringComparison.OrdinalIgnoreCase)),
+            "A compact variable field must retain a real inactive-setting warning.");
+
         var rule = new ValueEditorControl(document, Forms,
             PresetYaml.Parse("owners: FoodBeef\nstages: $steps\nfinalFormEditorID: FoodVenison\n"),
             "CustomRule", "Rule", parametersAllowed: true, behaviorMode: true);
