@@ -500,7 +500,7 @@ public sealed class PresetWorkspace : UserControl
         var conversions = new Dictionary<string, PresetValue>(StringComparer.Ordinal);
         if (kind == PresetKind.Default)
         {
-            if (MessageBox.Show(Host, "Apply these stages to all " + CategoryLabel(edited.Category).ToLowerInvariant() +
+            if (MessageBox.Show(Host, "Apply this behavior to all " + CategoryLabel(edited.Category).ToLowerInvariant() +
                 "? This replaces the current item selection.", "Change affected items",
                 MessageBoxButton.OKCancel) != MessageBoxResult.OK) return null;
         }

@@ -13,6 +13,7 @@ internal static class UnifiedBehaviorChecks
         ChangeAppliesTo();
         AppliesToVariables();
         AppliesToAvailability();
+        AllWithoutStages();
         IncompleteDefaultSelection();
         ReferencedAppliesTo();
         WorkspaceSplit();
@@ -192,8 +193,8 @@ internal static class UnifiedBehaviorChecks
         }
         var unstaged = PresetDocument.Parse("formsLists: [{forms: FoodBeef}]", "FOOD", PresetKind.Addon);
         var withoutStages = new BehaviorEditorControl(unstaged, [], unstaged.Blocks.Single().Id);
-        Require(!Descendants<Button>(withoutStages).Any(button => button.Content is string text && text.StartsWith("All ", StringComparison.Ordinal)),
-            "A triggered behavior without stages must not offer a default-stage selection.");
+        Require(Descendants<Button>(withoutStages).Count(button => Equals(button.Content, "All food")) == 1,
+            "A triggered behavior must offer All from the beginning, before stages are configured.");
         var staged = PresetDocument.Parse("ownerLists: [{owners: [FoodBeef], stages: [{no: 0, name: Fresh, duration: 1}], finalFormEditorID: Result, containers: [Barrel]}]", "FOOD", PresetKind.Custom);
         var nested = new BehaviorEditorControl(staged, [], staged.Blocks.Single().Id);
         Require(Descendants<Button>(nested).Count(button => Equals(button.Content, "All food")) == 1 &&
@@ -202,6 +203,105 @@ internal static class UnifiedBehaviorChecks
             "Only the behavior's Applies to selector may offer All; nested form selectors must retain their own selection controls.");
     }
 
+    private static void AllWithoutStages()
+    {
+        var document = PresetDocument.Parse("formsLists: [{forms: []}]", "FOOD", PresetKind.Addon);
+        var original = document.ToDraft();
+        var editor = new BehaviorEditorControl(document, [], document.Blocks.Single().Id);
+        editor.Capture();
+        var before = editor.Document.ToDraft();
+        var requested = false;
+        Func<PresetDocument, string, PresetKind, PresetDocument?> cancel = (edited, ruleId, kind) =>
+        {
+            requested = kind == PresetKind.Default;
+            Require(BehaviorFamily.GetSetting(edited, ruleId, "stages") is null &&
+                BehaviorFamily.GetSetting(edited, ruleId, "finalFormEditorID") is null,
+                "Choosing All must not create stages before the kind-change callback accepts the conversion.");
+            return null;
+        };
+        editor.KindChangeRequested += cancel;
+        Click(AppliesButton(editor, "All food"));
+        Require(requested && editor.Document.ToDraft() == before,
+            "Cancelling All for a fresh behavior must preserve its empty selected-item settings.");
+        editor.KindChangeRequested -= cancel;
+        Click(AppliesButton(editor, "All food"));
+        editor.Capture();
+        var value = BehaviorFamily.Find(editor.Document, editor.RuleId)!.Definition.Value;
+        Require(editor.Document.Kind == PresetKind.Default && value.Get("forms") is null && value.Get("owners") is null &&
+            value.Get("stages") is { Items.Count: 1 } stages &&
+            PresetYaml.Write(stages.Items.Single()) == PresetYaml.Write(ValueEditorControl.NewStage(0)) &&
+            value.Get("finalFormEditorID") is { Kind: ValueKind.Scalar, Text.Length: 0 } && document.ToDraft() == original,
+            "All on a fresh behavior must create exactly the canonical Stage 0 and its empty final-item field without changing the original document.");
+        Require(ButtonOrDefault(editor, "Add stages") is null && StageSection(editor).IsExpanded &&
+            !Descendants<Button>(editor).Any(button => Equals(button.Content, "All food")) &&
+            Descendants<TextBlock>(DefaultAppliesCard(editor)).Count(text => text.Text == "All food") == 1 &&
+            Descendants<TextBlock>(StageSection(editor)).Count(text => text.Text == "Final item") == 1,
+            "The completed transition must open Stages for editing and show one All value and one final-item control without duplicate creation actions.");
+
+        document = PresetDocument.Parse("""
+            templates:
+              cooking:
+                forms: $item
+                transformers:
+                - FormEditorID: Fire
+                  duration: $hours
+                  finalFormEditorID: $cooked
+                timeModulators:
+                - FormEditorID: Salt
+                  magnitude: $rate
+            formsLists:
+            - cooking(FoodBeef, 0.25, CookedBeef, 0.5)
+            """, "FOOD", PresetKind.Addon);
+        original = document.ToDraft();
+        editor = new BehaviorEditorControl(document, [], document.Blocks.Last().Id);
+        var family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+        var transformations = PresetYaml.Write(family.Definition.Value.Get("transformers")!);
+        var modifiers = PresetYaml.Write(family.Definition.Value.Get("timeModulators")!);
+        Click(AppliesButton(editor, "All food"));
+        editor.Capture();
+        family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+        Require(editor.Document.Kind == PresetKind.Default && family.Rows.Count == 1 &&
+            family.Parameters.SequenceEqual(["hours", "cooked", "rate"]) &&
+            BehaviorFamily.GetArgument(editor.Document, editor.RuleId, "hours").Text == "0.25" &&
+            BehaviorFamily.GetArgument(editor.Document, editor.RuleId, "cooked").Text == "CookedBeef" &&
+            BehaviorFamily.GetArgument(editor.Document, editor.RuleId, "rate").Text == "0.5" &&
+            PresetYaml.Write(family.Definition.Value.Get("transformers")!) == transformations &&
+            PresetYaml.Write(family.Definition.Value.Get("timeModulators")!) == modifiers &&
+            PresetYaml.Write(family.Definition.Value.Get("stages")!.Items.Single()) == PresetYaml.Write(ValueEditorControl.NewStage(0)) &&
+            document.ToDraft() == original,
+            "Adding default stages through All must preserve entered transformations, time modifiers, and every unrelated variable binding.");
+        BehaviorFamily.AddUse(document, document.Blocks.Last().Id);
+        var multiple = new BehaviorEditorControl(document, [], document.Blocks.Last().Id);
+        Require(!Descendants<Button>(multiple).Any(button => Equals(button.Content, "All food")),
+            "Offering All before stages exist must still exclude behaviors with multiple Variables rows.");
+        foreach (var source in new[]
+        {
+            "ownerLists: [{owners: FoodBeef, finalFormEditorID: CookedBeef}]",
+            "shared: &shared {finalFormEditorID: CookedBeef}\nownerLists:\n- owners: FoodBeef\n  <<: *shared",
+            "templates:\n  aging:\n    owners: $item\n    finalFormEditorID: $result\nownerLists:\n- aging(FoodBeef, CookedBeef)"
+        })
+        {
+            document = PresetDocument.Parse(source, "FOOD", PresetKind.Custom);
+            original = document.ToDraft();
+            editor = new BehaviorEditorControl(document, [], document.Blocks.Last().Id);
+            family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+            var localFinal = family.Definition.Value.Get("finalFormEditorID");
+            var existingFinal = PresetYaml.Write(BehaviorFamily.GetSetting(editor.Document, editor.RuleId, "finalFormEditorID")!);
+            Click(AppliesButton(editor, "All food"));
+            editor.Capture();
+            family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+            Require(editor.Document.Kind == PresetKind.Default &&
+                PresetYaml.Write(family.Definition.Value.Get("stages")!.Items.Single()) == PresetYaml.Write(ValueEditorControl.NewStage(0)) &&
+                PresetYaml.Write(BehaviorFamily.GetSetting(editor.Document, editor.RuleId, "finalFormEditorID")!) == existingFinal &&
+                (localFinal is null ? family.Definition.Value.Get("finalFormEditorID") is null :
+                    PresetYaml.Write(family.Definition.Value.Get("finalFormEditorID")!) == PresetYaml.Write(localFinal)) &&
+                document.ToDraft() == original,
+                "Adding stages through All must preserve a direct, inherited, or variable final item without replacing it or adding an inherited-value override.");
+            if (family.Parameters.Contains("result"))
+                Require(BehaviorFamily.GetArgument(editor.Document, editor.RuleId, "result").Text == "CookedBeef",
+                    "Adding stages must keep the existing final-item variable bound to its original result.");
+        }
+    }
     private static void IncompleteDefaultSelection()
     {
         var document = PresetDocument.Parse("transformers: [{FormEditorID: Fire, duration: 0.25, finalFormEditorID: CookedBeef}]", "FOOD", PresetKind.Default);
@@ -223,8 +323,8 @@ internal static class UnifiedBehaviorChecks
             forms.Items.Select(item => item.Text).SequenceEqual(AppliesToForms.Take(2).Select(form => form.Identifier)) &&
             value.Get("owners") is null && value.Get("stages") is null &&
             PresetYaml.Write(value.Get("transformers")!) == transformation &&
-            !Descendants<Button>(editor).Any(button => Equals(button.Content, "All food")),
-            "Choosing forms for a default without stages must retain its transformation in an addon and hide the unavailable All action.");
+            Descendants<Button>(editor).Count(button => Equals(button.Content, "All food")) == 1,
+            "Choosing forms for a default without stages must retain its transformation in an addon and allow choosing All again.");
     }
     private static void ReferencedAppliesTo()
     {

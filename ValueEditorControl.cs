@@ -477,7 +477,7 @@ public sealed class ValueEditorControl : UserControl
 
     private bool IsAppliesToField(PresetField descriptor) => CanChangeAppliesTo && descriptor.Key is "owners" or "forms";
 
-    private bool CanChooseAllItems => Document.Kind != PresetKind.Default && HasSection("stages") && blockId is not null &&
+    private bool CanChooseAllItems => Document.Kind != PresetKind.Default && blockId is not null &&
         BehaviorFamily.Find(Document, blockId) is { Rows.Count: <= 1 };
 
     private void AddAllItemsChoice(Panel target, PresetField? descriptor)

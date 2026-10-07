@@ -260,10 +260,12 @@ public sealed class BehaviorEditorControl : UserControl
         Capture();
         try
         {
+            var addStages = all && BehaviorFamily.GetSetting(document, RuleId, "stages") is null;
             if (all)
             {
-                if (document.Kind == PresetKind.Default || BehaviorFamily.GetSetting(document, RuleId, "stages") is null) return;
+                if (document.Kind == PresetKind.Default) return;
                 if (!ChangeKind(PresetKind.Default)) return;
+                EnsureStages();
             }
             else
             {
@@ -282,6 +284,7 @@ public sealed class BehaviorEditorControl : UserControl
             }
             RuleId = BehaviorFamily.Normalize(document, RuleId);
             Rebuild(false); NotifyChanged();
+            if (addStages) commonEditor.FocusIssue("Stages 1");
         }
         catch (Exception error) { ShowError(error, "Cannot change affected items"); }
     }
@@ -298,7 +301,8 @@ public sealed class BehaviorEditorControl : UserControl
         else
         {
             var stages = PresetValue.List(); stages.Items.Add(ValueEditorControl.NewStage(0)); value.Set("stages", stages);
-            value.Set("finalFormEditorID", PresetValue.Scalar(""));
+            if (BehaviorFamily.GetSetting(document, RuleId, "finalFormEditorID") is null)
+                value.Set("finalFormEditorID", PresetValue.Scalar(""));
         }
         BehaviorFamily.SetCommon(document, RuleId, value);
     }
