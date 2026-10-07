@@ -10,7 +10,11 @@ internal static class UnifiedBehaviorChecks
     public static void Run()
     {
         AddSections();
-        ChangeScope();
+        ChangeAppliesTo();
+        AppliesToVariables();
+        AppliesToAvailability();
+        IncompleteDefaultSelection();
+        ReferencedAppliesTo();
         WorkspaceSplit();
         InheritedSections();
         OverrideInheritedStages();
@@ -69,31 +73,236 @@ internal static class UnifiedBehaviorChecks
             "Removing the stage feature must retain the other configured sections and restore the Add stages action.");
     }
 
-    private static void ChangeScope()
+    private static readonly FormRow[] AppliesToForms =
+    [
+        new("Raw Beef", "FoodBeef", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x65C99~Skyrim.esm", ItemCategories.FOOD),
+        new("Venison", "FoodVenison", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x65C9E~Skyrim.esm", ItemCategories.FOOD),
+        new("Sword", "IronSword", "Weapon", "Skyrim.esm", "Skyrim.esm", "0x12EB7~Skyrim.esm", ItemCategories.WEAP)
+    ];
+
+    private static void ChangeAppliesTo()
     {
         var document = PresetDocument.Parse("""
             shared: &shared
               containers: 0x7
-            formsLists:
+              stages: [{no: 0, name: Fresh, duration: 7}]
+              finalFormEditorID: 0x721E8~Skyrim.esm
+            ownerLists:
             - <<: *shared
-              forms: 0x65C99~Skyrim.esm
-            """, "FOOD", PresetKind.Addon);
+              owners: 0x65C99~Skyrim.esm
+            """, "FOOD", PresetKind.Custom);
+        var original = document.ToDraft();
         var id = document.Blocks.Single(block => block.Kind == BlockKind.Rule).Id;
-        var editor = new BehaviorEditorControl(document, [], id);
-        Scope(editor).SelectedIndex = 1;
+        var editor = new BehaviorEditorControl(document, AppliesToForms, id);
+        Require(!Descendants<TextBlock>(editor).Any(text => text.Text == "Scope") &&
+            !Descendants<ComboBox>(editor).Any(combo => AutomationProperties.GetName(combo) == "Behavior scope"),
+            "Applies to must offer the affected-item choice without a separate Scope control.");
+        Click(AppliesButton(editor, "All food"));
         editor.Capture();
-        var value = BehaviorFamily.Find(editor.Document, id)!.Definition.Value;
+        var value = BehaviorFamily.Find(editor.Document, editor.RuleId)!.Definition.Value;
         Require(editor.Document.Kind == PresetKind.Default && value.Get("forms") is null && value.Get("owners") is null &&
-            value.Get("stages")?.Items.Single().Get("no")?.Text == "0" && value.Get("<<") is { Kind: ValueKind.Alias },
-            "Choosing items without their own stages must create stages even when unrelated shared settings are inherited.");
-        Scope(editor).SelectedIndex = 0;
+            value.Get("stages") is null && value.Get("<<") is { Kind: ValueKind.Alias } &&
+            BehaviorFamily.GetSetting(editor.Document, editor.RuleId, "stages")?.Items.Single().Get("duration")?.Text == "7",
+            "All food must use the inherited stages and retain shared settings without inventing a local stage override.");
+        var appliesTo = DefaultAppliesCard(editor);
+        Require(Descendants<TextBlock>(appliesTo).Select(text => text.Text).SequenceEqual(["Applies to", "All food"]) &&
+            Descendants<Button>(appliesTo).Any(button => AutomationProperties.GetName(button) == "Help for Applies to" &&
+                AutomationProperties.GetHelpText(button).Length > 0) &&
+            !Descendants<Button>(editor).Any(button => Equals(button.Content, "All food")),
+            "The default's Applies to card must show its selection and put precedence help behind the info control without a duplicate All action.");
+        var beforePicker = editor.Document.ToDraft();
+        var changes = 0;
+        editor.KindChangeRequested += (edited, ruleId, kind) =>
+        {
+            changes++;
+            var project = new PresetProject(); project.Add(edited, "Affected items");
+            return project.ChangeBehaviorKind(ruleId, kind).Document;
+        };
+        ChooseAffectedItems(editor, accept: false, () => Require(changes == 0 && editor.Document.ToDraft() == beforePicker,
+            "Opening the form picker must leave the default project unchanged until forms are accepted."));
+        Require(changes == 0 && editor.Document.ToDraft() == beforePicker,
+            "Cancelling the affected-item picker must preserve the default and all its settings.");
+        ChooseAffectedItems(editor, accept: true, () => Require(changes == 0 && editor.Document.ToDraft() == beforePicker,
+            "Selecting forms must not commit a conversion before Choose is pressed."));
         editor.Capture();
-        value = BehaviorFamily.Find(editor.Document, id)!.Definition.Value;
-        Require(editor.Document.Kind == PresetKind.Custom && value.Get("owners") is { Kind: ValueKind.Sequence, Items.Count: 0 } &&
-            value.Get("stages")?.Items.Count == 1 && value.Get("<<") is { Kind: ValueKind.Alias },
-            "Returning to selected-item scope must ask for a fresh selection while retaining the stages and shared settings.");
+        value = BehaviorFamily.Find(editor.Document, editor.RuleId)!.Definition.Value;
+        Require(changes == 1 && editor.Document.Kind == PresetKind.Custom && value.Get("owners") is { Kind: ValueKind.Sequence } owners &&
+            owners.Items.Select(item => item.Text).SequenceEqual(AppliesToForms.Take(2).Select(form => form.Identifier)) &&
+            value.Get("<<") is { Kind: ValueKind.Alias } &&
+            BehaviorFamily.GetSetting(editor.Document, editor.RuleId, "stages")?.Items.Single().Get("duration")?.Text == "7" &&
+            document.ToDraft() == original,
+            "Accepting multiple forms must convert once, retain the inherited settings, and leave the original document untouched.");
     }
 
+    private static void AppliesToVariables()
+    {
+        var document = PresetDocument.Parse("""
+            templates:
+              aging:
+                owners: $item
+                stages: [{no: 0, name: Fresh, duration: $hours}]
+                finalFormEditorID: $result
+            ownerLists:
+            - aging(0x65C99~Skyrim.esm, 7, 0x721E8~Skyrim.esm)
+            """, "FOOD", PresetKind.Custom);
+        var editor = new BehaviorEditorControl(document, AppliesToForms, document.Blocks.Last().Id);
+        Require(AppliesButton(editor, "All food") is not null, "A variable Applies to selector must offer All for its one-row behavior.");
+        Field<TabControl>(editor, "tabs").SelectedIndex = 1;
+        var table = Field<DataGrid>(editor, "table");
+        table.SelectedItem = table.Items[0]; table.CurrentCell = new DataGridCellInfo(table.Items[0], table.Columns[1]);
+        Require(!Descendants<Button>(Field<ValueEditorControl>(editor, "cellEditor")).Any(button => button.Content is string text && text.StartsWith("All ", StringComparison.Ordinal)),
+            "A Variables cell's form selector must not offer a whole-behavior All action.");
+        Field<TabControl>(editor, "tabs").SelectedIndex = 0;
+        Click(AppliesButton(editor, "All food"));
+        editor.Capture();
+        var family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+        Require(editor.Document.Kind == PresetKind.Default && family.Rows.Count == 1 && family.Parameters.SequenceEqual(["hours", "result"]) &&
+            BehaviorFamily.GetArgument(editor.Document, editor.RuleId, "hours").Text == "7" &&
+            BehaviorFamily.GetArgument(editor.Document, editor.RuleId, "result").Text == "0x721E8~Skyrim.esm",
+            "All must remove only the selector variable while preserving the single row's stage and result variables.");
+        ChooseAffectedItems(editor, accept: true, () => { });
+        editor.Capture();
+        family = BehaviorFamily.Find(editor.Document, editor.RuleId)!;
+        Require(editor.Document.Kind == PresetKind.Custom && family.Rows.Count == 1 && family.Parameters.SequenceEqual(["hours", "result"]) &&
+            BehaviorFamily.GetArgument(editor.Document, editor.RuleId, "hours").Text == "7" &&
+            BehaviorFamily.GetArgument(editor.Document, editor.RuleId, "result").Text == "0x721E8~Skyrim.esm",
+            "Choosing individual forms again must keep the existing stage and result variables and their values.");
+        var another = document.Clone();
+        BehaviorFamily.AddUse(another, another.Blocks.Last().Id);
+        var multiple = new BehaviorEditorControl(another, AppliesToForms, another.Blocks.Last().Id);
+        Require(!Descendants<Button>(multiple).Any(button => Equals(button.Content, "All food")),
+            "A behavior with multiple Variables rows cannot become one default and must not offer All.");
+    }
+
+    private static void AppliesToAvailability()
+    {
+        foreach (var (category, label) in new[] { ("FOOD", "food"), ("WEAP", "weapons"), ("MISC", "miscellaneous items") })
+        {
+            var document = PresetDocument.Parse("ownerLists: [{owners: [], stages: [{no: 0, name: Fresh, duration: 1}], finalFormEditorID: Result}]", category, PresetKind.Custom);
+            var editor = new BehaviorEditorControl(document, [], document.Blocks.Single().Id);
+            editor.Capture();
+            Require(editor.Document.Kind == PresetKind.Custom && BehaviorFamily.Find(editor.Document, editor.RuleId)!.Definition.Value.Get("owners") is { Kind: ValueKind.Sequence, Items.Count: 0 },
+                "An empty affected-item selection must remain selected-item behavior, never silently become a default.");
+            var before = editor.Document.ToDraft();
+            var requested = false;
+            editor.KindChangeRequested += (_, _, kind) => { requested = kind == PresetKind.Default; return null; };
+            Click(AppliesButton(editor, "All " + label));
+            Require(requested && editor.Document.Kind == PresetKind.Custom && editor.Document.ToDraft() == before,
+                "The category-specific All action must preserve the selected behavior when its conversion callback cancels.");
+        }
+        var unstaged = PresetDocument.Parse("formsLists: [{forms: FoodBeef}]", "FOOD", PresetKind.Addon);
+        var withoutStages = new BehaviorEditorControl(unstaged, [], unstaged.Blocks.Single().Id);
+        Require(!Descendants<Button>(withoutStages).Any(button => button.Content is string text && text.StartsWith("All ", StringComparison.Ordinal)),
+            "A triggered behavior without stages must not offer a default-stage selection.");
+        var staged = PresetDocument.Parse("ownerLists: [{owners: [FoodBeef], stages: [{no: 0, name: Fresh, duration: 1}], finalFormEditorID: Result, containers: [Barrel]}]", "FOOD", PresetKind.Custom);
+        var nested = new BehaviorEditorControl(staged, [], staged.Blocks.Single().Id);
+        Require(Descendants<Button>(nested).Count(button => Equals(button.Content, "All food")) == 1 &&
+            Descendants<ValueEditorControl>(nested).Where(control => Field<PresetField?>(control, "field")?.Key == "containers")
+                .All(control => !Descendants<Button>(control).Any(button => Equals(button.Content, "All food"))),
+            "Only the behavior's Applies to selector may offer All; nested form selectors must retain their own selection controls.");
+    }
+
+    private static void IncompleteDefaultSelection()
+    {
+        var document = PresetDocument.Parse("transformers: [{FormEditorID: Fire, duration: 0.25, finalFormEditorID: CookedBeef}]", "FOOD", PresetKind.Default);
+        var transformation = PresetYaml.Write(document.Blocks.Single().Value.Get("transformers")!);
+        var editor = new BehaviorEditorControl(document, AppliesToForms, document.Blocks.Single().Id);
+        editor.Capture();
+        var before = editor.Document.ToDraft();
+        Require(Descendants<TextBlock>(DefaultAppliesCard(editor)).Any(text => text.Text == "All food") &&
+            BehaviorFamily.GetSetting(editor.Document, editor.RuleId, "stages") is null,
+            "An imported default without stages must retain its All selection and offer Choose forms without adding stages.");
+        ChooseAffectedItems(editor, accept: false, () => Require(editor.Document.ToDraft() == before,
+            "Opening an incomplete default's picker must preserve the original behavior until acceptance."));
+        Require(editor.Document.ToDraft() == before, "Cancelling an incomplete default's picker must preserve its kind and transformation.");
+        ChooseAffectedItems(editor, accept: true, () => Require(editor.Document.ToDraft() == before,
+            "Selecting items for an incomplete default must wait for Choose before changing its kind."));
+        editor.Capture();
+        var value = BehaviorFamily.Find(editor.Document, editor.RuleId)!.Definition.Value;
+        Require(editor.Document.Kind == PresetKind.Addon && value.Get("forms") is { Kind: ValueKind.Sequence } forms &&
+            forms.Items.Select(item => item.Text).SequenceEqual(AppliesToForms.Take(2).Select(form => form.Identifier)) &&
+            value.Get("owners") is null && value.Get("stages") is null &&
+            PresetYaml.Write(value.Get("transformers")!) == transformation &&
+            !Descendants<Button>(editor).Any(button => Equals(button.Content, "All food")),
+            "Choosing forms for a default without stages must retain its transformation in an addon and hide the unavailable All action.");
+    }
+    private static void ReferencedAppliesTo()
+    {
+        const string stages = "stages: [{no: 0, name: Fresh, duration: 7}]\n  finalFormEditorID: CookedBeef";
+        foreach (var source in new[]
+        {
+            "selection: &selection [FoodBeef]\nownerLists:\n- owners: *selection\n  " + stages,
+            "templates:\n  selectors: [FoodBeef]\nownerLists:\n- owners: selectors()\n  " + stages,
+            "shared: &shared\n  owners: FoodBeef\n  " + stages + "\nownerLists:\n- <<: *shared"
+        })
+        {
+            var document = PresetDocument.Parse(source, "FOOD", PresetKind.Custom);
+            var original = document.ToDraft();
+            var rule = document.Blocks.Single(block => block.Kind == BlockKind.Rule);
+            var editor = new BehaviorEditorControl(document, AppliesToForms, rule.Id);
+            var beforeStages = PresetYaml.Write(BehaviorFamily.GetSetting(editor.Document, editor.RuleId, "stages")!);
+            Require(Descendants<Button>(editor).Count(button => Equals(button.Content, "All food")) == 1,
+                "Aliased, template-generated, and inherited Applies to selections must each offer one All action.");
+            Click(AppliesButton(editor, "All food"));
+            editor.Capture();
+            Require(editor.Document.Kind == PresetKind.Default &&
+                BehaviorFamily.GetSetting(editor.Document, editor.RuleId, "owners") is null &&
+                PresetYaml.Write(BehaviorFamily.GetSetting(editor.Document, editor.RuleId, "stages")!) == beforeStages &&
+                BehaviorFamily.GetSetting(editor.Document, editor.RuleId, "finalFormEditorID")?.Text == "CookedBeef" &&
+                document.ToDraft() == original,
+                "All must clear a referenced or inherited selection while retaining its stage values, final item, and original imported document.");
+        }
+        foreach (var selection in new[] { "!!str 'selectors()'", "missingSelectors()" })
+        {
+            var source = "templates:\n  selectors: [FoodBeef]\nownerLists:\n- owners: " + selection + "\n  " + stages;
+            var document = PresetDocument.Parse(source, "FOOD", PresetKind.Custom);
+            var editor = new BehaviorEditorControl(document, AppliesToForms, document.Blocks.Last().Id);
+            Require(Descendants<Button>(editor).Count(button => Equals(button.Content, "All food")) == 1,
+                "Literal and unresolved call-shaped selector text must not receive duplicate All actions from reference and scalar rendering.");
+        }
+    }
+    private static Border DefaultAppliesCard(BehaviorEditorControl editor) =>
+        Field<StackPanel>(Field<ValueEditorControl>(editor, "commonEditor"), "content").Children.OfType<Border>()
+            .Single(card => Descendants<TextBlock>(card).Any(text => text.Text == "Applies to"));
+
+    private static Button AppliesButton(BehaviorEditorControl editor, string text) =>
+        Descendants<Button>(editor.Document.Kind == PresetKind.Default && text == "Choose forms..." ? DefaultAppliesCard(editor) : editor)
+            .Single(button => Equals(button.Content, text));
+
+    private static void ChooseAffectedItems(BehaviorEditorControl editor, bool accept, Action beforeChoose)
+    {
+        var host = new Window { Content = editor, Width = 1000, Height = 750, WindowStyle = WindowStyle.None,
+            AllowsTransparency = true, Opacity = 0, ShowActivated = false, ShowInTaskbar = false };
+        Exception? failure = null;
+        try
+        {
+            host.Show();
+            var response = Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                var picker = PresentationSource.CurrentSources.Cast<PresentationSource>().Select(source => source.RootVisual)
+                    .OfType<FormPickerWindow>().Single(window => window.Owner == host);
+                try
+                {
+                    picker.Opacity = 0; picker.ShowInTaskbar = false;
+                    var choices = Field<DataGrid>(picker, "results");
+                    Require(choices.SelectionMode == DataGridSelectionMode.Extended && choices.Items.Cast<FormRow>().SequenceEqual(AppliesToForms.Take(2)),
+                        "The affected-item picker must allow multiple forms from the current item category only.");
+                    Require(Field<Button>(picker, "choose").Visibility != Visibility.Visible,
+                        "An empty picker selection must not offer acceptance or create an empty custom behavior.");
+                    if (accept) foreach (var form in choices.Items.Cast<FormRow>().ToArray()) choices.SelectedItems.Add(form);
+                    beforeChoose();
+                    if (accept) Click(Field<Button>(picker, "choose"));
+                    else picker.DialogResult = false;
+                }
+                catch (Exception error) { failure = error; picker.DialogResult = false; }
+            }));
+            try { Click(AppliesButton(editor, "Choose forms...")); }
+            finally { response.Abort(); }
+            if (failure is not null) throw failure;
+            Require(response.Status == DispatcherOperationStatus.Completed, "Choose forms must open its owned affected-item picker.");
+        }
+        finally { host.Content = null; host.Close(); }
+    }
     private static void WorkspaceSplit()
     {
         var document = PresetDocument.Parse("""
@@ -354,8 +563,6 @@ internal static class UnifiedBehaviorChecks
         .Single(expander => expander.Header is DependencyObject header &&
             Descendants<TextBlock>(header).Any(text => text.Text.StartsWith("Stages", StringComparison.Ordinal)));
 
-    private static ComboBox Scope(BehaviorEditorControl editor) => Descendants<ComboBox>(editor)
-        .Single(combo => AutomationProperties.GetName(combo) == "Behavior scope");
     private static Button? ButtonOrDefault(BehaviorEditorControl owner, string text) =>
         Field<StackPanel>(Field<ValueEditorControl>(owner, "commonEditor"), "content").Children.OfType<WrapPanel>()
             .SelectMany(panel => panel.Children.OfType<Button>()).SingleOrDefault(button => Equals(button.Content, text));

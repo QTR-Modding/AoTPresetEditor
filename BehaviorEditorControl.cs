@@ -227,24 +227,11 @@ public sealed class BehaviorEditorControl : UserControl
         commonEditor = new ValueEditorControl(document, forms, definition.Value, definition.Context,
             "Settings", parametersAllowed: family?.IsTemplate == true,
             groups: groups, behaviorMode: true, allowVariations: family is not null, sourceForms: CommonSources(), showHeading: false,
-            editSections: family is null ? null : ChangeSection);
+            editSections: family is null ? null : ChangeSection, changeAppliesTo: family is null ? null : ChangeAppliesTo);
         document = commonEditor.Document;
         commonEditor.Changed += (_, _) => { if (!refreshing) NotifyChanged(); };
         commonEditor.VariableChangeRequested += ChangeVariable;
         var panel = new StackPanel();
-        if (family is not null)
-        {
-            var scope = new ComboBox { ItemsSource = new[] { "Selected items", "Items without their own stages" },
-                SelectedIndex = document.Kind == PresetKind.Default ? 1 : 0, MinWidth = 200 };
-            AutomationProperties.SetName(scope, "Behavior scope");
-            scope.ToolTip = "Use these settings for selected items, or supply stages for items of this type that have none assigned elsewhere.";
-            var scopeRow = new DockPanel { Margin = new Thickness(0, 0, 0, 8), HorizontalAlignment = HorizontalAlignment.Left };
-            var scopeLabel = EditorControls.Text("Scope"); scopeLabel.Margin = new Thickness(0, 0, 10, 0);
-            scopeLabel.VerticalAlignment = VerticalAlignment.Center;
-            DockPanel.SetDock(scopeLabel, Dock.Left); scopeRow.Children.Add(scopeLabel); scopeRow.Children.Add(scope);
-            scope.SelectionChanged += (_, _) => ChangeScope(scope);
-            panel.Children.Add(scopeRow);
-        }
         if (family?.IsTemplate == true)
         {
             var otherUses = new PresetPresentation(document, forms, groups).Uses(family.Definition)
@@ -268,23 +255,35 @@ public sealed class BehaviorEditorControl : UserControl
         document = changed; return true;
     }
 
-    private void ChangeScope(ComboBox scope)
+    private void ChangeAppliesTo(bool all)
     {
-        if (refreshing || scope.SelectedIndex == (document.Kind == PresetKind.Default ? 1 : 0)) return;
         Capture();
         try
         {
-            var kind = scope.SelectedIndex == 1 ? PresetKind.Default : PresetKind.Custom;
-            if (!ChangeKind(kind)) { refreshing = true; scope.SelectedIndex = document.Kind == PresetKind.Default ? 1 : 0; refreshing = false; return; }
-            if (kind == PresetKind.Default) EnsureStages();
+            if (all)
+            {
+                if (document.Kind == PresetKind.Default || BehaviorFamily.GetSetting(document, RuleId, "stages") is null) return;
+                if (!ChangeKind(PresetKind.Default)) return;
+            }
+            else
+            {
+                if (document.Kind != PresetKind.Default) return;
+                var kind = BehaviorFamily.GetSetting(document, RuleId, "stages") is null ? PresetKind.Addon : PresetKind.Custom;
+                var field = PresetSchema.GetFields("rule", kind).Single(field => field.Key is "owners" or "forms");
+                var picker = new FormPickerWindow(forms, multiple: true,
+                    selection: FormSelection.ForField(field, document.Category), purpose: "Choose affected items") { Owner = Window.GetWindow(this) };
+                if (picker.ShowDialog() != true || picker.SelectedForms.Count == 0) return;
+                if (!ChangeKind(kind)) return;
+                var value = BehaviorFamily.Find(document, RuleId)!.Definition.Value.Clone();
+                var selected = PresetValue.List();
+                selected.Items.AddRange(picker.SelectedForms.Select(form => PresetValue.Scalar(form.Identifier)));
+                value.Set(field.Key, selected);
+                BehaviorFamily.SetCommon(document, RuleId, value);
+            }
             RuleId = BehaviorFamily.Normalize(document, RuleId);
             Rebuild(false); NotifyChanged();
         }
-        catch (Exception error)
-        {
-            refreshing = true; scope.SelectedIndex = document.Kind == PresetKind.Default ? 1 : 0; refreshing = false;
-            ShowError(error, "Cannot change affected items");
-        }
+        catch (Exception error) { ShowError(error, "Cannot change affected items"); }
     }
 
     private void EnsureStages(bool overrideInherited = false)

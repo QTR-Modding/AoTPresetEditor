@@ -20,6 +20,8 @@ public sealed class ValueEditorControl : UserControl
     private readonly bool behaviorMode;
     private readonly bool allowVariations;
     private readonly Action<string, bool>? editSections;
+    private readonly Action<bool>? changeAppliesTo;
+    private const string AllItemsPrecedence = "If another preset defines stages for a particular item, that item uses those stages instead.";
     private IReadOnlyList<FormRow>? sourceForms;
     private readonly string context;
     private readonly string title;
@@ -51,19 +53,22 @@ public sealed class ValueEditorControl : UserControl
     public ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed = false, PresetField? field = null, string? blockName = null,
         IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null, bool behaviorMode = false, bool allowVariations = true,
-        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null)
-        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms, showHeading, editSections) { }
+        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null,
+        Action<bool>? changeAppliesTo = null)
+        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms, showHeading, editSections, changeAppliesTo) { }
 
     private ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed, PresetField? field, string? blockName,
         IReadOnlyList<FormGroupDefinition> groups, ValueEditorControl? parent, Action<PresetValue>? replace, bool behaviorMode = false, bool allowVariations = true,
-        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null)
+        IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null,
+        Action<bool>? changeAppliesTo = null)
     {
         this.parent = parent;
         root = parent?.root ?? this;
         this.behaviorMode = parent?.behaviorMode ?? behaviorMode;
         this.allowVariations = parent?.allowVariations ?? allowVariations;
         this.editSections = editSections;
+        this.changeAppliesTo = parent is null ? changeAppliesTo : null;
         this.sourceForms = parent?.sourceForms ?? sourceForms;
         blockId = parent is null ? document.Blocks.FirstOrDefault(block => ReferenceEquals(block.Value, value))?.Id : root.blockId;
         this.document = parent is null ? document.Clone() : root.document;
@@ -408,6 +413,7 @@ public sealed class ValueEditorControl : UserControl
     private void RenderMap()
     {
         var descriptors = PresetSchema.GetFields(context, Document.Kind);
+        if (CanChangeAppliesTo && Document.Kind == PresetKind.Default) RenderAllItemsTarget();
         if (editSections is not null)
         {
             foreach (var descriptor in descriptors.Where(item => item.Key is "owners" or "forms")) RenderField(descriptor, content);
@@ -461,10 +467,46 @@ public sealed class ValueEditorControl : UserControl
     }
 
     private PresetValue? BehaviorSetting(string key) => Value.Get(key) ?? effective?.Get(key) ??
-        (editSections is not null && blockId is not null ? BehaviorFamily.GetSetting(Document, blockId, key) : null);
+        ((editSections is not null || changeAppliesTo is not null) && blockId is not null ? BehaviorFamily.GetSetting(Document, blockId, key) : null);
 
     private bool HasSection(string key) => BehaviorSetting(key) is { } setting &&
         (key == "stages" || setting.Kind != ValueKind.Sequence || setting.Items.Count > 0);
+
+    private bool CanChangeAppliesTo => parent is null && behaviorMode && changeAppliesTo is not null && this.field is null &&
+        Value.Kind == ValueKind.Mapping && PresetSchema.NormalizeContext(context) == "rule";
+
+    private bool IsAppliesToField(PresetField descriptor) => CanChangeAppliesTo && descriptor.Key is "owners" or "forms";
+
+    private bool CanChooseAllItems => Document.Kind != PresetKind.Default && HasSection("stages") && blockId is not null &&
+        BehaviorFamily.Find(Document, blockId) is { Rows.Count: <= 1 };
+
+    private void AddAllItemsChoice(Panel target, PresetField? descriptor)
+    {
+        if (descriptor is not null && IsAppliesToField(descriptor) && CanChooseAllItems)
+            target.Children.Add(EditorControls.Button("All " + PresetWorkspace.CategoryLabel(Document.Category).ToLowerInvariant(),
+                () => changeAppliesTo!(true)));
+    }
+
+    private void RenderAllItemsTarget()
+    {
+        var box = new StackPanel();
+        var caption = new WrapPanel { Margin = new Thickness(0, 0, 8, 2), VerticalAlignment = VerticalAlignment.Center };
+        var label = EditorControls.Text("Applies to"); label.FontWeight = FontWeights.SemiBold;
+        label.Margin = new Thickness(0); label.VerticalAlignment = VerticalAlignment.Center;
+        caption.Children.Add(label); caption.Children.Add(EditorControls.Info("Applies to", AllItemsPrecedence));
+        box.Children.Add(caption);
+        var choices = new WrapPanel();
+        var selected = EditorControls.Text("All " + PresetWorkspace.CategoryLabel(Document.Category).ToLowerInvariant());
+        selected.Margin = new Thickness(0, 0, 8, 0); selected.VerticalAlignment = VerticalAlignment.Center;
+        choices.Children.Add(selected);
+        choices.Children.Add(EditorControls.Button("Choose forms...", () => changeAppliesTo!(false)));
+        box.Children.Add(choices);
+        var card = new Border { Child = box, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(5),
+            Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 6) };
+        card.SetResourceReference(Border.BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
+        card.SetResourceReference(Border.BorderBrushProperty, "CardStrokeColorDefaultBrush");
+        content.Children.Add(card);
+    }
 
     private static string FieldSection(PresetField descriptor) => descriptor.Key switch
     {
@@ -480,11 +522,17 @@ public sealed class ValueEditorControl : UserControl
         label.Margin = new Thickness(0); label.VerticalAlignment = VerticalAlignment.Center;
         var caption = new WrapPanel { Margin = new Thickness(0, 0, 8, 2), VerticalAlignment = VerticalAlignment.Center };
         caption.Children.Add(label);
-        if (descriptor.Help.Length > 0) caption.Children.Add(EditorControls.Info(descriptor.Label, PresetSchema.FieldHelp(descriptor, context, Document.Kind)));
+        if (descriptor.Help.Length > 0)
+        {
+            var help = PresetSchema.FieldHelp(descriptor, context, Document.Kind);
+            if (IsAppliesToField(descriptor) && CanChooseAllItems) help += "\n\n" + AllItemsPrecedence;
+            caption.Children.Add(EditorControls.Info(descriptor.Label, help));
+        }
         var actions = new WrapPanel();
         var variable = behaviorMode && allowVariations && IsVariable(current);
         var canVary = behaviorMode && allowVariations && descriptor.Key is not ("<<" or "stages") &&
             (current is null || !PresetDocument.Descendants(current).Any(value => value.Anchor.Length > 0));
+        var hasEditor = !(variable && canVary) && (current is not null || descriptor.Required && Value.Get("<<") is null);
         if (canVary)
         {
             var choice = new CheckBox { Content = "Variable", IsChecked = variable, VerticalAlignment = VerticalAlignment.Center,
@@ -493,6 +541,8 @@ public sealed class ValueEditorControl : UserControl
             choice.Click += (_, _) => RequestVariable(descriptor, choice, variable);
             actions.Children.Add(choice);
         }
+        if (!hasEditor || IsVariable(current) || current?.Kind == ValueKind.Alias || current is not null && IsCall(current, out _, out _))
+            AddAllItemsChoice(actions, descriptor);
         var section = editSections is not null && descriptor.Key is "stages" or "transformers" or "timeModulators";
         if (section)
         {
@@ -510,7 +560,7 @@ public sealed class ValueEditorControl : UserControl
             }));
         DockPanel.SetDock(actions, Dock.Right); row.Children.Add(actions); row.Children.Add(caption); box.Children.Add(row);
         var status = Help(""); box.Children.Add(status);
-        if (!(variable && canVary) && (current is not null || descriptor.Required && Value.Get("<<") is null))
+        if (hasEditor)
         {
             var editable = current ?? NewValue(descriptor.ChildContext, descriptor);
             if (current is null && editable.Kind == ValueKind.Scalar) editable.Text = "";
@@ -689,6 +739,7 @@ public sealed class ValueEditorControl : UserControl
                 if (!Value.Items.Any(item => item.Kind == ValueKind.Scalar && item.Text == form.Identifier)) Value.Items.Add(PresetValue.Scalar(form.Identifier));
             RefreshList(Value.Items.Count - 1); NotifyChanged();
         }));
+        if (parent == root) root.AddAllItemsChoice(actions, field);
         if (field?.AllowsGroups == true) actions.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group =>
         {
             if (!Value.Items.Any(item => item.Kind == ValueKind.Scalar && item.Text == group.Name)) Value.Items.Add(PresetValue.Scalar(group.Name));
@@ -830,6 +881,7 @@ public sealed class ValueEditorControl : UserControl
             var picker = new FormPickerWindow(forms, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
             if (picker.ShowDialog() == true && picker.SelectedForms.FirstOrDefault() is { } form) entry.Text = form.Identifier;
         }));
+        if (parent == root) root.AddAllItemsChoice(choices, field);
         if (field?.AllowsGroups == true) choices.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group => entry.Text = group.Name)));
         content.Children.Add(choices.Children.Count == 0 ? entry : FormEntryRow(entry, choices));
         if (field?.Kind is FieldKind.FormList or FieldKind.IntegerList || field is null) valueOptions.Children.Add(EditorControls.Button("Use a list of values...", () =>

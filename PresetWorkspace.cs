@@ -218,7 +218,7 @@ public sealed class PresetWorkspace : UserControl
         && project.Entries.Any(entry => !entry.IsInactive || entry.OpenedPath is not null)
         && project.Entries.All(entry => validations.GetValueOrDefault(entry.Id)?.IsValid == true);
 
-    private static string CategoryLabel(string category)
+    internal static string CategoryLabel(string category)
     {
         var index = Array.IndexOf(Categories, category);
         return index < 0 ? category : CategoryNames[index];
@@ -500,8 +500,8 @@ public sealed class PresetWorkspace : UserControl
         var conversions = new Dictionary<string, PresetValue>(StringComparer.Ordinal);
         if (kind == PresetKind.Default)
         {
-            if (MessageBox.Show(Host, "Use these stages for " + CategoryLabel(edited.Category).ToLowerInvariant() +
-                " without their own stages? The current item selection will be cleared.", "Change affected items",
+            if (MessageBox.Show(Host, "Apply these stages to all " + CategoryLabel(edited.Category).ToLowerInvariant() +
+                "? This replaces the current item selection.", "Change affected items",
                 MessageBoxButton.OKCancel) != MessageBoxResult.OK) return null;
         }
         else if (edited.Kind != PresetKind.Default)
