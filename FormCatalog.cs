@@ -21,10 +21,14 @@ public enum ItemCategories
 }
 
 public sealed record FormRow(string Name, string EditorId, string Type, string Plugin, string Winner, string Identifier,
-    ItemCategories Categories = ItemCategories.None, bool IsTrigger = false, bool IsBoundObject = false);
+    ItemCategories Categories = ItemCategories.None, bool IsTrigger = false, bool IsBoundObject = false)
+{
+    public IComparable IdentifierSortKey => PresetPresentation.IdentifierSortKey(Identifier);
+}
 
 public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, string? Category = null, bool TriggerOnly = false,
-    bool BoundObjectOnly = false, IReadOnlyCollection<FormRow>? ExcludedForms = null, bool RequiresEditorId = false)
+    bool BoundObjectOnly = false, IReadOnlyCollection<FormRow>? ExcludedForms = null, bool RequiresEditorId = false,
+    ContainerScope ContainerScope = ContainerScope.None, ItemCategories WorldItemCategory = ItemCategories.None)
 {
     private readonly ItemCategories category = Enum.TryParse<ItemCategories>(Category, true, out var value) ? value : ItemCategories.None;
 
@@ -40,7 +44,9 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
                 types = types is null ? [form.Type] : types.Where(type => type.Equals(form.Type, StringComparison.OrdinalIgnoreCase)).ToArray();
             }
         return new(types, field?.MatchPresetCategory == true ? category : null,
-            field?.TriggerOnly == true, field?.BoundObjectOnly == true, excluded, field?.RequiresEditorId == true);
+            field?.TriggerOnly == true, field?.BoundObjectOnly == true, excluded, field?.RequiresEditorId == true,
+            field?.ContainerScope ?? ContainerScope.None,
+            Enum.TryParse<ItemCategories>(category, true, out var worldCategory) ? worldCategory : ItemCategories.None);
     }
 
     public bool Matches(FormRow form) =>
@@ -53,7 +59,9 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
 
     // Acoustic spaces pass AoT's bound-object check but have no inventory or 3D item representation.
     public bool IsPickerChoice(FormRow form) => Matches(form) &&
-        (!BoundObjectOnly || !form.Type.Equals("AcousticSpace", StringComparison.OrdinalIgnoreCase));
+        (!BoundObjectOnly || !form.Type.Equals("AcousticSpace", StringComparison.OrdinalIgnoreCase)) &&
+        (ContainerScope == ContainerScope.None || form.Type is "Npc" or "Container" ||
+            ContainerScope == ContainerScope.InventoriesAndWorldItems && (form.Categories & WorldItemCategory) != 0);
 }
 
 public sealed record CatalogResult(IReadOnlyList<FormRow> Forms, IReadOnlyList<string> Plugins, string PluginsPath);

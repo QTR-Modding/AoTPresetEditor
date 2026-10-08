@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
@@ -16,6 +17,7 @@ internal static class EditorInteractionChecks
     public static void Run()
     {
         PickerFiltering();
+        PickerSorting();
         ParametersAndArguments();
         NestedTemplateEditing();
         ResolvedPreviewInvalidation();
@@ -72,6 +74,89 @@ internal static class EditorInteractionChecks
         Require(Field<TextBlock>(limited, "count").Text.Contains(matchCount.ToString("N0")), "Limited results must still report every match.");
         limited.Close();
     }
+
+    private static void PickerSorting()
+    {
+        var player = new FormRow("A player", "Player", "Npc", "Skyrim.esm", "Skyrim.esm", "0x7~Skyrim.esm");
+        FormRow[] special =
+        [
+            player with { Name = "Z largest", EditorId = "Largest", Identifier = "0xFFFF~Skyrim.esm" },
+            player with { Name = "Hundred", EditorId = "Hundred", Identifier = "0x100~Skyrim.esm" },
+            player with { Name = "Sixteen", EditorId = "Sixteen", Identifier = "0x10~Skyrim.esm" },
+            player with { Name = "Fifteen", EditorId = "Fifteen", Identifier = "0xF~Skyrim.esm" },
+            player,
+            player with { Plugin = "Alpha.esp", Winner = "Alpha.esp", Identifier = "0x7~Alpha.esp" }
+        ];
+        var catalog = Enumerable.Range(0, 1100).Select(index => player with
+        {
+            Name = $"Middle {index:D4}", EditorId = $"Middle{index}", Type = "Container", Identifier = $"0x{index + 0x1000:X}~Skyrim.esm"
+        }).Concat(special).ToArray();
+        var picker = new FormPickerWindow(catalog, multiple: true);
+        var grid = Field<DataGrid>(picker, "results");
+        Require(!grid.Items.Contains(player), "This regression requires the player to start outside the displayed subset.");
+        grid.SelectedItems.Add(catalog[0]);
+        SortColumn(grid, "Identifier");
+        Require(grid.Items.Cast<FormRow>().Take(5).Select(form => form.Identifier).SequenceEqual(new[]
+            { "0x7~Alpha.esp", "0x7~Skyrim.esm", "0xF~Skyrim.esm", "0x10~Skyrim.esm", "0x100~Skyrim.esm" }),
+            "The Identifier header must sort the whole catalog numerically, with plugin ties, before limiting the view.");
+        Require(grid.Items.Count == 1000 && grid.SelectedItems.Contains(catalog[0]),
+            "Sorting must keep the display cap and selected forms that remain visible.");
+        grid.SelectedItems.Add(player);
+        SortColumn(grid, "Identifier");
+        Require(Equals(grid.Items[0], special[0]) && Field<HashSet<FormRow>>(picker, "selected").Contains(catalog[0]),
+            "Descending identifier sorting must find the highest form outside the original displayed subset.");
+        Search(picker, "Player");
+        Require(grid.Items.Cast<FormRow>().SequenceEqual(new[] { player, special[5] }) && grid.SelectedItems.Contains(player),
+            "Filtering must keep descending identifier sorting and restore retained multi-selection.");
+        Require(grid.Columns.Single(column => Equals(column.Header, "Identifier")).SortDirection == ListSortDirection.Descending,
+            "Filtering must preserve the header's active sort direction.");
+        Search(picker, "");
+        Field<ComboBox>(picker, "types").SelectedItem = "Npc";
+        Invoke(picker, "FilterForms");
+        Require(grid.Items.Cast<FormRow>().SequenceEqual(new[] { special[0], special[1], special[2], special[3], player, special[5] }),
+            "Type filters must retain numeric sorting across the complete matching catalog.");
+        Field<ComboBox>(picker, "plugins").SelectedItem = "Alpha.esp";
+        Invoke(picker, "FilterForms");
+        Require(grid.Items.Count == 1 && Equals(grid.Items[0], special[5]), "Plugin filters must preserve sorting without admitting other plugins.");
+        Field<ComboBox>(picker, "types").SelectedIndex = Field<ComboBox>(picker, "plugins").SelectedIndex = 0;
+        Invoke(picker, "FilterForms");
+        SortColumn(grid, "Name");
+        Require(grid.Items.Cast<FormRow>().Take(2).ToHashSet().SetEquals([player, special[5]]) &&
+            grid.Columns.Single(column => Equals(column.Header, "Identifier")).SortDirection is null,
+            "Sorting another column must cover every match and replace the previous single-column sort.");
+        SortColumn(grid, "Name");
+        Require(Equals(grid.Items[0], special[0]), "Descending name sorting must also happen before the display limit.");
+        Search(picker, "Player");
+        using (grid.Items.DeferRefresh())
+        {
+            grid.Items.SortDescriptions.Clear();
+            grid.Items.SortDescriptions.Add(new SortDescription(nameof(FormRow.Name), ListSortDirection.Ascending));
+            grid.Items.SortDescriptions.Add(new SortDescription(nameof(FormRow.IdentifierSortKey), ListSortDirection.Descending));
+        }
+        Invoke(picker, "FilterForms");
+        Require(grid.Items.SortDescriptions.Count == 2 && grid.Items.Cast<FormRow>().SequenceEqual(new[] { player, special[5] }),
+            "Filtering must retain the priority and directions of a multi-column sort.");
+        picker.Close();
+
+        var single = new FormPickerWindow(catalog);
+        grid = Field<DataGrid>(single, "results");
+        grid.SelectedItem = catalog[0];
+        SortColumn(grid, "Identifier");
+        SortColumn(grid, "Identifier");
+        Require(!grid.Items.Contains(catalog[0]) && Field<HashSet<FormRow>>(single, "selected").Contains(catalog[0]) &&
+            Field<Button>(single, "choose").IsEnabled,
+            "Sorting must retain a single selection displaced beyond the display cap.");
+        grid.SelectedItem = special[0];
+        Require(Field<HashSet<FormRow>>(single, "selected").SetEquals([special[0]]),
+            "Selecting a visible form must replace the previously selected form hidden beyond the display cap.");
+        Search(single, "Player");
+        Require(!Field<Button>(single, "choose").IsEnabled, "A filter that no longer matches the single selection must still clear it.");
+        single.Close();
+    }
+
+    private static void SortColumn(DataGrid grid, string header) =>
+        typeof(DataGrid).GetMethod("PerformSort", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(grid, [grid.Columns.Single(column => Equals(column.Header, header))]);
 
     private static void ParametersAndArguments()
     {

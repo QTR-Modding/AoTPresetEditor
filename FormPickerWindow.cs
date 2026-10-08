@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -58,6 +59,7 @@ public sealed class FormPickerWindow : Window
         types.SelectionChanged += (_, _) => ScheduleSearch();
         plugins.SelectionChanged += (_, _) => ScheduleSearch();
         searchTimer.Tick += (_, _) => { searchTimer.Stop(); FilterForms(); };
+        results.Sorting += Results_Sorting;
         results.SelectionChanged += Results_SelectionChanged;
         results.MouseDoubleClick += Results_DoubleClick;
         choose.Click += (_, _) => ActivateSelection();
@@ -150,6 +152,7 @@ public sealed class FormPickerWindow : Window
         text.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis));
         text.Setters.Add(new Setter(ToolTipProperty, new Binding(property)));
         results.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(property),
+            SortMemberPath = property == nameof(FormRow.Identifier) ? nameof(FormRow.IdentifierSortKey) : property,
             Width = new DataGridLength(weight, DataGridLengthUnitType.Star), MinWidth = 65, ElementStyle = text });
     }
 
@@ -163,21 +166,29 @@ public sealed class FormPickerWindow : Window
         var query = search.Text.Trim();
         var type = types.SelectedItem as string;
         var plugin = plugins.SelectedItem as string;
-        var visible = new List<FormRow>();
-        int total = 0;
-        foreach (var form in forms)
-        {
-            if (type is not null and not AllTypes && form.Type != type) continue;
-            if (plugin is not null and not AllPlugins && form.Plugin != plugin && form.Winner != plugin) continue;
-            if (query.Length != 0 && !Matches(form, query)) continue;
-            ++total;
-            if (visible.Count < DisplayLimit) visible.Add(form);
-        }
+        var sorting = results.Items.SortDescriptions.ToArray();
+        var matches = forms.Where(form =>
+            (type is null or AllTypes || form.Type == type) &&
+            (plugin is null or AllPlugins || form.Plugin == plugin || form.Winner == plugin) &&
+            (query.Length == 0 || Matches(form, query))).ToList();
+        var view = new ListCollectionView(matches);
+        using (view.DeferRefresh())
+            foreach (var sort in sorting) view.SortDescriptions.Add(sort);
+        var visible = view.Cast<FormRow>().Take(DisplayLimit).ToArray();
+        var total = matches.Count;
         replacingResults = true;
         try
         {
-            if (!multiple && selected.Any(form => !visible.Contains(form))) selected.Clear();
+            if (!multiple && selected.Any(form => !matches.Contains(form))) selected.Clear();
             results.ItemsSource = visible;
+            using (results.Items.DeferRefresh())
+            {
+                results.Items.SortDescriptions.Clear();
+                foreach (var sort in sorting) results.Items.SortDescriptions.Add(sort);
+            }
+            foreach (var column in results.Columns)
+                column.SortDirection = sorting.FirstOrDefault(sort => sort.PropertyName == column.SortMemberPath) is { PropertyName: not null } sort
+                    ? sort.Direction : null;
             if (multiple)
             {
                 foreach (var form in visible.Where(selected.Contains)) results.SelectedItems.Add(form);
@@ -191,6 +202,23 @@ public sealed class FormPickerWindow : Window
         UpdateSelection();
     }
 
+    private void Results_Sorting(object sender, DataGridSortingEventArgs args)
+    {
+        args.Handled = true;
+        var direction = args.Column.SortDirection == ListSortDirection.Ascending
+            ? ListSortDirection.Descending : ListSortDirection.Ascending;
+        var sorting = results.Items.SortDescriptions;
+        using (results.Items.DeferRefresh())
+        {
+            if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) sorting.Clear();
+            var existing = sorting.ToList().FindIndex(sort => sort.PropertyName == args.Column.SortMemberPath);
+            var requested = new SortDescription(args.Column.SortMemberPath, direction);
+            if (existing >= 0) sorting[existing] = requested;
+            else sorting.Add(requested);
+        }
+        FilterForms();
+    }
+
     private static bool Matches(FormRow form, string query) =>
         form.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
         form.EditorId.Contains(query, StringComparison.OrdinalIgnoreCase) ||
@@ -201,6 +229,7 @@ public sealed class FormPickerWindow : Window
     private void Results_SelectionChanged(object sender, SelectionChangedEventArgs args)
     {
         if (replacingResults) return;
+        if (!multiple && args.AddedItems.Count > 0) selected.Clear();
         foreach (FormRow form in args.RemovedItems) selected.Remove(form);
         foreach (FormRow form in args.AddedItems) selected.Add(form);
         UpdateSelection();

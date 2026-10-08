@@ -394,7 +394,7 @@ public sealed class ValueEditorControl : UserControl
         var parameters = TemplateCall.FindParameters(template.Value, Document); var suppliedArguments = args.Count;
         for (var index = 0; index < parameters.Count; index++)
         {
-            var position = index; var argumentField = PresetSchema.GetParameterField(template, parameters[index], Document);
+            var position = index; var argumentField = PresetSchema.GetParameterField(template, parameters[index], Document, field, context);
             var argument = index < args.Count ? args[index] : PresetValue.UnsetArgument();
             if (argument.IsUnsetArgument && argumentField?.Kind == FieldKind.ObjectList) argument = NewValue(argumentField.ChildContext, argumentField);
             content.Children.Add(EditorControls.Text(parameters[index]));

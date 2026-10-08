@@ -1,5 +1,8 @@
+using System.ComponentModel;
 using System.Reflection;
+using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using AoTPresetEditor;
 
 internal static class PresetPresentationChecks
@@ -17,6 +20,8 @@ internal static class PresetPresentationChecks
     {
         EmptyBehaviorPresentation();
         OwnerGroups();
+        GroupChoiceCompatibility();
+        GroupMemberSorting();
         var document = PresetDocument.Parse("""
             cooking: &cooking
               FormEditorID: Fire
@@ -88,6 +93,124 @@ internal static class PresetPresentationChecks
         Require(formPicker.Title == "Choose result item" && Field<DataGrid>(formPicker, "results").Items.Count == 4,
             "Contextual form selection must preserve applicability filtering.");
         formPicker.Close();
+    }
+
+    private static void GroupMemberSorting()
+    {
+        var group = new FormGroupDefinition("Order", ["0x100~Skyrim.esm", "0x7~Skyrim.esm", "0x10~Skyrim.esm"]);
+        var picker = new GroupPickerWindow([group], []);
+        Field<ListBox>(picker, "groupList").SelectedItem = group;
+        var grid = Field<DataGrid>(picker, "members");
+        var identifierColumn = grid.Columns.Single(column => Equals(column.Header, "Identifier"));
+        grid.Items.SortDescriptions.Add(new SortDescription(identifierColumn.SortMemberPath, ListSortDirection.Ascending));
+        string[] SortedIdentifiers() => grid.Items.Cast<object>().Select(row => (string)row.GetType().GetProperty("Identifier")!.GetValue(row)!).ToArray();
+        Require(SortedIdentifiers().SequenceEqual(["0x7~Skyrim.esm", "0x10~Skyrim.esm", "0x100~Skyrim.esm"]),
+            "The group member Identifier column must sort hexadecimal IDs numerically.");
+        grid.Items.SortDescriptions.Clear();
+        grid.Items.SortDescriptions.Add(new SortDescription(identifierColumn.SortMemberPath, ListSortDirection.Descending));
+        Require(SortedIdentifiers().SequenceEqual(["0x100~Skyrim.esm", "0x10~Skyrim.esm", "0x7~Skyrim.esm"]) &&
+            group.Members.SequenceEqual(["0x100~Skyrim.esm", "0x7~Skyrim.esm", "0x10~Skyrim.esm"]),
+            "Descending display sorting must not reorder the authored group definition.");
+        picker.Close();
+        var editor = new GroupEditorWindow([], [], initialMembers: group.Members);
+        var editorGrid = Field<DataGrid>(editor, "members");
+        editorGrid.Items.SortDescriptions.Add(new SortDescription(editorGrid.Columns.Single(column => Equals(column.Header, "Identifier")).SortMemberPath,
+            ListSortDirection.Ascending));
+        Require((string)editorGrid.Items[0].GetType().GetProperty("Identifier")!.GetValue(editorGrid.Items[0])! == "0x7~Skyrim.esm",
+            "The group creation preview must use the same numeric Identifier ordering.");
+        editor.Close();
+    }
+
+    private static void GroupChoiceCompatibility()
+    {
+        FormGroupDefinition[] groups =
+        [
+            new("WrongType", ["IceCrack"]),
+            new("MixedTypes", ["IceCrack", "FoodBeef"]),
+            new("OptionalMembers", ["IceCrack", "UnknownOptionalForm"]),
+            new("Empty", [])
+        ];
+        var picker = new GroupPickerWindow(groups, Forms, new(Category: "FOOD"));
+        var list = Field<ListBox>(picker, "groupList");
+        list.SelectedItem = groups[0];
+        var choose = Field<Button>(picker, "choose");
+        Require(choose.Visibility == Visibility.Visible && !choose.IsEnabled && list.Items.Count == groups.Length &&
+            Field<TextBlock>(picker, "description").Text.Contains("Choose a group with applicable members"),
+            "A wholly incompatible group must remain inspectable while its Choose action explains why it is disabled.");
+        choose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Invoke(picker, "Choose");
+        Require(picker.SelectedGroup is null && picker.CreatedGroups.Count == 0,
+            "The action shared by Choose, Enter, and double-click must reject a wholly incompatible selected group.");
+        picker.Close();
+
+        foreach (var group in groups.Skip(1))
+        {
+            var allowed = new GroupPickerWindow(groups, Forms, new(Category: "FOOD"));
+            Field<ListBox>(allowed, "groupList").SelectedItem = group;
+            Require(Field<Button>(allowed, "choose").IsEnabled,
+                "Mixed, unresolved, and empty groups must retain their existing selectable semantics.");
+            Require(AcceptDialog(allowed, () => Field<Button>(allowed, "choose").RaiseEvent(new RoutedEventArgs(Button.ClickEvent))) == true &&
+                allowed.SelectedGroup == group && allowed.SelectedGroup.Members.SequenceEqual(group.Members),
+                "Choosing a usable group must preserve every authored member, including incompatible and optional members.");
+        }
+
+        var acoustic = new FormRow("Acoustic", "TestAcoustic", "AcousticSpace", "Skyrim.esm", "Skyrim.esm", "0x900~Skyrim.esm", IsBoundObject: true);
+        var acousticGroup = new FormGroupDefinition("AcousticGroup", [acoustic.Identifier]);
+        var bound = new FormSelection(BoundObjectOnly: true);
+        var acousticPicker = new GroupPickerWindow([acousticGroup], [acoustic], bound);
+        Field<ListBox>(acousticPicker, "groupList").SelectedItem = acousticGroup;
+        Require(bound.Matches(acoustic) && !Field<Button>(acousticPicker, "choose").IsEnabled,
+            "Group applicability must use picker restrictions, not merely AoT's broad form acceptance.");
+        acousticPicker.Close();
+
+        foreach (var group in groups)
+        {
+            var editor = new GroupEditorWindow([], Forms, new(Category: "FOOD"), initialMembers: group.Members);
+            Field<TextBox>(editor, "name").Text = group.Name;
+            var create = Field<Button>(editor, "create");
+            if (group == groups[0])
+            {
+                Require(!create.IsEnabled && Field<TextBlock>(editor, "status").Text.Contains("No members can be used"),
+                    "Prefilled incompatible members must explain why the group cannot be created for this field.");
+                create.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Invoke(editor, "Create");
+                Require(editor.Group is null, "Disabled creation must also be guarded in the action itself.");
+                var grid = Field<DataGrid>(editor, "members");
+                grid.SelectedItem = grid.Items[0];
+                Invoke(editor, "RemoveSelected");
+                Require(create.IsEnabled, "Removing all incompatible members must restore the permitted empty-group state.");
+                editor.Close();
+            }
+            else
+            {
+                Require(create.IsEnabled && AcceptDialog(editor, () => create.RaiseEvent(new RoutedEventArgs(Button.ClickEvent))) == true &&
+                    editor.Group?.Members.SequenceEqual(group.Members) == true,
+                    "Creation must retain mixed, optional, and empty group members without silently filtering the definition.");
+            }
+        }
+    }
+
+    private static bool? AcceptDialog(Window dialog, Action accept)
+    {
+        dialog.WindowStyle = WindowStyle.None; dialog.AllowsTransparency = true;
+        dialog.Opacity = 0; dialog.ShowActivated = false; dialog.ShowInTaskbar = false;
+        Exception? failure = null;
+        var action = dialog.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            try
+            {
+                accept();
+                if (dialog.IsVisible) throw new InvalidOperationException("The selection action did not accept the dialog.");
+            }
+            catch (Exception error) { failure = error; dialog.DialogResult = false; }
+        }));
+        try
+        {
+            var result = dialog.ShowDialog();
+            if (failure is not null) throw failure;
+            return result;
+        }
+        finally { action.Abort(); dialog.Close(); }
     }
 
     private static void OwnerGroups()
@@ -183,5 +306,6 @@ internal static class PresetPresentationChecks
     }
 
     private static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;
+    private static void Invoke(object owner, string name) => owner.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(owner, null);
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 }

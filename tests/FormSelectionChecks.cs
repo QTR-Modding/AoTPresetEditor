@@ -28,6 +28,8 @@ internal static class FormSelectionChecks
         var armor = mod.Armors.AddNew(); armor.EditorID = "Armor";
         var misc = mod.MiscItems.AddNew(); misc.EditorID = "Misc";
         var key = mod.Keys.AddNew(); key.EditorID = "Key";
+        var npc = mod.Npcs.AddNew(); npc.EditorID = "Player";
+        var container = mod.Containers.AddNew(); container.EditorID = "Chest";
         var ammunition = mod.Ammunitions.AddNew(); ammunition.EditorID = "Ammunition";
         var light = mod.Lights.AddNew(); light.EditorID = "Light";
         var spell = mod.Spells.AddNew(); spell.EditorID = "Spell";
@@ -96,7 +98,44 @@ internal static class FormSelectionChecks
         Require(Field<DataGrid>(triggerPicker, "results").Items.Cast<FormRow>().All(form => form.IsTrigger),
             "Trigger filtering must exclude unrelated record types.");
         triggerPicker.Close();
+        ContainerSelections(forms);
         KnownForms(forms);
+    }
+
+    private static void ContainerSelections(IReadOnlyList<FormRow> forms)
+    {
+        FormRow Row(string editorId) => forms.Single(form => form.EditorId == editorId);
+        foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon })
+        foreach (var context in new[] { "rule", "transformer", "modulator" })
+        {
+            var field = PresetSchema.GetFields(context, kind).Single(field => field.Key == "containers");
+            var selection = FormSelection.ForField(field, "FOOD");
+            foreach (var id in new[] { "Player", "Chest" })
+                Require(selection.IsPickerChoice(Row(id)), $"{kind}/{context} Containers must offer inventory-owner base forms.");
+            foreach (var id in new[] { "Food", "FoodIngredient" })
+                Require(selection.IsPickerChoice(Row(id)) == (context == "rule"),
+                    $"{kind}/{context} Containers must offer world-item bases only for the rule-level filter.");
+            Require(selection.IsPickerChoice(forms.Single(form => form.EditorId.Length == 0)) == (context == "rule"),
+                "A rule's world-item filter does not require an EditorID.");
+            foreach (var id in new[] { "Ingredient", "Armor", "Keyword", "MagicEffect", "Sound", "Fire" })
+            {
+                Require(!selection.IsPickerChoice(Row(id)), $"{kind}/{context} Containers must not suggest {id} for FOOD.");
+                Require(selection.Matches(Row(id)), "Nonmatching manual/imported Containers identifiers must remain valid.");
+            }
+            var picker = new FormPickerWindow(forms, selection: selection);
+            var displayed = Field<DataGrid>(picker, "results").Items.Cast<FormRow>().ToArray();
+            Require(displayed.Length == (context == "rule" ? 6 : 2) && displayed.All(selection.IsPickerChoice),
+                "The actual Containers picker must contain only applicable inventory/world records.");
+            picker.Close();
+        }
+        var ruleField = PresetSchema.GetFields("rule", PresetKind.Custom).Single(field => field.Key == "containers");
+        var armorSelection = FormSelection.ForField(ruleField, "ARMO");
+        Require(armorSelection.IsPickerChoice(Row("Armor")) && armorSelection.IsPickerChoice(Row("Player")) &&
+            !armorSelection.IsPickerChoice(Row("Food")), "Rule Containers must use the current preset category for world items.");
+        var ingredientSelection = FormSelection.ForField(ruleField, "INGR");
+        Require(ingredientSelection.IsPickerChoice(Row("Ingredient")) && ingredientSelection.IsPickerChoice(Row("FoodIngredient")),
+            "A world item with overlapping categories must remain available in either category's filter.");
+        Require(new FormSelection().IsPickerChoice(Row("MagicEffect")), "The standalone form browser must remain unrestricted.");
     }
 
     private static void KnownForms(IReadOnlyList<FormRow> forms)

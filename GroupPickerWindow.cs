@@ -83,6 +83,7 @@ public sealed class GroupPickerWindow : Window
         choose.Visibility = Visibility.Visible;
         var rows = MemberRows(group.Members, forms, constraint);
         members.ItemsSource = rows;
+        choose.IsEnabled = !HasOnlyIncompatibleMembers(rows);
         var resolved = rows.Count(row => row.Form is not null);
         var applicable = rows.Count(row => row.Applicable);
         description.Text = constraint is null
@@ -90,6 +91,7 @@ public sealed class GroupPickerWindow : Window
             : $"{group.Members.Count} members; {applicable} known members applicable to this field.";
         if (resolved != rows.Count) description.Text += $" {rows.Count - resolved} not found in this profile; their identifiers are kept.";
         if (resolved != applicable) description.Text += $" {resolved - applicable} cannot be used for this field.";
+        if (!choose.IsEnabled) description.Text += " Choose a group with applicable members.";
         source.Text = group.SourcePath ?? "New group - saved with this preset.";
     }
 
@@ -103,11 +105,13 @@ public sealed class GroupPickerWindow : Window
     private void Choose()
     {
         if (groupList.SelectedItem is not FormGroupDefinition group) return;
+        if (HasOnlyIncompatibleMembers(MemberRows(group.Members, forms, constraint))) return;
         SelectedGroup = group; CreatedGroups = created.ToArray(); DialogResult = true;
     }
 
     internal sealed record MemberRow(string Identifier, FormRow? Form, bool Applicable)
     {
+        public IComparable IdentifierSortKey => PresetPresentation.IdentifierSortKey(Identifier);
         public string Name => Form?.Name is { Length: > 0 } name ? name : Form?.EditorId ?? "";
         public string Type => Form?.Type ?? "";
         public string Plugin => Form?.Plugin ?? "";
@@ -127,9 +131,12 @@ public sealed class GroupPickerWindow : Window
         return identifiers.Select(identifier =>
         {
             var form = matched.GetValueOrDefault(PresetPresentation.NormalizeIdentifier(identifier)) ?? matched.GetValueOrDefault(identifier);
-            return new MemberRow(identifier, form, form is not null && (constraint?.Matches(form) ?? true));
+            return new MemberRow(identifier, form, form is not null && (constraint?.IsPickerChoice(form) ?? true));
         }).ToArray();
     }
+
+    internal static bool HasOnlyIncompatibleMembers(IReadOnlyList<MemberRow> rows) =>
+        rows.Count != 0 && rows.All(row => row.Form is not null && !row.Applicable);
 
     internal static DataGrid CreateMemberGrid()
     {
@@ -149,6 +156,7 @@ public sealed class GroupPickerWindow : Window
             text.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis));
             text.Setters.Add(new Setter(ToolTipProperty, new Binding(property)));
             grid.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(property),
+                SortMemberPath = title == "Identifier" ? nameof(MemberRow.IdentifierSortKey) : property,
                 Width = new DataGridLength(weight, DataGridLengthUnitType.Star), MinWidth = title == "Status" ? 110 : 55, ElementStyle = text });
         }
         return grid;
@@ -186,7 +194,7 @@ public sealed class GroupEditorWindow : Window
         nameStatus.Margin = new Thickness(0, 5, 0, 8); nameStatus.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); header.Children.Add(nameStatus);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
         var add = EditorControls.Button("Add forms...", AddForms);
-        add.Visibility = forms.Any(form => constraint?.Matches(form) ?? true) ? Visibility.Visible : Visibility.Collapsed;
+        add.Visibility = forms.Any(form => constraint?.IsPickerChoice(form) ?? true) ? Visibility.Visible : Visibility.Collapsed;
         actions.Children.Add(add);
         var remove = EditorControls.Button("Remove selected", RemoveSelected); remove.Visibility = Visibility.Collapsed;
         members.SelectionChanged += (_, _) => remove.Visibility = members.SelectedItems.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -218,8 +226,11 @@ public sealed class GroupEditorWindow : Window
 
     private void Refresh()
     {
-        members.ItemsSource = GroupPickerWindow.MemberRows(identifiers, forms, constraint);
-        status.Text = $"{identifiers.Count} members" + (forms.Any(form => constraint?.Matches(form) ?? true) ? "" : " · No applicable forms in the loaded catalog.");
+        var rows = GroupPickerWindow.MemberRows(identifiers, forms, constraint);
+        members.ItemsSource = rows;
+        create.IsEnabled = !GroupPickerWindow.HasOnlyIncompatibleMembers(rows);
+        status.Text = !create.IsEnabled ? "No members can be used for this field. Add an applicable form or remove the incompatible members."
+            : $"{identifiers.Count} members" + (forms.Any(form => constraint?.IsPickerChoice(form) ?? true) ? "" : " · No applicable forms in the loaded catalog.");
     }
 
     private string? NameError()
@@ -242,6 +253,7 @@ public sealed class GroupEditorWindow : Window
     private void Create()
     {
         if (NameError() is { } error) { nameStatus.Text = error; return; }
+        if (GroupPickerWindow.HasOnlyIncompatibleMembers(GroupPickerWindow.MemberRows(identifiers, forms, constraint))) return;
         var group = new FormGroupDefinition(name.Text.Trim(), identifiers.ToArray());
         var errors = FormGroupCatalog.Validate(group);
         if (errors.Count != 0) { status.Text = string.Join(Environment.NewLine, errors); return; }

@@ -260,6 +260,25 @@ public sealed class PresetPresentation
         return references.Contains(target) || references.Any(reference => DependsOn(reference, target, visited));
     }
 
+    internal static IComparable IdentifierSortKey(string identifier)
+    {
+        if (!TryNormalizeIdentifier(identifier, out var normalized)) return new IdentifierOrder(null, identifier);
+        var separator = normalized.IndexOf('~');
+        var number = uint.Parse(normalized.AsSpan(2, separator - 2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
+        return new IdentifierOrder(number, normalized[(separator + 1)..]);
+    }
+
+    private readonly record struct IdentifierOrder(uint? Number, string Name) : IComparable
+    {
+        public int CompareTo(object? obj)
+        {
+            if (obj is not IdentifierOrder other) return 1;
+            var order = other.Number.HasValue.CompareTo(Number.HasValue);
+            if (order == 0) order = Nullable.Compare(Number, other.Number);
+            return order != 0 ? order : StringComparer.OrdinalIgnoreCase.Compare(Name, other.Name);
+        }
+    }
+
     internal static string NormalizeIdentifier(string identifier) =>
         TryNormalizeIdentifier(identifier, out var normalized) ? normalized : identifier;
 

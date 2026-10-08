@@ -10,6 +10,7 @@ internal static class SchemaPickerChecks
     {
         GroupFields();
         ParameterFields();
+        NestedDestinationFields();
         AcousticResultSelection();
         GroupDrafts();
         GroupListEligibility();
@@ -87,6 +88,103 @@ internal static class SchemaPickerChecks
         Require(Get("inner", "time").Kind == FieldKind.Number, "A generic template containing duration must infer its field context.");
     }
 
+    private static void NestedDestinationFields()
+    {
+        const string yaml = """
+            templates:
+              identity: $x
+              forward: identity($x)
+              items: [forward($x)]
+              stageItem:
+                FormEditorID: forward($replacement)
+              cooking:
+                owners: items($raw)
+                stages:
+                - {no: 0, name: '', duration: 1}
+                - <<: stageItem($stage)
+                  no: 1
+                  name: ''
+                  duration: 1
+                finalFormEditorID: forward($result)
+                containers: forward($where)
+                transformers:
+                - FormEditorID: Fire
+                  duration: 1
+                  finalFormEditorID: forward($result)
+                  containers: forward($where)
+              conflicting:
+                sound: forward($same)
+                art_object: identity($same)
+            ownerLists:
+            - cooking(FoodBeef, FoodCooked, FoodFinal, Player)
+            """;
+        var expanded = PresetYaml.Parse(PresetCatalog.Expand(yaml, CancellationToken.None).GetAwaiter().GetResult());
+        var expandedRule = expanded.Get("ownerLists")!.Items.Single();
+        Require(expandedRule.Get("owners")!.Items.Single().Text == "FoodBeef" &&
+            expandedRule.Get("stages")!.Items[1].Get("FormEditorID")!.Text == "FoodCooked" &&
+            expandedRule.Get("finalFormEditorID")!.Text == "FoodFinal",
+            "The native helper must support scalar, list, and merged-map templates used in this regression.");
+        var document = PresetDocument.Parse(yaml, "FOOD", PresetKind.Custom);
+        var template = document.Blocks.Single(block => block.Key == "cooking");
+        PresetField Parameter(string name) => PresetSchema.GetParameterField(template, name, document)
+            ?? throw new Exception("No field inferred for cooking." + name);
+        Require(Parameter("raw") is { Kind: FieldKind.Form, MatchPresetCategory: true, RequiresEditorId: true },
+            "A form passed through a list wrapper must retain the source field's constraints.");
+        Require(Parameter("stage") is { MatchSourceType: true, MatchPresetCategory: true, TriggerOnly: false },
+            "A merged map inside a stage must infer its FormEditorID as a stage item, not a trigger.");
+        Require(Parameter("result") is { Kind: FieldKind.Form, BoundObjectOnly: true },
+            "Scalar forwarding templates must retain the final item's bound-object constraint.");
+        Require(Parameter("where") is { ContainerScope: ContainerScope.Inventories },
+            "A parameter used for both rule and trigger filters must retain the stricter inventory picker scope.");
+        var conflict = document.Blocks.Single(block => block.Key == "conflicting");
+        Require(PresetSchema.GetParameterField(conflict, "same", document)?.FormTypes is { Length: 0 },
+            "Different destination types must still intersect when a parameter passes through separate wrappers.");
+        FormRow[] forms =
+        [
+            new("Beef", "FoodBeef", "Ingestible", "Test.esp", "Test.esp", "0x800~Test.esp", ItemCategories.FOOD, true, true),
+            new("Cooked", "FoodCooked", "Ingestible", "Test.esp", "Test.esp", "0x801~Test.esp", ItemCategories.FOOD, true, true),
+            new("Final", "FoodFinal", "Ingestible", "Test.esp", "Test.esp", "0x802~Test.esp", ItemCategories.FOOD, true, true),
+            new("Heal", "Heal", "MagicEffect", "Test.esp", "Test.esp", "0x803~Test.esp")
+        ];
+        var rule = document.Blocks.Single(block => block.Kind == BlockKind.Rule);
+        var behavior = new BehaviorEditorControl(document, forms, rule.Id);
+        Field<TabControl>(behavior, "tabs").SelectedIndex = 1;
+        var table = Field<DataGrid>(behavior, "table");
+        table.SelectedItem = table.Items[0];
+        table.CurrentCell = new DataGridCellInfo(table.Items[0], table.Columns.Single(column => Equals(column.Header, "result")));
+        var cell = Field<ValueEditorControl>(behavior, "cellEditor");
+        Require(Field<PresetField?>(cell, "field") is { BoundObjectOnly: true },
+            "The actual Variables cell must retain the nested final item's constraint.");
+        CheckResultPicker(cell, forms);
+
+        var final = PresetSchema.GetFields("rule", PresetKind.Custom).Single(field => field.Key == "finalFormEditorID");
+        var direct = new ValueEditorControl(document, forms, PresetValue.Scalar("forward(FoodFinal)"),
+            "Value", "Final item", field: final);
+        var argument = Descendants<ValueEditorControl>(direct).Single();
+        Require(Field<PresetField?>(argument, "field") is { BoundObjectOnly: true },
+            "Editing a nested call directly must pass its destination field into the argument editor.");
+        CheckResultPicker(argument, forms);
+
+        var containers = PresetSchema.GetFields("rule", PresetKind.Addon).Single(field => field.Key == "containers");
+        Require(PresetSchema.DefaultDescription(containers, "rule", PresetKind.Addon) ==
+            "No containers added here. Existing filters still apply.", "Unset addon containers must describe the existing filters.");
+        var allowed = PresetSchema.GetFields("transformer", PresetKind.Addon).Single(field => field.Key == "allowed_stages");
+        Require(!PresetSchema.DefaultDescription(allowed, "transformer", PresetKind.Addon).Contains("containers"),
+            "The container explanation must not replace the unrelated allowed-stage explanation.");
+    }
+
+    private static void CheckResultPicker(ValueEditorControl editor, IReadOnlyList<FormRow> forms)
+    {
+        var selection = (FormSelection)typeof(ValueEditorControl).GetMethod("FormSelection", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(editor, null)!;
+        var picker = new FormPickerWindow(forms, selection: selection);
+        try
+        {
+            Require(Field<DataGrid>(picker, "results").Items.Cast<FormRow>().SequenceEqual(forms.Take(3)),
+                "A final item reached through a nested template must offer bound objects and exclude magic effects.");
+        }
+        finally { picker.Close(); }
+    }
     private static void AcousticResultSelection()
     {
         FormRow Row(string type) => new(type, type, type, "Test.esp", "Test.esp", type,
