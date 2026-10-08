@@ -67,7 +67,7 @@ public static class PresetSchema
     ];
     private static readonly PresetField[] CustomFields =
     [
-        new("owners", "Applies to", FieldKind.FormList, "Items selected by form identifier or words in their names. A scalar or a list is accepted.", true, FormTypes: ItemTypes, MatchPresetCategory: true, RequiresEditorId: true),
+        new("owners", "Applies to", FieldKind.FormList, "Items selected by form identifiers, form groups, or words in their names. A scalar or a list is accepted. Group names are case-sensitive and select only their members.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true, RequiresEditorId: true),
         .. RuleFields
     ];
     private static readonly PresetField[] AddonFields =

@@ -16,6 +16,7 @@ internal static class PresetPresentationChecks
     public static void Run()
     {
         EmptyBehaviorPresentation();
+        OwnerGroups();
         var document = PresetDocument.Parse("""
             cooking: &cooking
               FormEditorID: Fire
@@ -87,6 +88,62 @@ internal static class PresetPresentationChecks
         Require(formPicker.Title == "Choose result item" && Field<DataGrid>(formPicker, "results").Items.Count == 4,
             "Contextual form selection must preserve applicability filtering.");
         formPicker.Close();
+    }
+
+    private static void OwnerGroups()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        document.PendingGroups.Add(new("Meat", ["00065C99", "FoodVenison", "UnknownOptionalForm"]));
+        var catalog = new PresetPresentation(document, Forms,
+        [
+            new("Meat", ["FoodBeefCooked"]),
+            new("FoodBeef", ["FoodVenison"]),
+            new("Raw Beef", []),
+            new("Venison", ["UnknownOptionalForm"]),
+            new("Nested", ["Meat"])
+        ]);
+        Require(catalog.ResolveGroup("Meat") == document.PendingGroups[0] && catalog.ResolveGroup("meat") is null,
+            "Pending groups must override the same installed name, and group lookup must retain AoT's exact case.");
+        Require(catalog.MatchesOwner("Meat", Forms[0]) && catalog.MatchesOwner("Meat", Forms[2]) &&
+            !catalog.MatchesOwner("Meat", Forms[1]), "Owners must match the group's known members rather than an installed group's replaced contents.");
+        Require(catalog.MatchesOwner("FoodBeef", Forms[2]) && !catalog.MatchesOwner("FoodBeef", Forms[0]) &&
+            catalog.ResolveForm("FoodBeef", allowGroups: true) is null,
+            "An exact group name must take precedence over a colliding individual form identifier.");
+        Require(catalog.MatchesOwner("foodbeef", Forms[0]) && catalog.ResolveForm("foodbeef", allowGroups: true) == Forms[0],
+            "A differently cased selector must retain ordinary form lookup when it does not name a group exactly.");
+        Require(!catalog.MatchesOwner("Raw Beef", Forms[0]) && !catalog.MatchesOwner("Venison", Forms[2]) &&
+            catalog.MatchesOwner("raw beef", Forms[0]),
+            "Empty and nonmatching groups must not fall back to name words; a differently cased name may still use word matching.");
+        Require(!catalog.MatchesOwner("Nested", Forms[0]), "Group members are form identifiers, not recursive group references.");
+        foreach (var key in new[] { "owners", "forms" })
+        {
+            var rule = PresetValue.Map(); rule.Set(key, PresetValue.Scalar("Meat"));
+            Require(catalog.SourceForms(rule).SequenceEqual([Forms[0], Forms[2]]),
+                "Both custom and addon sources must resolve known group members while retaining unresolved members in the authored group.");
+            rule.Set(key, PresetValue.Scalar("Raw Beef"));
+            Require(catalog.SourceForms(rule).Count == 0, "An empty group must remain empty when deriving source-item restrictions.");
+        }
+        Require(document.PendingGroups[0].Members.Last() == "UnknownOptionalForm",
+            "Inspecting group sources must not rewrite or discard unresolved members.");
+
+        var staged = PresetDocument.Parse("""
+            templates:
+              aging:
+                owners: $items
+                stages:
+                - {no: 0, name: Fresh, duration: 1}
+                - {no: 1, name: Old, duration: 1, FormEditorID: FoodVenison}
+                finalFormEditorID: FoodBeefCooked
+            ownerLists:
+            - aging(Meat)
+            """, "FOOD", PresetKind.Custom);
+        staged.PendingGroups.Add(document.PendingGroups[0]);
+        var stagedCatalog = new PresetPresentation(staged, Forms.Select(form => form with { IsBoundObject = true }).ToArray());
+        var validation = PresetValidation.Check(staged, CancellationToken.None, stagedCatalog).GetAwaiter().GetResult();
+        Require(PresetDocument.Parse(validation.Expanded, "FOOD", PresetKind.Custom).Blocks.Single(block => block.Kind == BlockKind.Rule)
+            .Value.Get("owners")?.Text == "Meat" && validation.Errors.Values.SelectMany(errors => errors)
+            .Any(error => error.Contains("a later stage cannot reuse the source item")),
+            "Native expansion must retain variable group names while stage validation checks their known source members.");
     }
 
     private static void EmptyBehaviorPresentation()

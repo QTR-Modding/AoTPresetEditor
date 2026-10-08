@@ -126,6 +126,81 @@ internal static class BehaviorWorkspaceChecks
         EmptyBehaviorWorkspace();
         IssueNavigationAndRemoval();
         BehaviorMovement();
+        SharedPendingGroups();
+    }
+
+    private static void SharedPendingGroups()
+    {
+        FormRow[] forms =
+        [
+            new("Raw Beef", "FoodBeef", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x65C99~Skyrim.esm", ItemCategories.FOOD, true, true),
+            new("Cooked Beef", "FoodBeefCooked", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x721E8~Skyrim.esm", ItemCategories.FOOD, true, true)
+        ];
+        var project = new PresetProject();
+        var owner = project.Add(PresetDocument.Parse("formsLists: [{forms: FoodBeef}]", "FOOD", PresetKind.Addon), "Group author");
+        var consumer = project.Add(PresetDocument.Parse("""
+            ownerLists:
+            - owners: SharedFood
+              stages:
+              - {no: 0, name: Fresh, duration: 1}
+              - {no: 1, name: Old, duration: 1, FormEditorID: FoodBeef}
+              finalFormEditorID: FoodBeefCooked
+            """, "FOOD", PresetKind.Custom), "Group user");
+        var ownerId = owner.Document.Blocks.Single().Id;
+        var consumerId = consumer.Document.Blocks.Single().Id;
+        var workspace = new PresetWorkspace();
+        SetField(workspace, "project", project); SetField(workspace, "activeEntry", consumer);
+        SetField(workspace, "document", consumer.Document); SetField(workspace, "forms", forms);
+        try
+        {
+            RefreshWorkspace(workspace, consumerId);
+            var validations = Field<Dictionary<string, PresetValidationResult>>(workspace, "validations");
+            Require(validations[consumer.Id].IsValid, "An unresolved owner must not be treated as a known source before its group exists.");
+            var list = Field<ListBox>(workspace, "blocks");
+            list.SelectedItem = list.Items.OfType<ListBoxItem>().Single(item => Equals(item.Tag, ownerId));
+            var author = Field<BehaviorEditorControl>(workspace, "editor");
+            Field<ValueEditorControl>(author, "commonEditor").Document.PendingGroups.Add(new("SharedFood", ["FoodBeef"]));
+            Invoke(author, "NotifyChanged"); Invoke(workspace, "CommitEditor");
+            Require(validations.Count == 0,
+                "Creating a pending group must invalidate cached validation in every document that could use its name.");
+
+            RefreshWorkspace(workspace, consumerId);
+            Require(Field<Dictionary<string, PresetValidationResult>>(workspace, "validations")[consumer.Id].Errors.Values
+                .SelectMany(errors => errors).Any(error => error.Contains("a later stage cannot reuse the source item")),
+                "Validation must resolve a pending group from another document and reject reusing its member as a later stage.");
+            var editor = Field<BehaviorEditorControl>(workspace, "editor");
+            var common = Field<ValueEditorControl>(editor, "commonEditor");
+            var appliesTo = Descendants<ValueEditorControl>(common).Single(control => Field<PresetField?>(control, "field")?.Key == "owners");
+            var chooseGroup = Descendants<Button>(appliesTo).Single(button => Equals(button.Content, "Choose form group..."));
+            Exception? failure = null;
+            var response = workspace.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                var picker = PresentationSource.CurrentSources.Cast<PresentationSource>().Select(source => source.RootVisual)
+                    .OfType<GroupPickerWindow>().Single();
+                try
+                {
+                    var group = Field<ListBox>(picker, "groupList").Items.Cast<FormGroupDefinition>().Single(item => item.Name == "SharedFood");
+                    Require(group.Members.SequenceEqual(["FoodBeef"]),
+                        "A different document's chooser must offer the newly authored group's current members.");
+                }
+                catch (Exception error) { failure = error; }
+                finally { picker.DialogResult = false; }
+            }));
+            try { chooseGroup.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); }
+            finally { response.Abort(); }
+            if (failure is not null) throw failure;
+            Require(response.Status == DispatcherOperationStatus.Completed, "The form-group action must open the actual group chooser.");
+
+            Invoke(workspace, "ChangeBehaviorKind", consumer.Document, consumerId, PresetKind.Addon);
+            var addon = Field<PresetProject>(workspace, "project").FindByBlockId(consumerId)!.Document;
+            Require(addon.Blocks.Single().Value.Get("forms")?.Text == "SharedFood",
+                "Removing stages must retain a group defined in another document without expanding it or asking for individual items.");
+            Invoke(workspace, "ChangeBehaviorKind", addon, consumerId, PresetKind.Custom);
+            var custom = Field<PresetProject>(workspace, "project").FindByBlockId(consumerId)!.Document;
+            Require(custom.Blocks.Single().Value.Get("owners")?.Text == "SharedFood",
+                "Adding stages must retain the same cross-document group reference.");
+        }
+        finally { Invoke(workspace, "ResetEditor"); }
     }
 
     private static void IssueNavigationAndRemoval()

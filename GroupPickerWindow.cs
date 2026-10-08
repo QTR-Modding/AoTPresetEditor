@@ -169,9 +169,11 @@ public sealed class GroupEditorWindow : Window
 
     public FormGroupDefinition? Group { get; private set; }
 
-    public GroupEditorWindow(IReadOnlyList<FormGroupDefinition> existing, IReadOnlyList<FormRow> forms, FormSelection? constraint = null)
+    public GroupEditorWindow(IReadOnlyList<FormGroupDefinition> existing, IReadOnlyList<FormRow> forms, FormSelection? constraint = null,
+        IReadOnlyList<string>? initialMembers = null)
     {
         this.existing = existing; this.forms = forms; this.constraint = constraint;
+        identifiers.AddRange(initialMembers?.Distinct(StringComparer.Ordinal) ?? []);
         Title = "New form group"; Width = 980; Height = 650; MinWidth = 760; MinHeight = 460;
         EditorControls.FitToOwner(this);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;

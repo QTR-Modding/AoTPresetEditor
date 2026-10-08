@@ -8,7 +8,7 @@ public sealed class PresetPresentation
     private PresetDocument document;
     private readonly IReadOnlyList<FormGroupDefinition> installedGroups;
     private readonly Dictionary<string, FormRow> forms = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, FormGroupDefinition> groups = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, FormGroupDefinition> groups = new(StringComparer.Ordinal);
     private readonly Dictionary<PresetValue, PresetValue> effective = [];
     private readonly Dictionary<string, HashSet<string>> dependencies = new(StringComparer.Ordinal);
 
@@ -40,11 +40,14 @@ public sealed class PresetPresentation
     public PresetValue? EffectiveValue(string blockId) => document.Blocks.FirstOrDefault(block => block.Id == blockId) is { } block ? EffectiveValue(block) : null;
     public PresetValue? EffectiveValue(PresetValue value) => effective.GetValueOrDefault(value);
 
-    public FormRow? ResolveForm(string identifier, bool allowGroups = false) => allowGroups && groups.ContainsKey(identifier)
+    public FormGroupDefinition? ResolveGroup(string name) => groups.GetValueOrDefault(name);
+
+    public FormRow? ResolveForm(string identifier, bool allowGroups = false) => allowGroups && ResolveGroup(identifier) is not null
         ? null : forms.GetValueOrDefault(NormalizeIdentifier(identifier)) ?? forms.GetValueOrDefault(identifier);
 
     public bool MatchesOwner(string identifier, FormRow form)
     {
+        if (ResolveGroup(identifier) is { } group) return group.Members.Any(member => ResolveForm(member) == form);
         if (ResolveForm(identifier) == form) return true;
         // AoT also tries name words when an identifier resolves to a different form.
         // CLibUtilsQTR's includesWord uses space-delimited words or phrases.
@@ -54,14 +57,13 @@ public sealed class PresetPresentation
 
     public IReadOnlyList<FormRow> SourceForms(PresetValue rule)
     {
-        var owners = rule.Get("owners");
-        var selection = owners ?? rule.Get("forms");
+        var selection = rule.Get("owners") ?? rule.Get("forms");
         if (selection is null) return [];
         var result = new HashSet<FormRow>();
         foreach (var value in selection.Kind == ValueKind.Sequence ? selection.Items : [selection])
         {
             if (value.Kind != ValueKind.Scalar || value.IsNull) continue;
-            if (owners is null && groups.TryGetValue(value.Text, out var group))
+            if (ResolveGroup(value.Text) is { } group)
             {
                 foreach (var member in group.Members)
                     if (ResolveForm(member) is { } form) result.Add(form);
@@ -73,7 +75,7 @@ public sealed class PresetPresentation
 
     public string FormLabel(string identifier, bool includeIdentifier = false)
     {
-        if (groups.TryGetValue(identifier, out var group)) return $"{group.Name} ({group.Members.Count} forms)";
+        if (ResolveGroup(identifier) is { } group) return $"{group.Name} ({group.Members.Count} forms)";
         if (ResolveForm(identifier) is not { } form) return identifier;
         var name = form.Name.Length != 0 ? form.Name : form.EditorId.Length != 0 ? form.EditorId : identifier;
         return includeIdentifier && name != identifier ? $"{name} ({identifier})" : name;
@@ -258,16 +260,21 @@ public sealed class PresetPresentation
         return references.Contains(target) || references.Any(reference => DependsOn(reference, target, visited));
     }
 
-    internal static string NormalizeIdentifier(string identifier)
+    internal static string NormalizeIdentifier(string identifier) =>
+        TryNormalizeIdentifier(identifier, out var normalized) ? normalized : identifier;
+
+    internal static bool TryNormalizeIdentifier(string identifier, out string normalized)
     {
+        normalized = identifier;
         var parts = identifier.Split('~');
-        if (parts.Length > 2) return identifier;
+        if (parts.Length > 2) return false;
         var number = parts[0].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? parts[0][2..] : parts[0];
-        if (parts.Length == 1 && !parts[0].StartsWith("0x", StringComparison.OrdinalIgnoreCase) && number.Length is not (7 or 8)) return identifier;
-        if (!uint.TryParse(number, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var id)) return identifier;
+        if (parts.Length == 1 && !parts[0].StartsWith("0x", StringComparison.OrdinalIgnoreCase) && number.Length is not (7 or 8)) return false;
+        if (!uint.TryParse(number, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var id)) return false;
         // Full IDs outside Skyrim.esm depend on the current load order, which this catalog does not record.
         const uint maximumMasterLocalId = 0xFFFFFF;
-        if (parts.Length == 1 && id > maximumMasterLocalId) return identifier;
-        return $"0x{id:X}~{(parts.Length == 2 ? parts[1] : "Skyrim.esm")}";
+        if (parts.Length == 1 && id > maximumMasterLocalId) return false;
+        normalized = $"0x{id:X}~{(parts.Length == 2 ? parts[1] : "Skyrim.esm")}";
+        return true;
     }
 }

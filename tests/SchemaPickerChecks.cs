@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using AoTPresetEditor;
 
 internal static class SchemaPickerChecks
@@ -11,13 +12,15 @@ internal static class SchemaPickerChecks
         ParameterFields();
         AcousticResultSelection();
         GroupDrafts();
+        GroupListEligibility();
+        GroupListCreation();
     }
 
     private static void GroupFields()
     {
         PresetField Get(string context, string name, PresetKind kind = PresetKind.Custom) =>
             PresetSchema.GetFields(context, kind).Single(field => field.Key == name);
-        Require(!Get("rule", "owners").AllowsGroups, "Custom owners must not offer form groups.");
+        Require(Get("rule", "owners").AllowsGroups, "Custom owners must offer form groups.");
         Require(Get("rule", "forms", PresetKind.Addon).AllowsGroups, "Addon forms must offer form groups.");
         Require(Get("rule", "containers").AllowsGroups, "Rule container filters must offer form groups.");
         foreach (var context in new[] { "modulator", "transformer" })
@@ -144,6 +147,175 @@ internal static class SchemaPickerChecks
         editor.Close();
     }
 
+    private static readonly FormRow[] GroupForms =
+    [
+        new("Beef", "FoodBeef", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x65C99~Skyrim.esm", ItemCategories.FOOD),
+        new("Venison", "FoodVenison", "Ingestible", "Skyrim.esm", "Skyrim.esm", "0x65C9E~Skyrim.esm", ItemCategories.FOOD)
+    ];
+
+    private static void GroupListEligibility()
+    {
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        document.PendingGroups.Add(new("PendingMeat", ["FoodBeef"]));
+        FormGroupDefinition[] installed = [new("InstalledMeat", ["FoodVenison"])];
+        var owners = PresetSchema.GetFields("rule", PresetKind.Custom).Single(field => field.Key == "owners");
+        ValueEditorControl Editor(PresetValue list, PresetField? field = null) =>
+            new(document, GroupForms, list, "Value", "Applies to", field: field ?? owners, groups: installed);
+        bool Offered(ValueEditorControl editor) => Descendants<Button>(editor).Any(button =>
+            Equals(button.Content, "Create group from list...") && button.Visibility == Visibility.Visible);
+        PresetValue List(params PresetValue[] items) { var value = PresetValue.List(); value.Items.AddRange(items); return value; }
+
+        var concrete = List(PresetValue.Scalar("FoodBeef"), PresetValue.Scalar("0x800~Optional.esp"));
+        Require(Offered(Editor(concrete)), "Known forms and unresolved plugin/local identifiers must allow group creation.");
+        Require(!Offered(Editor(PresetValue.List())), "An empty selection must not offer group creation.");
+        var tagged = PresetValue.Scalar("FoodBeef"); tagged.Tag = "tag:yaml.org,2002:str";
+        Require(Offered(Editor(List(tagged))), "An explicitly tagged literal form string must remain eligible.");
+        tagged.Tag = "!custom";
+        Require(!Offered(Editor(List(tagged))), "Creating a group must not discard an unknown member tag.");
+        tagged.Tag = "tag:yaml.org,2002:null";
+        Require(!Offered(Editor(List(tagged))), "An explicitly tagged null must not become a group member.");
+        foreach (var item in new[]
+        {
+            PresetValue.Scalar("Beef"), PresetValue.Scalar("UnresolvedEditorId"), PresetValue.Scalar("PendingMeat"),
+            PresetValue.Scalar("InstalledMeat"), PresetValue.Scalar("Raw~Meat"), PresetValue.Scalar("null"), PresetValue.Scalar("$meat"),
+            PresetValue.Scalar("pick(FoodBeef)"), PresetValue.Alias("meats"), PresetValue.Map(), PresetValue.UnsetArgument()
+        })
+            Require(!Offered(Editor(List(PresetValue.Scalar("FoodBeef"), item))),
+                "Group creation must not reinterpret a nonliteral or nonconcrete list entry: " + item.Kind + " " + item.Text);
+        foreach (var annotate in new Action<PresetValue>[]
+        {
+            value => value.Anchor = "member",
+            value => value.Comments.Add("Member note"),
+            value => value.TrailingComments.Add("After member"),
+            value => value.InlineComment = "Inline member note"
+        })
+        {
+            var item = PresetValue.Scalar("FoodBeef"); annotate(item);
+            Require(!Offered(Editor(List(item))), "Group creation must not discard annotations on an individual member.");
+        }
+        Require(!Offered(Editor(concrete, owners with { AllowsGroups = false })),
+            "Fields that cannot accept groups must not offer group creation.");
+        Require(Offered(Editor(concrete, PresetSchema.GetFields("rule", PresetKind.Addon).Single(field => field.Key == "forms"))),
+            "Addon form lists must offer the same group creation action.");
+
+        var templateDocument = PresetDocument.Parse("""
+            templates:
+              age:
+                owners: $items
+                stages: [{no: 0, name: '', duration: 1}]
+                finalFormEditorID: ''
+            ownerLists:
+            - age(PendingMeat)
+            """, "FOOD", PresetKind.Custom);
+        templateDocument.PendingGroups.Add(new("PendingMeat", ["FoodBeef"]));
+        var template = templateDocument.Blocks.Single(block => block.Kind == BlockKind.Template);
+        var parameter = PresetSchema.GetParameterField(template, "items", templateDocument);
+        Require(parameter is { AllowsGroups: true, Kind: FieldKind.FormList, MatchPresetCategory: true },
+            "Owner template parameters must retain form-group and category choices.");
+        var parameterEditor = new ValueEditorControl(templateDocument, GroupForms, PresetValue.Scalar("PendingMeat"),
+            "Value", "Items", field: parameter);
+        parameterEditor.Capture();
+        Require(parameterEditor.Value.Text == "PendingMeat" &&
+            Descendants<Button>(parameterEditor).Any(button => Equals(button.Content, "Choose form group...")),
+            "Editing an owner parameter must preserve its group selector and offer group selection.");
+    }
+
+    private static void GroupListCreation()
+    {
+        var document = PresetDocument.Parse("""
+            ownerLists:
+            - owners: [FoodBeef, 0x65C9E~Skyrim.esm, 0x800~Optional.esp, FoodBeef]
+              stages: [{no: 0, name: '', duration: 1}]
+              finalFormEditorID: ''
+            """, "FOOD", PresetKind.Custom);
+        var rule = document.Blocks.Single();
+        var originalSelection = rule.Value.Get("owners")!;
+        originalSelection.Anchor = "selectedMeats";
+        originalSelection.Comments.Add("Selected meats");
+        originalSelection.InlineComment = "Keep this note";
+        originalSelection.TrailingComments.Add("After selection");
+        rule.Value.Set("containers", PresetValue.Alias("selectedMeats"));
+        var original = document.ToDraft();
+        var editor = new BehaviorEditorControl(document, GroupForms, rule.Id);
+        var changed = 0; editor.Changed += (_, _) => changed++;
+        var listEditor = Descendants<ValueEditorControl>(Field<ValueEditorControl>(editor, "commonEditor"))
+            .Single(value => value.Value.Kind == ValueKind.Sequence && Field<PresetField?>(value, "field")?.Key == "owners");
+        var before = PresetYaml.Write(listEditor.Value);
+        var beforeDraft = editor.Document.ToDraft();
+        string[] expected = [GroupForms[0].Identifier, GroupForms[1].Identifier, "0x800~Optional.esp"];
+        void CheckPrefill(GroupEditorWindow dialog)
+        {
+            Require(Field<List<string>>(dialog, "identifiers").SequenceEqual(expected),
+                "The group editor must prefill canonical known identifiers, retain unresolved plugin forms, and remove duplicate members.");
+            Require(editor.Document.ToDraft() == beforeDraft && PresetYaml.Write(listEditor.Value) == before,
+                "Opening a detached group draft must not change the selector or pending definitions.");
+            Field<TextBox>(dialog, "name").Text = "SavedMeat";
+            var grid = Field<DataGrid>(dialog, "members");
+            grid.SelectedItem = grid.Items[1];
+            Click(Descendants<Button>(dialog).Single(button => Equals(button.Content, "Remove selected")));
+        }
+        ShowGroupEditor(editor, listEditor, dialog =>
+        {
+            CheckPrefill(dialog);
+            Click(Descendants<Button>(dialog).Single(button => Equals(button.Content, "Cancel")));
+        });
+        editor.Capture();
+        Require(editor.Document.ToDraft() == beforeDraft && PresetYaml.Write(listEditor.Value) == before && changed == 0,
+            "Cancelling a renamed and edited group must leave the full draft unchanged and emit no edit.");
+        ShowGroupEditor(editor, listEditor, dialog =>
+        {
+            CheckPrefill(dialog);
+            Click(Field<Button>(dialog, "create"));
+        });
+        editor.Capture();
+        var selection = editor.Document.Blocks.Single(block => block.Id == rule.Id).Value.Get("owners")!;
+        var group = editor.Document.PendingGroups.Single();
+        Require(selection is { Kind: ValueKind.Scalar, Text: "SavedMeat", Anchor: "selectedMeats" } &&
+            selection.Comments.SequenceEqual(originalSelection.Comments) &&
+            selection.TrailingComments.SequenceEqual(originalSelection.TrailingComments) &&
+            selection.InlineComment == originalSelection.InlineComment && editor.Document.ToYaml().Contains("*selectedMeats"),
+            "Accepting the group must replace the list with its name while preserving the selection's anchor and comments.");
+        Require(group.Name == "SavedMeat" && group.Members.SequenceEqual([GroupForms[0].Identifier, "0x800~Optional.esp"]) &&
+            changed > 0 && document.ToDraft() == original,
+            "Only acceptance must commit the edited members to the isolated document.");
+        Require(PresetDocument.FromDraft(editor.Document.ToDraft()).ToDraft() == editor.Document.ToDraft(),
+            "The created group and annotated selector must survive a draft round trip together.");
+        Require(!Descendants<Button>(listEditor).Any(button => Equals(button.Content, "Create group from list...")),
+            "The scalar group reference must replace the list's creation action.");
+    }
+
+    private static void ShowGroupEditor(BehaviorEditorControl editor, ValueEditorControl listEditor, Action<GroupEditorWindow> respond)
+    {
+        var host = new Window { Content = editor, Width = 1000, Height = 750, WindowStyle = WindowStyle.None,
+            AllowsTransparency = true, Opacity = 0, ShowActivated = false, ShowInTaskbar = false };
+        Exception? failure = null;
+        try
+        {
+            host.Show();
+            var response = Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                var dialog = PresentationSource.CurrentSources.Cast<PresentationSource>().Select(source => source.RootVisual)
+                    .OfType<GroupEditorWindow>().Single(window => window.Owner == host);
+                try { dialog.Opacity = 0; dialog.ShowInTaskbar = false; respond(dialog); }
+                catch (Exception error) { failure = error; dialog.DialogResult = false; }
+            }));
+            try { Click(Descendants<Button>(listEditor).Single(button => Equals(button.Content, "Create group from list..."))); }
+            finally { response.Abort(); }
+            if (failure is not null) throw failure;
+            Require(response.Status == DispatcherOperationStatus.Completed, "The list action must open its owned group editor.");
+        }
+        finally { host.Content = null; host.Close(); }
+    }
+
+    private static void Click(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    private static IEnumerable<T> Descendants<T>(DependencyObject parent) where T : DependencyObject
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(parent).OfType<DependencyObject>())
+        {
+            if (child is T match) yield return match;
+            foreach (var nested in Descendants<T>(child)) yield return nested;
+        }
+    }
     private static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 }

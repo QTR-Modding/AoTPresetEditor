@@ -50,13 +50,17 @@ Transformations and time modifiers need stages, which can come from another pres
 
 ## Use form groups
 
-1. Open a trigger's **Trigger** field and choose **Choose form group**. Select a group to inspect its members, then **Choose group** to use its name in the preset. The list includes groups from the active MO2 profile.
-2. To make one, choose **New group**, enter a name, and use **Add forms** to select its members. **Create group** returns to the list. Choose that group to use it in your current field. Member status identifies unavailable forms and forms that do not apply to that field.
+A form group is a named list of forms. For example, select Raw Beef and Venison in **Applies to**, then choose **Create group from list...**. The group editor opens with those items filled in. Name the group `RawMeat` and choose **Create group**. **Applies to** now uses `RawMeat` instead of listing both items. You can change the members before creating the group; canceling keeps the original list.
+
+1. To reuse it, choose **Choose form group...** in another **Applies to**, **Trigger**, or **Containers** field. Select `RawMeat`, inspect its members, then choose **Choose**. Groups from the active MO2 profile and new groups in the open preset are available here.
+2. To create a group from scratch, choose **New group...** in that picker, enter a name, and use **Add forms...** to select its members. **Create group** returns to the picker. Select the group and choose **Choose** to use it.
 3. **Save to mod** writes new groups to `SKSE/Plugins/AlchemyOfTime/formGroups/<name>.txt` alongside the preset. **Save draft** keeps them for later. Canceling a picker or a separate editing dialog discards changes made within that dialog. Existing group files are read-only in the editor.
 
-Groups are lists of literal form identifiers. AoT accepts them in addon **Applies to**, **Containers** under **Filters**, and **Trigger** fields. Custom **Applies to** accepts item identifiers or name words instead. The group chooser preserves unresolved members, including identifiers from optional mods.
+Groups contain literal form identifiers, including identifiers from optional mods that are unavailable in the loaded profile. **Create group from list...** is available for lists of individual forms; lists containing other groups, variables, or name selectors retain their existing editing controls.
 
-Adding stages to a behavior that selects a group asks before replacing the group with its current members. Removing stages from a behavior that selects items by name words similarly asks before using the currently matching items. After either conversion, later changes to the group or name matches do not change that selection.
+Adding or removing stages keeps a selected group's name, so later edits to its file still affect the selection when AoT next loads its settings. Form groups in custom `owners` require an AoT build containing [owner form-group support](https://github.com/QTR-Modding/AlchemyOfTime/pull/53).
+
+Removing stages from a behavior that selects items by name words still asks before replacing those words with the currently matching items, because addon selectors do not match item names.
 
 ## Browse forms and installed presets
 

@@ -696,6 +696,7 @@ public sealed class ValueEditorControl : UserControl
         var up = new Button { Content = "Move up" };
         var down = new Button { Content = "Move down" };
         var edit = new Button { Content = "Edit entry" };
+        var createGroup = EditorControls.Button("Create group from list...", CreateGroupFromList);
         void RefreshList(int selected)
         {
             list.ItemsSource = Value.Items.Select((item, index) => new ListBoxItem
@@ -708,6 +709,7 @@ public sealed class ValueEditorControl : UserControl
         }
         refreshSummary = () =>
         {
+            createGroup.Visibility = GroupMembersFromList() is null ? Visibility.Collapsed : Visibility.Visible;
             for (var index = 0; index < Math.Min(Value.Items.Count, list.Items.Count); index++)
                 ((TextBlock)((ListBoxItem)list.Items[index]).Content).Text = effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count
                     ? ListEntrySummary(effective.Items[index], index, resolved: true) : ListEntrySummary(Value.Items[index], index);
@@ -746,6 +748,7 @@ public sealed class ValueEditorControl : UserControl
             RefreshList(Value.Items.Count - 1); NotifyChanged();
         })));
         actions.Children.Add(add);
+        actions.Children.Add(createGroup);
         remove.Click += (_, _) =>
         {
             var index = list.SelectedIndex; if (index < 0) return;
@@ -761,6 +764,7 @@ public sealed class ValueEditorControl : UserControl
         actions.Children.Add(edit); actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
         void ShowActions()
         {
+            createGroup.Visibility = GroupMembersFromList() is null ? Visibility.Collapsed : Visibility.Visible;
             edit.Visibility = list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
             edit.Content = details.Visibility == Visibility.Visible ? "Hide entry" : "Edit entry";
             remove.Visibility = list.SelectedIndex >= 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -947,6 +951,43 @@ public sealed class ValueEditorControl : UserControl
     private void AdoptDocument(PresetDocument updated)
     {
         updated.RebindValue(root.Value, root.document); root.document = updated; root.presentation = new PresetPresentation(updated, forms, groups);
+    }
+    private IReadOnlyList<string>? GroupMembersFromList()
+    {
+        if (field?.AllowsGroups != true || Value.Kind != ValueKind.Sequence || Value.Items.Count == 0) return null;
+        var members = new List<string>();
+        foreach (var item in Value.Items)
+        {
+            if (item.Kind != ValueKind.Scalar || item.IsNull || string.IsNullOrWhiteSpace(item.Text) || IsReference(item) ||
+                item.Tag is not ("" or "tag:yaml.org,2002:str") ||
+                item.Anchor.Length != 0 || item.Comments.Count != 0 || item.TrailingComments.Count != 0 || item.InlineComment.Length != 0 ||
+                presentation.ResolveGroup(item.Text) is not null) return null;
+            var form = presentation.ResolveForm(item.Text);
+            if (form is null && !PresetPresentation.TryNormalizeIdentifier(item.Text, out _)) return null;
+            members.Add(form?.Identifier ?? item.Text);
+        }
+        return members.Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    private void CreateGroupFromList()
+    {
+        Capture();
+        if (GroupMembersFromList() is not { } members) return;
+        if (field?.Key == "owners" && Value.Items.Any(item =>
+        {
+            var form = presentation.ResolveForm(item.Text);
+            return forms.Any(other => other != form && presentation.MatchesOwner(item.Text, other));
+        }))
+        {
+            MessageBox.Show(Window.GetWindow(this), "This list also selects items by name. Choose the individual items first, then create the group.",
+                "Choose individual items", MessageBoxButton.OK);
+            return;
+        }
+        var available = Document.PendingGroups.Concat(groups).DistinctBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        var editor = new GroupEditorWindow(available, forms, FormSelection(), members) { Owner = Window.GetWindow(this) };
+        if (editor.ShowDialog() != true || editor.Group is not { } group) return;
+        Document.PendingGroups.Add(group);
+        SetValue(PresetValue.Scalar(group.Name));
     }
     private void ChooseGroup(Action<FormGroupDefinition> use)
     {

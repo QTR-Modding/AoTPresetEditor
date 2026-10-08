@@ -8,6 +8,8 @@ internal static class FormGroupChecks
         var root = Path.Combine(Path.GetTempPath(), "AoTPresetEditor-groups-" + Guid.NewGuid().ToString("N"));
         var groupPath = FormGroupCatalog.GetExportPath(root, "ColdPlaces");
         var folder = Path.GetDirectoryName(groupPath)!;
+        var presetPath = Path.Combine(root, "OwnerGroups.yml");
+        var savedGroupPath = FormGroupCatalog.GetExportPath(root, "SavedMeat");
         var nested = Path.Combine(folder, "nested");
         Directory.CreateDirectory(nested);
         var ignoredExtension = Path.Combine(folder, "Ignored.TXT");
@@ -38,9 +40,35 @@ internal static class FormGroupChecks
             copy.PendingGroups.Add(new("CancelledGroup", ["FormB"]));
             Require(document.PendingGroups.Count == 1 && document.PendingGroups[0].Members[0] == "FormA", "A cancelled nested draft changed its parent's groups.");
             Require(!document.ToYaml().Contains("DraftGroup"), "Companion group definitions leaked into preset YAML.");
+            var owners = PresetDocument.Parse("""
+                templates:
+                  age:
+                    owners: $items
+                    stages: [{no: 0, name: Fresh, duration: 1}]
+                    finalFormEditorID: ''
+                ownerLists:
+                - age(SavedMeat)
+                """, "FOOD", PresetKind.Custom);
+            owners.PendingGroups.Add(new("SavedMeat", ["0x65C99~Skyrim.esm", "0x800~Optional.esp"]));
+            var restored = PresetDocument.FromDraft(owners.ToDraft());
+            Require(restored.ToDraft() == owners.ToDraft() && restored.PendingGroups.Single().Members.Count == 2,
+                "An owner template argument and its companion definition must survive draft reload together.");
+            var yaml = restored.ToYaml();
+            Require(yaml.Contains("age(SavedMeat)") && !yaml.Contains("0x800~Optional.esp"),
+                "Preset YAML must use the reusable group name while members remain in the companion file.");
+            PresetExport.Save(presetPath, yaml, restored.PendingGroups, root);
+            var reopened = PresetDocument.Parse(File.ReadAllText(presetPath), "FOOD", PresetKind.Custom);
+            var ownerId = reopened.Blocks.Single(block => block.Kind == BlockKind.Rule).Id;
+            Require(BehaviorFamily.GetArgument(reopened, ownerId, "items").Text == "SavedMeat" &&
+                FormGroupCatalog.Load(root).Single(item => item.Name == "SavedMeat").Members.SequenceEqual(restored.PendingGroups.Single().Members) &&
+                File.ReadAllText(savedGroupPath) == FormGroupCatalog.Serialize(restored.PendingGroups.Single()) &&
+                File.ReadAllText(groupPath) == contents,
+                "Export and reopen must retain the named owner argument and exact members without altering an installed group.");
         }
         finally
         {
+            File.Delete(presetPath);
+            File.Delete(savedGroupPath);
             File.Delete(groupPath);
             File.Delete(ignoredExtension);
             File.Delete(ignoredNested);

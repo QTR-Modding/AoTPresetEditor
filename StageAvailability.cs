@@ -51,7 +51,7 @@ public sealed class StageAvailability
         }
 
         var allGroups = groups.Concat(project.Entries.SelectMany(entry => entry.Document.PendingGroups))
-            .GroupBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
+            .GroupBy(group => group.Name, StringComparer.Ordinal).ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var catalog = new PresetPresentation(new PresetDocument(), forms, allGroups.Values.ToArray());
         foreach (var entry in project.Entries.Where(entry => !entry.IsInactive && entry.Document.Kind == PresetKind.Addon))
         {

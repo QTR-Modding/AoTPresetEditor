@@ -472,8 +472,9 @@ public sealed class PresetWorkspace : UserControl
             UpdateActions(); return;
         }
         activeEntry = entry; document = entry.Document; validation = validations.GetValueOrDefault(entry.Id);
-        presentation = new PresetPresentation(document, forms, groups, validation?.Expanded);
-        editor = new BehaviorEditorControl(document, forms, id, groups);
+        var availableGroups = AvailableGroups();
+        presentation = new PresetPresentation(document, forms, availableGroups, validation?.Expanded);
+        editor = new BehaviorEditorControl(document, forms, id, availableGroups);
         editor.KindChangeRequested += ChangeBehaviorKind;
         editingId = id; editorDirty = false; editor.Changed += EditorChanged;
         details.Content = editor;
@@ -496,7 +497,7 @@ public sealed class PresetWorkspace : UserControl
         if (project is null) return null;
         var candidate = project.Clone();
         var source = candidate.FindByBlockId(ruleId)!; source.Document = edited.Clone();
-        var catalog = new PresetPresentation(edited, forms, groups);
+        var catalog = new PresetPresentation(edited, forms, AvailableGroups());
         var conversions = new Dictionary<string, PresetValue>(StringComparer.Ordinal);
         if (kind == PresetKind.Default)
         {
@@ -504,36 +505,29 @@ public sealed class PresetWorkspace : UserControl
                 "? This replaces the current item selection.", "Change affected items",
                 MessageBoxButton.OKCancel) != MessageBoxResult.OK) return null;
         }
-        else if (edited.Kind != PresetKind.Default)
+        else if (edited.Kind == PresetKind.Custom)
         {
-            var allGroups = groups.Concat(edited.PendingGroups).GroupBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
             foreach (var selector in candidate.BehaviorSelectors(ruleId))
             {
-                if (selector.IsNull || string.IsNullOrWhiteSpace(selector.Text) || selector.IsUnsetArgument) continue;
-                IReadOnlyList<string>? identifiers = null;
-                if (edited.Kind == PresetKind.Addon && allGroups.TryGetValue(selector.Text, out var group))
-                    identifiers = group.Members;
-                else if (edited.Kind == PresetKind.Custom)
+                if (selector.IsNull || string.IsNullOrWhiteSpace(selector.Text) || selector.IsUnsetArgument ||
+                    catalog.ResolveGroup(selector.Text) is not null) continue;
+                var matches = forms.Where(form => new FormSelection(Category: edited.Category).Matches(form) &&
+                    catalog.MatchesOwner(selector.Text, form)).ToArray();
+                var exact = catalog.ResolveForm(selector.Text);
+                if (matches.Length > 1 || matches.Length == 1 && matches[0] != exact)
                 {
-                    var matches = forms.Where(form => new FormSelection(Category: edited.Category).Matches(form) &&
-                        catalog.MatchesOwner(selector.Text, form)).ToArray();
-                    var exact = catalog.ResolveForm(selector.Text);
-                    if (matches.Length > 1 || matches.Length == 1 && matches[0] != exact)
-                        identifiers = matches.Select(form => form.Identifier).ToArray();
-                    else if (matches.Length == 0 && exact is null &&
-                        !PresetPresentation.NormalizeIdentifier(selector.Text).Contains('~'))
-                        throw new InvalidOperationException("No loaded items match '" + selector.Text +
-                            "'. Choose individual items before removing the stages.");
+                    var items = PresetValue.List(); items.Items.AddRange(matches.Select(form => PresetValue.Scalar(form.Identifier)));
+                    conversions[selector.Text] = items;
                 }
-                if (identifiers is null) continue;
-                var items = PresetValue.List(); items.Items.AddRange(identifiers.Select(PresetValue.Scalar));
-                conversions[selector.Text] = items;
+                else if (matches.Length == 0 && exact is null &&
+                    !PresetPresentation.NormalizeIdentifier(selector.Text).Contains('~'))
+                    throw new InvalidOperationException("No loaded items match '" + selector.Text +
+                        "'. Choose individual items before removing the stages.");
             }
             if (conversions.Count > 0 && MessageBox.Show(Host,
-                "This change requires individual items. Replace these selections with their current items?\n\n" +
+                "Replace these name matches with their current items?\n\n" +
                 string.Join("\n", conversions.Select(pair => pair.Key + ": " + pair.Value.Items.Count + " items")) +
-                "\n\nLater changes to these groups or name matches will not change the selection.",
+                "\n\nLater changes to these name matches will not change the selection.",
                 "Use current items", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return null;
         }
         var changed = candidate.ChangeBehaviorKind(ruleId, kind,
@@ -543,13 +537,27 @@ public sealed class PresetWorkspace : UserControl
         return changed.Document;
     }
 
+    private IReadOnlyList<FormGroupDefinition> AvailableGroups() => project is null ? groups : groups
+        .Concat(project.Entries.SelectMany(entry => entry.Document.PendingGroups))
+        .GroupBy(group => group.Name, StringComparer.Ordinal).Select(group => group.Last()).ToArray();
+
+    private void UpdateDocument(PresetProjectEntry entry, PresetDocument updated)
+    {
+        var previousGroups = entry.Document.PendingGroups;
+        if (previousGroups.Count != updated.PendingGroups.Count || previousGroups.Zip(updated.PendingGroups)
+            .Any(pair => pair.First.Name != pair.Second.Name || !pair.First.Members.SequenceEqual(pair.Second.Members)))
+        { validations.Clear(); presentation = null; }
+        else validations.Remove(entry.Id);
+        entry.Document = updated;
+    }
+
     private bool CommitEditor()
     {
         if (!editorDirty || editor is null || editingId is null) return true;
         try
         {
             editor.Capture(); document = editor.Document; editingId = editor.RuleId;
-            if (activeEntry is not null) { activeEntry.Document = document; validations.Remove(activeEntry.Id); }
+            if (activeEntry is not null) UpdateDocument(activeEntry, document);
             editorDirty = false; dirty = true; editTimer.Start(); return true;
         }
         catch (Exception error)
@@ -613,6 +621,7 @@ public sealed class PresetWorkspace : UserControl
         using var request = new CancellationTokenSource(); checking = request;
         try
         {
+            var availableGroups = AvailableGroups();
             foreach (var entry in project.Entries)
             {
                 if (entry.IsInactive)
@@ -621,7 +630,7 @@ public sealed class PresetWorkspace : UserControl
                     continue;
                 }
                 if (validations.ContainsKey(entry.Id)) continue;
-                var catalog = new PresetPresentation(entry.Document, forms, groups);
+                var catalog = new PresetPresentation(entry.Document, forms, availableGroups);
                 var result = await PresetValidation.Check(entry.Document.Clone(), request.Token, catalog);
                 request.Token.ThrowIfCancellationRequested(); validations[entry.Id] = result;
             }
@@ -644,7 +653,7 @@ public sealed class PresetWorkspace : UserControl
     private void UpdatePresentation(string? expanded = null)
     {
         if (document is null) return;
-        if (presentation is null) presentation = new PresetPresentation(document, forms, groups, expanded);
+        if (presentation is null) presentation = new PresetPresentation(document, forms, AvailableGroups(), expanded);
         else presentation.Update(document, expanded);
     }
 
@@ -652,10 +661,11 @@ public sealed class PresetWorkspace : UserControl
     {
         issueList.Children.Clear();
         if (project is null) return;
+        var availableGroups = AvailableGroups();
         foreach (var entry in project.Entries)
         {
             if (!validations.TryGetValue(entry.Id, out var result)) continue;
-            var catalog = new PresetPresentation(entry.Document, forms, groups, result.Expanded);
+            var catalog = new PresetPresentation(entry.Document, forms, availableGroups, result.Expanded);
             foreach (var error in result.FileErrors)
                 issueList.Children.Add(IssueButton(issueList.Children.Count + 1, FileLocation(entry), error, () => SelectFileIssue(entry)));
             foreach (var block in entry.Document.Blocks)
@@ -744,7 +754,7 @@ public sealed class PresetWorkspace : UserControl
     {
         var view = new ValueEditorWindow(entry.Document, forms, block.Value, block.Context, "Shared settings",
             parametersAllowed: block.Kind == BlockKind.Template, blockName: block.Name,
-            issues: validations.GetValueOrDefault(entry.Id)?.Errors.GetValueOrDefault(block.Id), groups: groups) { Owner = Host };
+            issues: validations.GetValueOrDefault(entry.Id)?.Errors.GetValueOrDefault(block.Id), groups: AvailableGroups()) { Owner = Host };
         view.Loaded += (_, _) => view.Editor.FocusIssue(error);
         if (view.ShowDialog() != true) return;
         try
@@ -754,9 +764,9 @@ public sealed class PresetWorkspace : UserControl
             changed.Value = view.Value; changed.Name = view.BlockName;
             updated.RebindTemplateCalls(previous);
             var selected = SelectedId;
-            ResetEditor(); entry.Document = updated;
+            ResetEditor(); UpdateDocument(entry, updated);
             if (activeEntry == entry) { document = updated; presentation = null; }
-            validations.Remove(entry.Id); dirty = true; await Refresh(selected);
+            dirty = true; await Refresh(selected);
         }
         catch (Exception failure) { MessageBox.Show(Host, failure.Message, "Cannot apply shared settings", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
@@ -809,9 +819,10 @@ public sealed class PresetWorkspace : UserControl
         try
         {
             blocks.Items.Clear(); if (project is null) return;
+            var availableGroups = AvailableGroups();
             foreach (var entry in project.Entries)
             {
-                var catalog = new PresetPresentation(entry.Document, forms, groups, validations.GetValueOrDefault(entry.Id)?.Expanded);
+                var catalog = new PresetPresentation(entry.Document, forms, availableGroups, validations.GetValueOrDefault(entry.Id)?.Expanded);
                 foreach (var block in catalog.Behaviors())
                 {
                     var family = BehaviorFamily.Find(entry.Document, block.Id);

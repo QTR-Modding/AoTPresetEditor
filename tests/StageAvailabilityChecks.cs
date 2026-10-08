@@ -12,6 +12,7 @@ internal static class StageAvailabilityChecks
     public static void Run()
     {
         OwnerSelectors();
+        OwnerGroups();
         var empty = StageAvailability.LoadAsync([]).GetAwaiter().GetResult();
         var project = Addon("FoodBeef");
         var validation = Validate(project);
@@ -64,6 +65,33 @@ internal static class StageAvailabilityChecks
             "An inactive generated stage file must not make known missing stages uncertain.");
 
         LoadedPresets();
+    }
+
+    private static void OwnerGroups()
+    {
+        var empty = StageAvailability.LoadAsync([]).GetAwaiter().GetResult();
+        var project = Addon("FoodBeef");
+        var stages = PresetDocument.Parse("ownerLists:\n- owners: Meat\n  " + StageSettings.Replace("\n", "\n  ").TrimEnd(),
+            "FOOD", PresetKind.Custom);
+        stages.PendingGroups.Add(new("Meat", ["FoodBeef", "UnknownOptionalFood"]));
+        project.Add(stages, "Meat stages");
+        Require(Messages(empty, project, Validate(project)).Count == 0,
+            "A custom owner group must provide stages to its members, including when its definition is pending export.");
+        stages.PendingGroups[0] = new("Meat", []);
+        Require(Messages(empty, project, Validate(project)).Single().StartsWith("No stages", StringComparison.Ordinal),
+            "An empty custom owner group must not supply stages.");
+        stages.PendingGroups[0] = new("Raw Beef", []);
+        stages.Blocks.Single().Value.Set("owners", PresetValue.Scalar("Raw Beef"));
+        Require(Messages(empty, project, Validate(project)).Single().StartsWith("No stages", StringComparison.Ordinal),
+            "A group named like an item must not satisfy stage coverage through name matching when it has no members.");
+        stages.PendingGroups[0] = new("Meat", ["FoodBeef"]);
+        stages.Blocks.Single().Value.Set("owners", PresetValue.Scalar("meat"));
+        Require(Messages(empty, project, Validate(project)).Single().StartsWith("No stages", StringComparison.Ordinal),
+            "A differently cased custom group name must not supply the group's stage coverage.");
+        stages.Blocks.Single().Value.Set("owners", PresetValue.Scalar("Meat"));
+        project.Entries[0].Document.Blocks.Single().Value.Set("forms", PresetValue.Scalar("meat"));
+        Require(Messages(empty, project, Validate(project)).Single().StartsWith("Could not check stages for meat", StringComparison.Ordinal),
+            "Addon group lookup must use the same exact-case semantics as custom owners.");
     }
 
     private static void OwnerSelectors()

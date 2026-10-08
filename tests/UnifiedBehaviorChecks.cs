@@ -416,13 +416,14 @@ internal static class UnifiedBehaviorChecks
                 - <<: *heat
                   finalFormEditorID: $cooked
             formsLists:
-            - cook(0x65C99~Skyrim.esm, 0x721E8~Skyrim.esm)
+            - cook(MeatGroup, 0x721E8~Skyrim.esm)
             - cook(0x65C9E~Skyrim.esm, 0x722C2~Skyrim.esm)
             - forms: 0x64B41~Skyrim.esm
               transformers:
               - <<: *heat
                 finalFormEditorID: 0x64B3A~Skyrim.esm
             """, "FOOD", PresetKind.Addon);
+        document.PendingGroups.Add(new("MeatGroup", ["0x65C99~Skyrim.esm", "0x800~Optional.esp"]));
         var firstId = document.Blocks.First(block => block.Kind == BlockKind.Rule).Id;
         var otherId = document.Blocks.Last().Id;
         var source = document.ToDraft();
@@ -447,9 +448,9 @@ internal static class UnifiedBehaviorChecks
                 "The actual workspace kind-change callback must split a family and adopt the new active output.");
             var family = BehaviorFamily.Find(staged.Document, firstId)!;
             Require(family.Rows.Count == 2 && family.Parameters.SequenceEqual(["raw", "cooked"]) &&
-                BehaviorFamily.GetArgument(staged.Document, firstId, "raw").Text == "0x65C99~Skyrim.esm" &&
+                BehaviorFamily.GetArgument(staged.Document, firstId, "raw").Text == "MeatGroup" &&
                 BehaviorFamily.GetArgument(staged.Document, family.Rows[1].Id, "cooked").Text == "0x722C2~Skyrim.esm",
-                "Adding stages through the editor must preserve all existing variable rows and column bindings.");
+                "Adding stages through the editor must preserve named groups, variable rows, and column bindings.");
             Require(remaining.OpenedPath == "opened.yml" && staged.OpenedPath is null && document.ToDraft() == source &&
                 staged.Document.ToYaml().Contains("*heat") && remaining.Document.ToYaml().Contains("*heat"),
                 "Workspace adoption must preserve source tracking and dependencies without mutating the original imported document.");
