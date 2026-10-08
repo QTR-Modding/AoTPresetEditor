@@ -51,15 +51,11 @@ public static class PresetValidation
             var expandedRules = result.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
             if (rules.Length == 1 && rules[0].Key is "ownerLists" or "formsLists")
             {
-                var expandedList = PresetValue.List();
-                expandedList.Items.AddRange(expandedRules.Select(block => block.Value));
                 var block = rules[0];
-                errors[block.Id] = [.. errors[block.Id], .. PresetSchema.Validate(expandedList, "Rules", document.Category, document.Kind)];
-                if (catalog is not null)
-                    for (var index = 0; index < expandedList.Items.Count; index++)
-                        errors[block.Id] = [.. errors[block.Id], .. KnownFormErrors(expandedList.Items[index], document.Category, document.Kind, catalog)
-                            .Select(error => $"Entry {index + 1}: {error}")];
-                if (expandedList.Items.Count == 0) errors[block.Id] = [.. errors[block.Id], "The rule list is empty."];
+                for (var index = 0; index < expandedRules.Length; index++)
+                    errors[block.Id] = [.. errors[block.Id], .. ValidateRule(expandedRules[index].Value, document.Category, document.Kind, catalog)
+                        .Select(error => $"Entry {index + 1}: {error}")];
+                if (expandedRules.Length == 0) errors[block.Id] = [.. errors[block.Id], "The rule list is empty."];
             }
             else
             {
@@ -69,9 +65,7 @@ public static class PresetValidation
                 {
                     token.ThrowIfCancellationRequested();
                     var block = rules[index];
-                    errors[block.Id] = [.. errors[block.Id], .. PresetSchema.Validate(expandedRules[index].Value,
-                        PresetDocument.RuleContext(document.Kind), document.Category, document.Kind)];
-                    if (catalog is not null) errors[block.Id] = [.. errors[block.Id], .. KnownFormErrors(expandedRules[index].Value, document.Category, document.Kind, catalog)];
+                    errors[block.Id] = [.. errors[block.Id], .. ValidateRule(expandedRules[index].Value, document.Category, document.Kind, catalog)];
                 }
             }
             foreach (var block in document.Blocks.Where(block => block.Kind == BlockKind.Shared))
@@ -88,6 +82,40 @@ public static class PresetValidation
             fileErrors.Add(error.Message);
         }
         return new(source, expanded, errors, fileErrors);
+    }
+
+    private static IReadOnlyList<string> ValidateRule(PresetValue rule, string category, PresetKind kind, PresetPresentation? catalog)
+    {
+        var errors = PresetSchema.Validate(rule, PresetDocument.RuleContext(kind), category, kind).ToList();
+        if (errors.Count == 0 && kind == PresetKind.Addon && !HasEffectiveAddonSettings(rule, catalog))
+            errors.Add("No effective settings: add a container filter, transformation, or time modifier.");
+        if (catalog is not null) errors.AddRange(KnownFormErrors(rule, category, kind, catalog));
+        return errors;
+    }
+
+    private static bool HasEffectiveAddonSettings(PresetValue rule, PresetPresentation? catalog)
+    {
+        if (HasConfiguredForms(rule.Get("containers"), catalog)) return true;
+        var triggerSelection = new FormSelection(TriggerOnly: true);
+        foreach (var key in new[] { "transformers", "timeModulators" })
+            if (rule.Get(key) is { Kind: ValueKind.Sequence } triggers &&
+                triggers.Items.Any(trigger => HasConfiguredForms(trigger.Get("FormEditorID"), catalog, triggerSelection))) return true;
+        return false;
+    }
+
+    private static bool HasConfiguredForms(PresetValue? value, PresetPresentation? catalog, FormSelection? selection = null)
+    {
+        if (value is null || value.IsNull) return false;
+        foreach (var item in value.Kind == ValueKind.Sequence ? value.Items : [value])
+        {
+            if (item.Kind != ValueKind.Scalar || item.IsNull || string.IsNullOrWhiteSpace(item.Text)) continue;
+            if (catalog?.ResolveGroup(item.Text) is { } group)
+            {
+                if (group.Members.Any(member => catalog.ResolveForm(member) is { } memberForm && (selection?.Matches(memberForm) ?? true))) return true;
+            }
+            else if (!PresetSchema.IsZeroForm(item) && (catalog?.ResolveForm(item.Text) is not { } form || (selection?.Matches(form) ?? true))) return true;
+        }
+        return false;
     }
 
     private static IReadOnlyList<string> KnownFormErrors(PresetValue rule, string category, PresetKind kind, PresetPresentation catalog)
@@ -135,10 +163,15 @@ public static class PresetValidation
             foreach (var item in child.Kind == ValueKind.Sequence ? child.Items : [child])
             {
                 if (item.Kind != ValueKind.Scalar || item.IsNull) continue;
+                if (field.AllowsGroups && catalog.ResolveGroup(item.Text) is { } group)
+                {
+                    if (selection.RequiresKnownGroupMember && !group.Members.Any(member => catalog.ResolveForm(member) is { } memberForm && selection.Matches(memberForm)))
+                        errors.Add($"{label}: group '{group.Name}' has no compatible {category} source items in loaded game data.");
+                    continue;
+                }
                 // Custom owner text can match item names even when the same text is another form's EditorID.
                 if (field.Key == "owners" && !PresetPresentation.NormalizeIdentifier(item.Text).Contains('~')) continue;
-                // A group may intentionally contain mixed or unresolved members; it takes precedence over an EditorID.
-                if (catalog.ResolveForm(item.Text, field.AllowsGroups) is not { } form || selection.Matches(form)) continue;
+                if (catalog.ResolveForm(item.Text) is not { } form || selection.Matches(form)) continue;
                 var name = catalog.FormLabel(item.Text);
                 var reason = field.RequiresEditorId && form.EditorId.Length == 0
                     ? $"{name} has no EditorID; AoT cannot use it as a source item."

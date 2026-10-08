@@ -21,7 +21,7 @@ public enum ItemCategories
 }
 
 public sealed record FormRow(string Name, string EditorId, string Type, string Plugin, string Winner, string Identifier,
-    ItemCategories Categories = ItemCategories.None, bool IsTrigger = false, bool IsBoundObject = false)
+    ItemCategories Categories = ItemCategories.None, bool IsTrigger = false, bool IsBoundObject = false, FormID? RuntimeId = null)
 {
     public IComparable IdentifierSortKey => PresetPresentation.IdentifierSortKey(Identifier);
 }
@@ -47,6 +47,8 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
             field?.TriggerOnly == true, field?.BoundObjectOnly == true, excluded, field?.RequiresEditorId == true,
             field?.InventoryOwnerOnly == true);
     }
+
+    public bool RequiresKnownGroupMember => !string.IsNullOrEmpty(Category);
 
     public bool Matches(FormRow form) =>
         (Types is null || Types.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
@@ -93,11 +95,30 @@ public static class FormCatalog
             AddRecords(mod, plugin, forms);
         }
 
+        AssignRuntimeIds(forms, environment.LoadOrder.ListedOrder.Select(listing => listing.Mod!));
         return new CatalogResult(forms.Values
             .OrderBy(form => form.Type, StringComparer.OrdinalIgnoreCase)
             .ThenBy(form => form.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(form => form.EditorId, StringComparer.OrdinalIgnoreCase)
             .ToArray(), plugins, pluginsPath);
+    }
+
+    private static void AssignRuntimeIds(Dictionary<FormKey, FormRow> forms, IEnumerable<ISkyrimModGetter> loadOrder)
+    {
+        var nextIndices = new Dictionary<MasterStyle, uint>();
+        var indices = new Dictionary<ModKey, (MasterStyle Style, uint Index)>();
+        foreach (var mod in loadOrder)
+        {
+            var style = mod.MasterStyle;
+            var index = nextIndices.GetValueOrDefault(style);
+            indices.Add(mod.ModKey, (style, index));
+            nextIndices[style] = index + 1;
+        }
+        foreach (var (key, form) in forms.ToArray())
+        {
+            var (style, index) = indices[key.ModKey];
+            forms[key] = form with { RuntimeId = FormID.Factory(style, index, key.ID) };
+        }
     }
 
     private static void AddRecords(ISkyrimModGetter mod, string winner, Dictionary<FormKey, FormRow> forms)

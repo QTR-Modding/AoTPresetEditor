@@ -1,4 +1,5 @@
 using System.Globalization;
+using Mutagen.Bethesda.Plugins;
 
 namespace AoTPresetEditor;
 
@@ -17,11 +18,7 @@ public sealed class PresetPresentation
     {
         this.document = document;
         installedGroups = groups ?? [];
-        foreach (var form in forms)
-        {
-            this.forms.TryAdd(NormalizeIdentifier(form.Identifier), form);
-            if (form.EditorId.Length != 0) this.forms.TryAdd(form.EditorId, form);
-        }
+        foreach (var (identifier, form) in FormIdentifiers(forms)) this.forms.TryAdd(identifier, form);
         Update(document, expandedYaml);
     }
 
@@ -39,6 +36,17 @@ public sealed class PresetPresentation
     public PresetValue? EffectiveValue(PresetBlock block) => EffectiveValue(block.Value);
     public PresetValue? EffectiveValue(string blockId) => document.Blocks.FirstOrDefault(block => block.Id == blockId) is { } block ? EffectiveValue(block) : null;
     public PresetValue? EffectiveValue(PresetValue value) => effective.GetValueOrDefault(value);
+
+    internal static IEnumerable<(string Identifier, FormRow Form)> FormIdentifiers(IReadOnlyList<FormRow> forms)
+    {
+        foreach (var form in forms)
+        {
+            yield return (NormalizeIdentifier(form.Identifier), form);
+            if (form.RuntimeId is { } runtimeId) yield return (NormalizeIdentifier(runtimeId.ToString()), form);
+        }
+        foreach (var form in forms)
+            if (form.EditorId.Length != 0) yield return (form.EditorId, form);
+    }
 
     public FormGroupDefinition? ResolveGroup(string name) => groups.GetValueOrDefault(name);
 
@@ -279,8 +287,12 @@ public sealed class PresetPresentation
         }
     }
 
-    internal static string NormalizeIdentifier(string identifier) =>
-        TryNormalizeIdentifier(identifier, out var normalized) ? normalized : identifier;
+    internal static string NormalizeIdentifier(string identifier)
+    {
+        if (TryNormalizeIdentifier(identifier, out var normalized)) return normalized;
+        return (identifier.StartsWith("0x", StringComparison.OrdinalIgnoreCase) || identifier.Length is 7 or 8) &&
+            FormID.TryFactory(identifier, out var runtimeId, strictLength: false) ? runtimeId.ToString() : identifier;
+    }
 
     internal static bool TryNormalizeIdentifier(string identifier, out string normalized)
     {
@@ -290,7 +302,7 @@ public sealed class PresetPresentation
         var number = parts[0].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? parts[0][2..] : parts[0];
         if (parts.Length == 1 && !parts[0].StartsWith("0x", StringComparison.OrdinalIgnoreCase) && number.Length is not (7 or 8)) return false;
         if (!uint.TryParse(number, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var id)) return false;
-        // Full IDs outside Skyrim.esm depend on the current load order, which this catalog does not record.
+        // Unqualified IDs above Skyrim.esm's namespace need an alias from the active load order.
         const uint maximumMasterLocalId = 0xFFFFFF;
         if (parts.Length == 1 && id > maximumMasterLocalId) return false;
         normalized = $"0x{id:X}~{(parts.Length == 2 ? parts[1] : "Skyrim.esm")}";

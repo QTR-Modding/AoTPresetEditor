@@ -123,7 +123,7 @@ public static class PresetSchema
             ? "An explicit stage item keeps its own properties. Overrides apply only to generated items." : null;
     }
 
-    private static bool IsZeroForm(PresetValue value)
+    internal static bool IsZeroForm(PresetValue value)
     {
         var text = value.Text.Trim();
         if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];

@@ -83,7 +83,7 @@ public sealed class GroupPickerWindow : Window
         choose.Visibility = Visibility.Visible;
         var rows = MemberRows(group.Members, forms, constraint);
         members.ItemsSource = rows;
-        choose.IsEnabled = !HasOnlyIncompatibleMembers(rows);
+        choose.IsEnabled = !HasNoApplicableMembers(rows, constraint);
         var resolved = rows.Count(row => row.Form is not null);
         var applicable = rows.Count(row => row.Applicable);
         description.Text = constraint is null
@@ -105,7 +105,7 @@ public sealed class GroupPickerWindow : Window
     private void Choose()
     {
         if (groupList.SelectedItem is not FormGroupDefinition group) return;
-        if (HasOnlyIncompatibleMembers(MemberRows(group.Members, forms, constraint))) return;
+        if (HasNoApplicableMembers(MemberRows(group.Members, forms, constraint), constraint)) return;
         SelectedGroup = group; CreatedGroups = created.ToArray(); DialogResult = true;
     }
 
@@ -122,12 +122,8 @@ public sealed class GroupPickerWindow : Window
     {
         var requested = identifiers.Concat(identifiers.Select(PresetPresentation.NormalizeIdentifier)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var matched = new Dictionary<string, FormRow>(StringComparer.OrdinalIgnoreCase);
-        foreach (var form in forms)
-        {
-            var identifier = PresetPresentation.NormalizeIdentifier(form.Identifier);
+        foreach (var (identifier, form) in PresetPresentation.FormIdentifiers(forms))
             if (requested.Contains(identifier)) matched.TryAdd(identifier, form);
-            if (form.EditorId.Length != 0 && requested.Contains(form.EditorId)) matched.TryAdd(form.EditorId, form);
-        }
         return identifiers.Select(identifier =>
         {
             var form = matched.GetValueOrDefault(PresetPresentation.NormalizeIdentifier(identifier)) ?? matched.GetValueOrDefault(identifier);
@@ -135,7 +131,8 @@ public sealed class GroupPickerWindow : Window
         }).ToArray();
     }
 
-    internal static bool HasOnlyIncompatibleMembers(IReadOnlyList<MemberRow> rows) =>
+    internal static bool HasNoApplicableMembers(IReadOnlyList<MemberRow> rows, FormSelection? constraint) =>
+        constraint?.RequiresKnownGroupMember == true ? !rows.Any(row => row.Applicable) :
         rows.Count != 0 && rows.All(row => row.Form is not null && !row.Applicable);
 
     internal static DataGrid CreateMemberGrid()
@@ -228,8 +225,8 @@ public sealed class GroupEditorWindow : Window
     {
         var rows = GroupPickerWindow.MemberRows(identifiers, forms, constraint);
         members.ItemsSource = rows;
-        create.IsEnabled = !GroupPickerWindow.HasOnlyIncompatibleMembers(rows);
-        status.Text = !create.IsEnabled ? "No members can be used for this field. Add an applicable form or remove the incompatible members."
+        create.IsEnabled = !GroupPickerWindow.HasNoApplicableMembers(rows, constraint);
+        status.Text = !create.IsEnabled ? "No applicable members found in the loaded game data. Add a suitable form."
             : $"{identifiers.Count} members" + (forms.Any(form => constraint?.IsPickerChoice(form) ?? true) ? "" : " · No applicable forms in the loaded catalog.");
     }
 
@@ -253,7 +250,7 @@ public sealed class GroupEditorWindow : Window
     private void Create()
     {
         if (NameError() is { } error) { nameStatus.Text = error; return; }
-        if (GroupPickerWindow.HasOnlyIncompatibleMembers(GroupPickerWindow.MemberRows(identifiers, forms, constraint))) return;
+        if (GroupPickerWindow.HasNoApplicableMembers(GroupPickerWindow.MemberRows(identifiers, forms, constraint), constraint)) return;
         var group = new FormGroupDefinition(name.Text.Trim(), identifiers.ToArray());
         var errors = FormGroupCatalog.Validate(group);
         if (errors.Count != 0) { status.Text = string.Join(Environment.NewLine, errors); return; }

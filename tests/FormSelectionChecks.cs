@@ -99,6 +99,8 @@ internal static class FormSelectionChecks
             "Trigger filtering must exclude unrelated record types.");
         triggerPicker.Close();
         ContainerSelections(forms);
+        AddonSettings(forms);
+        SourceGroups(forms);
         KnownForms(forms);
     }
 
@@ -128,6 +130,139 @@ internal static class FormSelectionChecks
             picker.Close();
         }
         Require(new FormSelection().IsPickerChoice(Row("MagicEffect")), "The standalone form browser must remain unrestricted.");
+    }
+
+    private static void AddonSettings(IReadOnlyList<FormRow> forms)
+    {
+        FormGroupDefinition[] groups = [new("Empty", []), new("Missing", ["OptionalFire"]), new("Zero", ["0", "0x0"]), new("Fires", ["Fire", "OptionalFire"])];
+        PresetValidationResult Validate(string yaml)
+        {
+            var document = PresetDocument.Parse(yaml, "FOOD", PresetKind.Addon);
+            return PresetValidation.Check(document, CancellationToken.None, new PresetPresentation(document, forms, groups)).GetAwaiter().GetResult();
+        }
+        foreach (var settings in new[]
+        {
+            "", ", containers: 0", ", containers: 0x0", ", containers: Zero", ", containers: null, transformers: null, timeModulators: null",
+            ", containers: [], transformers: [], timeModulators: []", ", containers: Empty",
+            ", containers: [Empty, Missing]", ", timeModulators: [{FormEditorID: 0, magnitude: 0}]", ", timeModulators: [{FormEditorID: Empty, magnitude: 0}]",
+            ", transformers: [{FormEditorID: Missing, finalFormEditorID: Food, duration: 1}]"
+        })
+        {
+            var validation = Validate("formsLists: [{forms: Food" + settings + "}]");
+            Require(validation.Errors.Values.SelectMany(errors => errors).Any(error => error.Contains("No effective settings")),
+                "An addon without effective settings must explain what is missing: " + settings);
+        }
+        foreach (var fields in new[] { "containers: ''", "containers: ' '", "timeModulators: [{FormEditorID: null, magnitude: 0}]" })
+            Require(!Validate("formsLists: [{forms: Food, " + fields + "}]").IsValid,
+                "Blank or null form selections cannot make an addon effective.");
+        foreach (var settings in new[]
+        {
+            "containers: Player", "containers: Food", "containers: [Empty, Player]", "containers: OptionalContainer",
+            "timeModulators: [{FormEditorID: Fires, magnitude: 0}]", "timeModulators: [{FormEditorID: Fire, magnitude: 1}]",
+            "timeModulators: [{FormEditorID: Fire, magnitude: -1}]",
+            "transformers: [{FormEditorID: Fires, finalFormEditorID: Food, duration: 1}], containers: Empty"
+        })
+            Require(Validate("formsLists: [{forms: Food, " + settings + "}]").IsValid,
+                "Containers-only addons, zero/reverse modifiers, and optional unresolved identifiers must remain valid: " + settings);
+        foreach (var yaml in new[]
+        {
+            "base: &base {forms: Food}\nformsLists: [{<<: *base}]",
+            "templates:\n  identity: $value\n  patch:\n    forms: $items\n    transformers: identity([])\nformsLists:\n- patch(Food)",
+            "templates: {rules: [{forms: $items, timeModulators: []}]}\nformsLists: rules(Food)"
+        })
+            Require(Validate(yaml).Errors.Values.SelectMany(errors => errors).Any(error => error.Contains("No effective settings")),
+                "No-effective-settings validation must inspect expanded shared, nested template, and whole-list rules.");
+        var shared = Validate("""
+            partial: &partial {forms: Food}
+            settings: &settings {containers: Player}
+            templates:
+              target: {forms: $item}
+              patch: {forms: $item, <<: *settings}
+            formsLists:
+            - patch(Food)
+            """);
+        Require(shared.IsValid, "Partial definitions must stay valid and merged settings must count after native expansion.");
+        foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom })
+        {
+            var yaml = "stages: [{no: 0, name: '', duration: .inf}]\nfinalFormEditorID: OtherFood";
+            if (kind == PresetKind.Custom) yaml = "ownerLists:\n- owners: Food\n  " + yaml.Replace("\n", "\n  ");
+            var document = PresetDocument.Parse(yaml, "FOOD", kind);
+            Require(PresetValidation.Check(document, CancellationToken.None, new PresetPresentation(document, forms)).GetAwaiter().GetResult().IsValid,
+                "The effective-addon-settings check must not change default or custom stage validation.");
+        }
+    }
+
+    private static void SourceGroups(IReadOnlyList<FormRow> forms)
+    {
+        forms = [.. forms, forms.Single(form => form.EditorId == "Food") with
+        {
+            EditorId = "DlcFood", Plugin = "Dragonborn.esm", Winner = "Dragonborn.esm",
+            Identifier = "0x800~Dragonborn.esm", RuntimeId = new FormID(0x02000800)
+        }];
+        FormGroupDefinition[] groups =
+        [
+            new("qAoTFireMain", ["Fire", "OptionalFire"]), new("Missing", ["OptionalFood"]), new("Empty", []),
+            new("Meat", ["Food"]), new("Dlc", ["02000800"]), new("Mixed", ["Fire", "Food", "Armor", "OptionalFood"]),
+            new("Nameless", [forms.Single(form => form.EditorId.Length == 0).Identifier]), new("Food", ["Fire"])
+        ];
+        var bare = PresetDocument.Parse("formsLists:\n- forms: qAoTFireMain", "FOOD", PresetKind.Addon);
+        var bareValidation = PresetValidation.Check(bare, CancellationToken.None, new PresetPresentation(bare, forms, groups)).GetAwaiter().GetResult();
+        var bareErrors = bareValidation.Errors.Values.SelectMany(errors => errors).ToArray();
+        Require(bareErrors.Any(error => error.Contains("No effective settings")) && bareErrors.Any(error => error.Contains("qAoTFireMain")),
+            "The reported forms-only fire-group example must expose both missing settings and incompatible affected items.");
+        foreach (var kind in new[] { PresetKind.Custom, PresetKind.Addon })
+        {
+            var key = kind == PresetKind.Custom ? "owners" : "forms";
+            var list = kind == PresetKind.Custom ? "ownerLists" : "formsLists";
+            var settings = kind == PresetKind.Custom
+                ? "stages: [{no: 0, name: '', duration: 1}], finalFormEditorID: OtherFood"
+                : "timeModulators: [{FormEditorID: qAoTFireMain, magnitude: 0}]";
+            var field = PresetSchema.GetFields("rule", kind).Single(field => field.Key == key);
+            var picker = new GroupPickerWindow(groups, forms, FormSelection.ForField(field, "FOOD"));
+            foreach (var group in groups)
+            {
+                var valid = group.Name is "Meat" or "Dlc" or "Mixed";
+                Field<ListBox>(picker, "groupList").SelectedItem = group;
+                Require(Field<Button>(picker, "choose").IsEnabled == valid,
+                    $"{kind} must require a known applicable member before selecting {group.Name}; unknown optional members cannot make a fire group usable.");
+                Require(Field<DataGrid>(picker, "members").Items.Count == group.Members.Count,
+                    "Showing group compatibility must retain unresolved and incompatible members.");
+                var document = PresetDocument.Parse($"{list}: [{{{key}: {group.Name}, {settings}}}]", "FOOD", kind);
+                var validation = PresetValidation.Check(document, CancellationToken.None,
+                    new PresetPresentation(document, forms, groups)).GetAwaiter().GetResult();
+                Require(validation.IsValid == valid, $"Imported {kind} source group {group.Name} must obey the same source constraints.");
+                if (!valid)
+                    Require(validation.Errors.Values.SelectMany(errors => errors).Any(error => error.StartsWith("Applies to:") &&
+                        error.Contains("FOOD") && error.Contains("loaded game data")),
+                        "A group with no resolved eligible sources must explain the category and loaded-data limitation.");
+            }
+            picker.Close();
+            foreach (var source in new[] { "qAoTFireMain", "[Meat, qAoTFireMain]" })
+            {
+                var document = PresetDocument.Parse($"templates:\n  identity: $value\n  patch: {{{key}: identity($items), {settings}}}\n{list}:\n- patch({source})", "FOOD", kind);
+                var validation = PresetValidation.Check(document, CancellationToken.None,
+                    new PresetPresentation(document, forms, groups)).GetAwaiter().GetResult();
+                var template = document.Blocks.Single(block => block.Kind == BlockKind.Template && block.Key == "patch");
+                var parameter = PresetSchema.GetParameterField(template, "items", document);
+                Require(parameter is { MatchPresetCategory: true, RequiresEditorId: true }, "Nested source variables must retain their field constraints.");
+                var variablePicker = new GroupPickerWindow(groups, forms, FormSelection.ForField(parameter, "FOOD"));
+                Field<ListBox>(variablePicker, "groupList").SelectedItem = groups[0];
+                Require(!Field<Button>(variablePicker, "choose").IsEnabled, "Variables must not bypass source-group eligibility.");
+                variablePicker.Close();
+                Require(!validation.IsValid && validation.Errors.Values.SelectMany(errors => errors).Any(error => error.Contains("qAoTFireMain")),
+                    "A source group in a nested variable call or selector list must be validated after expansion.");
+            }
+            var editor = new GroupEditorWindow([], forms, FormSelection.ForField(field, "FOOD"), ["Fire", "OptionalFire"]);
+            Field<TextBox>(editor, "name").Text = "NewFires";
+            Require(!Field<Button>(editor, "create").IsEnabled,
+                "Creating a source group must use the same known-member eligibility as selecting an existing one.");
+            editor.Close();
+        }
+        var containers = PresetSchema.GetFields("rule", PresetKind.Addon).Single(field => field.Key == "containers");
+        var containerPicker = new GroupPickerWindow(groups, forms, FormSelection.ForField(containers, "FOOD"));
+        Field<ListBox>(containerPicker, "groupList").SelectedItem = groups.Single(group => group.Name == "Empty");
+        Require(Field<Button>(containerPicker, "choose").IsEnabled, "Empty Containers groups retain their native empty-filter meaning.");
+        containerPicker.Close();
     }
 
     private static void KnownForms(IReadOnlyList<FormRow> forms)

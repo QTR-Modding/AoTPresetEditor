@@ -4,6 +4,9 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
 using AoTPresetEditor;
+using Mutagen.Bethesda;
+using Mutagen.Bethesda.Plugins;
+using Mutagen.Bethesda.Skyrim;
 
 internal static class PresetPresentationChecks
 {
@@ -19,6 +22,7 @@ internal static class PresetPresentationChecks
     public static void Run()
     {
         EmptyBehaviorPresentation();
+        RuntimeIdentifiers();
         OwnerGroups();
         GroupChoiceCompatibility();
         GroupMemberSorting();
@@ -145,13 +149,39 @@ internal static class PresetPresentationChecks
 
         foreach (var group in groups.Skip(1))
         {
-            var allowed = new GroupPickerWindow(groups, Forms, new(Category: "FOOD"));
+            var candidate = new GroupPickerWindow(groups, Forms, new(Category: "FOOD"));
+            Field<ListBox>(candidate, "groupList").SelectedItem = group;
+            if (group == groups[1])
+            {
+                Require(Field<Button>(candidate, "choose").IsEnabled &&
+                    AcceptDialog(candidate, () => Field<Button>(candidate, "choose").RaiseEvent(new RoutedEventArgs(Button.ClickEvent))) == true &&
+                    candidate.SelectedGroup?.Members.SequenceEqual(group.Members) == true,
+                    "A mixed source group with known matching members must retain all authored members.");
+            }
+            else
+            {
+                Require(!Field<Button>(candidate, "choose").IsEnabled,
+                    "An empty or unresolved-only source group must not be presented as an applicable source choice.");
+                Invoke(candidate, "Choose");
+                Require(candidate.SelectedGroup is null, "An unusable source group must also be rejected by the action itself.");
+                candidate.Close();
+            }
+        }
+        foreach (var group in groups.Skip(2))
+        {
+            var containers = new FormSelection(Types: ["Npc", "Container"]);
+            var allowed = new GroupPickerWindow(groups, Forms, containers);
             Field<ListBox>(allowed, "groupList").SelectedItem = group;
-            Require(Field<Button>(allowed, "choose").IsEnabled,
-                "Mixed, unresolved, and empty groups must retain their existing selectable semantics.");
-            Require(AcceptDialog(allowed, () => Field<Button>(allowed, "choose").RaiseEvent(new RoutedEventArgs(Button.ClickEvent))) == true &&
-                allowed.SelectedGroup == group && allowed.SelectedGroup.Members.SequenceEqual(group.Members),
-                "Choosing a usable group must preserve every authored member, including incompatible and optional members.");
+            Require(Field<Button>(allowed, "choose").IsEnabled &&
+                AcceptDialog(allowed, () => Field<Button>(allowed, "choose").RaiseEvent(new RoutedEventArgs(Button.ClickEvent))) == true &&
+                allowed.SelectedGroup?.Members.SequenceEqual(group.Members) == true,
+                "Container choices must preserve empty and unresolved optional groups without imposing the source-only requirement.");
+            var editor = new GroupEditorWindow([], Forms, containers, initialMembers: group.Members);
+            Field<TextBox>(editor, "name").Text = group.Name;
+            var create = Field<Button>(editor, "create");
+            Require(create.IsEnabled && AcceptDialog(editor, () => create.RaiseEvent(new RoutedEventArgs(Button.ClickEvent))) == true &&
+                editor.Group?.Members.SequenceEqual(group.Members) == true,
+                "Creating a container group must preserve empty and unresolved optional members.");
         }
 
         var acoustic = new FormRow("Acoustic", "TestAcoustic", "AcousticSpace", "Skyrim.esm", "Skyrim.esm", "0x900~Skyrim.esm", IsBoundObject: true);
@@ -168,24 +198,27 @@ internal static class PresetPresentationChecks
             var editor = new GroupEditorWindow([], Forms, new(Category: "FOOD"), initialMembers: group.Members);
             Field<TextBox>(editor, "name").Text = group.Name;
             var create = Field<Button>(editor, "create");
-            if (group == groups[0])
+            if (group != groups[1])
             {
-                Require(!create.IsEnabled && Field<TextBlock>(editor, "status").Text.Contains("No members can be used"),
+                Require(!create.IsEnabled && Field<TextBlock>(editor, "status").Text.Contains("No applicable members found"),
                     "Prefilled incompatible members must explain why the group cannot be created for this field.");
                 create.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Invoke(editor, "Create");
                 Require(editor.Group is null, "Disabled creation must also be guarded in the action itself.");
                 var grid = Field<DataGrid>(editor, "members");
-                grid.SelectedItem = grid.Items[0];
-                Invoke(editor, "RemoveSelected");
-                Require(create.IsEnabled, "Removing all incompatible members must restore the permitted empty-group state.");
+                if (grid.Items.Count > 0)
+                {
+                    grid.SelectAll();
+                    Invoke(editor, "RemoveSelected");
+                }
+                Require(!create.IsEnabled, "An empty source group must still require an applicable item.");
                 editor.Close();
             }
             else
             {
                 Require(create.IsEnabled && AcceptDialog(editor, () => create.RaiseEvent(new RoutedEventArgs(Button.ClickEvent))) == true &&
                     editor.Group?.Members.SequenceEqual(group.Members) == true,
-                    "Creation must retain mixed, optional, and empty group members without silently filtering the definition.");
+                    "Creation must retain all members of a usable mixed source group without silently filtering the definition.");
             }
         }
     }
@@ -267,6 +300,67 @@ internal static class PresetPresentationChecks
             .Value.Get("owners")?.Text == "Meat" && validation.Errors.Values.SelectMany(errors => errors)
             .Any(error => error.Contains("a later stage cannot reuse the source item")),
             "Native expansion must retain variable group names while stage validation checks their known source members.");
+    }
+
+    private static void RuntimeIdentifiers()
+    {
+        var master = new SkyrimMod(ModKey.FromNameAndExtension("Skyrim.esm"), SkyrimRelease.SkyrimSE);
+        var light = new SkyrimMod(ModKey.FromNameAndExtension("First.esl"), SkyrimRelease.SkyrimSE) { IsSmallMaster = true };
+        var full = new SkyrimMod(ModKey.FromNameAndExtension("Full.esp"), SkyrimRelease.SkyrimSE);
+        var secondLight = new SkyrimMod(ModKey.FromNameAndExtension("Second.esl"), SkyrimRelease.SkyrimSE) { IsSmallMaster = true };
+        var patch = new SkyrimMod(ModKey.FromNameAndExtension("Patch.esp"), SkyrimRelease.SkyrimSE);
+        var vanillaFood = master.Ingestibles.AddNew(); vanillaFood.EditorID = "VanillaFood"; vanillaFood.Flags = Ingestible.Flag.FoodItem;
+        var firstLightFood = light.Ingestibles.AddNew(); firstLightFood.EditorID = "FirstLightFood"; firstLightFood.Flags = Ingestible.Flag.FoodItem;
+        var fullFood = full.Ingestibles.AddNew(); fullFood.EditorID = "FullFood"; fullFood.Flags = Ingestible.Flag.FoodItem;
+        var secondLightFood = secondLight.Ingestibles.AddNew(); secondLightFood.EditorID = "SecondLightFood"; secondLightFood.Flags = Ingestible.Flag.FoodItem;
+        patch.Ingestibles.GetOrAddAsOverride(fullFood).Name = "Patched food";
+        ISkyrimModGetter[] activeOrder = [master, light, full, secondLight, patch];
+        var catalog = new Dictionary<FormKey, FormRow>();
+        var addRecords = typeof(FormCatalog).GetMethod("AddRecords", BindingFlags.NonPublic | BindingFlags.Static)!;
+        foreach (var mod in activeOrder) addRecords.Invoke(null, [mod, mod.ModKey.FileName.String, catalog]);
+        typeof(FormCatalog).GetMethod("AssignRuntimeIds", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [catalog, activeOrder]);
+        var vanilla = catalog[vanillaFood.FormKey]; var dlc = catalog[fullFood.FormKey];
+        var first = catalog[firstLightFood.FormKey]; var second = catalog[secondLightFood.FormKey];
+        Require(vanilla.RuntimeId == FormID.Factory(MasterStyle.Full, 0, vanillaFood.FormKey.ID) &&
+            dlc.RuntimeId == FormID.Factory(MasterStyle.Full, 1, fullFood.FormKey.ID),
+            "Full plugins must have independent runtime indices unaffected by interleaved light plugins.");
+        Require(first.RuntimeId == FormID.Factory(MasterStyle.Small, 0, firstLightFood.FormKey.ID) &&
+            second.RuntimeId == FormID.Factory(MasterStyle.Small, 1, secondLightFood.FormKey.ID),
+            "Light plugins must receive their own runtime indices from the active order.");
+        Require(dlc.Name == "Patched food" && dlc.Winner == "Patch.esp" && dlc.Plugin == "Full.esp",
+            "An override must retain its origin plugin and runtime identity while displaying winning data.");
+        var document = PresetDocument.Create("FOOD", PresetKind.Custom);
+        var group = new FormGroupDefinition("RuntimeFood", [dlc.RuntimeId!.Value.ToString(), second.RuntimeId!.Value.ToString()]);
+        document.PendingGroups.Add(group);
+        var presentation = new PresetPresentation(document, catalog.Values.ToArray());
+        foreach (var form in catalog.Values)
+        {
+            var raw = form.RuntimeId!.Value.ToString();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) raw = raw[2..];
+            foreach (var alias in new[] { raw, "0x" + raw.TrimStart('0'), "0x" + raw.ToLowerInvariant() })
+                Require(Equals(presentation.ResolveForm(alias), form), "Raw runtime identifiers must resolve with or without a prefix or leading zeros.");
+            Require(Equals(presentation.ResolveForm(form.Identifier), form) && Equals(presentation.ResolveForm(form.EditorId), form),
+                "Adding runtime aliases must preserve plugin-local identifiers and EditorIDs.");
+        }
+        Require(presentation.ResolveForm("0xFF000800") is null && presentation.ResolveForm("0x800~Missing.esp") is null,
+            "Unloaded and dynamic forms must not be guessed from a matching local ID.");
+        var rule = PresetValue.Map(); rule.Set("owners", PresetValue.Scalar(group.Name));
+        Require(presentation.SourceForms(rule).ToHashSet().SetEquals([dlc, second]),
+            "A group containing only full runtime IDs must resolve its actual source forms.");
+        var shadow = new FormRow("Shadow", dlc.RuntimeId!.Value.ToString(), "Activator", "Skyrim.esm", "Skyrim.esm", "0x900~Skyrim.esm");
+        var collisionForms = new[] { shadow, dlc };
+        var collision = new PresetPresentation(document, collisionForms);
+        Require(collision.ResolveForm(shadow.EditorId) == dlc &&
+            new PresetPresentation(document, [shadow]).ResolveForm(shadow.EditorId) == shadow,
+            "Existing runtime IDs must take precedence over colliding EditorIDs, with EditorID fallback when the numeric form is absent.");
+        var collisionGroup = new FormGroupDefinition("NumericSource", [shadow.EditorId]);
+        var picker = new GroupPickerWindow([collisionGroup], collisionForms, new(Category: "FOOD"));
+        Field<ListBox>(picker, "groupList").SelectedItem = collisionGroup;
+        var member = Field<DataGrid>(picker, "members").Items[0];
+        Require(Equals(member.GetType().GetProperty("Form")!.GetValue(member), dlc) && Field<Button>(picker, "choose").IsEnabled,
+            "Group compatibility must resolve a numeric source before a different form with a colliding EditorID.");
+        picker.Close();
     }
 
     private static void EmptyBehaviorPresentation()
