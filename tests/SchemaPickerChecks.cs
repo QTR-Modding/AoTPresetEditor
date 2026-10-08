@@ -10,6 +10,8 @@ internal static class SchemaPickerChecks
     {
         GroupFields();
         ParameterFields();
+        UntypedParameterControls();
+        ConflictingListContexts();
         NestedDestinationFields();
         AcousticResultSelection();
         GroupDrafts();
@@ -86,6 +88,111 @@ internal static class SchemaPickerChecks
         Require(Get("soundOnly", "audio").FormTypes!.SequenceEqual(["SoundDescriptor"]), "A standalone sound template must infer its form type.");
         document.Blocks.Single(block => block.Kind == BlockKind.Template && block.Key == "inner").Context = "Value";
         Require(Get("inner", "time").Kind == FieldKind.Number, "A generic template containing duration must infer its field context.");
+    }
+
+    private static void UntypedParameterControls()
+    {
+        var document = PresetDocument.Parse("""
+            templates:
+              incompatible:
+                owners: FoodBeef
+                transformers:
+                - {FormEditorID: $value, duration: $value, finalFormEditorID: FoodCooked}
+              unknown:
+                owners: FoodBeef
+                additional: $value
+              trigger:
+                owners: FoodBeef
+                transformers:
+                - {FormEditorID: $value, duration: 1, finalFormEditorID: FoodCooked}
+            ownerLists:
+            - incompatible(Fire)
+            - unknown(Fire)
+            - trigger(Fire)
+            """, "FOOD", PresetKind.Custom);
+        foreach (var template in document.Blocks.Where(block => block.Kind == BlockKind.Template))
+        {
+            var known = template.Key == "trigger";
+            var field = PresetSchema.GetParameterField(template, "value", document);
+            Require(known ? field is { TriggerOnly: true } : field is null,
+                "Only a parameter with compatible known field uses must infer a form constraint.");
+            var rule = document.Blocks.Single(block => block.Kind == BlockKind.Rule && block.Value.Text == template.Key + "(Fire)");
+            var behavior = new BehaviorEditorControl(document, [], rule.Id);
+            Field<TabControl>(behavior, "tabs").SelectedIndex = 1;
+            var table = Field<DataGrid>(behavior, "table");
+            table.SelectedItem = table.Items[0];
+            table.CurrentCell = new DataGridCellInfo(table.Items[0], table.Columns.Single(column => Equals(column.Header, "value")));
+            CheckControl(Field<ValueEditorControl>(behavior, "cellEditor"), known);
+            Require(Field<ContextMenu>(behavior, "addMenu").Items.Count == (known ? 1 : 0),
+                "Bulk form choices must be offered only for an inferred form parameter.");
+
+            var call = new ValueEditorControl(document, [], rule.Value, "CustomRule", template.Key);
+            CheckControl(Descendants<ValueEditorControl>(call).Single(), known);
+        }
+        var number = PresetSchema.GetFields("transformer", PresetKind.Custom).Single(field => field.Key == "duration");
+        var invalidList = new ValueEditorControl(document, [], PresetYaml.Parse("[1]"), "Value", "Duration", field: number);
+        CheckControl(Descendants<ValueEditorControl>(invalidList).Single(), false);
+
+        static void CheckControl(ValueEditorControl editor, bool known)
+        {
+            var buttons = Descendants<Button>(editor).ToArray();
+            Require(buttons.Any(button => Equals(button.Content, "Choose form...")) == known,
+                "Unresolved or incompatible field kinds must not expose an unrestricted form picker; known forms must keep theirs.");
+            Require(Descendants<TextBox>(editor).Any(), "Untyped arguments must remain editable as manual values.");
+            if (!known)
+                Require(buttons.Any(button => Equals(button.Content, "Use a list of values...")) &&
+                    buttons.Any(button => Equals(button.Content, "Use a settings block...")),
+                    "Untyped arguments must retain their manual list and settings-block choices.");
+        }
+    }
+
+    private static void ConflictingListContexts()
+    {
+        foreach (var (first, second) in new[] { ("transformers", "stages"), ("stages", "transformers") })
+        {
+            var document = PresetDocument.Parse($"""
+                templates:
+                  sharedRows:
+                    owners: FoodBeef
+                    {first}: $rows
+                    {second}: $rows
+                    finalFormEditorID: FoodCooked
+                ownerLists: []
+                """, "FOOD", PresetKind.Custom);
+            var template = document.Blocks.Single();
+            Require(PresetSchema.GetParameterField(template, "rows", document) is null,
+                "A list shared by different field schemas must not inherit whichever schema appears first.");
+            var argument = PresetYaml.Parse("[{no: 1, name: Later, duration: 1, FormEditorID: Fire, finalFormEditorID: FoodCooked}]");
+            var rule = document.Add(BlockKind.Rule, "Shared rows", "CustomRule");
+            rule.Value = PresetValue.Scalar(TemplateCall.Format("sharedRows", [argument]));
+            var behavior = new BehaviorEditorControl(document, [], rule.Id);
+            Field<TabControl>(behavior, "tabs").SelectedIndex = 1;
+            var table = Field<DataGrid>(behavior, "table");
+            table.SelectedItem = table.Items[0];
+            table.CurrentCell = new DataGridCellInfo(table.Items[0], table.Columns.Single(column => Equals(column.Header, "rows")));
+            CheckControl(Field<ValueEditorControl>(behavior, "cellEditor"));
+
+            var call = new ValueEditorControl(document, [], rule.Value, "CustomRule", "Shared rows");
+            CheckControl(Descendants<ValueEditorControl>(call).Single(editor => editor.Value.Kind == ValueKind.Sequence));
+        }
+
+        static void CheckControl(ValueEditorControl editor)
+        {
+            var before = PresetYaml.Write(editor.Value);
+            var buttons = Descendants<Button>(editor).ToArray();
+            Require(!buttons.Any(button => Equals(button.Content, "Choose form...") || Equals(button.Content, "Choose forms...")),
+                "A conflicting structured argument must not regain a guessed field schema or its form choices.");
+            Require(buttons.Any(button => Equals(button.Content, "Add value")) &&
+                buttons.Any(button => Equals(button.Content, "Add setting...")),
+                "A conflicting structured argument must retain manual list and settings-block editing.");
+            editor.Capture();
+            Require(PresetYaml.Write(editor.Value) == before, "Opening a generic structured argument must preserve its fields and values.");
+            var duration = Descendants<ValueEditorControl>(editor).Single(child => Field<PresetField?>(child, "field")?.Key == "duration");
+            Descendants<TextBox>(duration).Single().Text = "2";
+            editor.Capture();
+            Require(editor.Value.Items.Single().Get("duration")?.Text == "2",
+                "Manual edits must still update a conflicting structured argument.");
+        }
     }
 
     private static void NestedDestinationFields()

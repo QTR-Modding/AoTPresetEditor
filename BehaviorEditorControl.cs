@@ -529,8 +529,9 @@ public sealed class BehaviorEditorControl : UserControl
         var argument = BehaviorFamily.GetArgument(document, row.Id, column.Parameter);
         var value = argument.IsUnsetArgument && column.Field?.Kind == FieldKind.ObjectList
             ? ValueEditorControl.NewValue(column.Field.ChildContext, column.Field) : argument;
-        cellEditor = new ValueEditorControl(document, forms, value, column.Field?.ChildContext ?? PresetSchema.InferContext("", value),
-            column.Label, field: column.Field, groups: groups, behaviorMode: true, allowVariations: false, sourceForms: Sources(row.Id), showHeading: false);
+        cellEditor = new ValueEditorControl(document, forms, value, column.Field?.ChildContext ?? "Value",
+            column.Label, field: column.Field, groups: groups, behaviorMode: true, allowVariations: false, sourceForms: Sources(row.Id), showHeading: false,
+            otherStageForms: () => OtherStageForms(row.Id, column.Parameter));
         cellEditor.Changed += (_, _) => { cellDirty = true; NotifyChanged(); RefreshSummaries(); };
         var panel = new StackPanel();
         var heading = new StackPanel { Orientation = Orientation.Horizontal };
@@ -551,26 +552,15 @@ public sealed class BehaviorEditorControl : UserControl
 
     private string[] SelectedRows() => table.SelectedItems.OfType<VariationRow>().Select(row => row.Id).ToArray();
 
-    private IReadOnlyList<FormRow> CommonSources() => (BehaviorFamily.Find(document, RuleId)?.Rows ?? [Rule()])
-        .SelectMany(row => Sources(row.Id)).Distinct().ToArray();
-
-    private IReadOnlyList<FormRow> Sources(string rowId)
+    private IReadOnlyList<FormRow> CommonSources()
     {
-        var family = BehaviorFamily.Find(document, rowId);
-        var rule = family?.Definition.Value ?? document.Blocks.First(block => block.Id == rowId).Value;
-        var key = rule.Get("owners") is not null ? "owners" : "forms";
-        var selection = rule.Get(key);
-        if (selection is { Kind: ValueKind.Scalar } && selection.Text.StartsWith('$') &&
-            family?.Parameters.Contains(selection.Text[1..]) == true)
-            selection = BehaviorFamily.GetArgument(document, rowId, selection.Text[1..]);
-        var source = PresetValue.Map();
-        if (selection is not null && !PresetDocument.Descendants(selection).Any(value => value.Kind == ValueKind.Alias ||
-            value.Kind == ValueKind.Scalar && (value.Text.StartsWith('$') || TemplateCall.TryParse(value.Text, out _, out _))))
-            source.Set(key, selection);
-        else source = presentation.EffectiveValue(rowId) ?? source;
-        return presentation.SourceForms(source).Where(new FormSelection(Category: document.Category).Matches).ToArray();
+        var family = BehaviorFamily.Find(document, RuleId);
+        return (family is { Rows.Count: > 0 } ? family.Rows : [family?.Definition ?? Rule()])
+            .SelectMany(row => Sources(row.Id)).Distinct().ToArray();
     }
 
+    private IReadOnlyList<FormRow> Sources(string rowId) => ValueEditorControl.RuleSourceForms(document, presentation,
+        document.Blocks.First(block => block.Id == rowId).Value);
     private void UpdateActions()
     {
         var selected = SelectedRows(); var column = SelectedColumn;
@@ -622,20 +612,21 @@ public sealed class BehaviorEditorControl : UserControl
         Rebuild(true, first, column.Parameter); NotifyChanged();
     }
 
+    private IEnumerable<FormRow> OtherStageForms(string rowId, string parameter)
+    {
+        var family = BehaviorFamily.Find(document, rowId)!;
+        var row = document.Blocks.First(block => block.Id == rowId);
+        var stages = BehaviorFamily.ResolveValue(document, row.Value, "stages");
+        return ValueEditorControl.StageItemForms(document, presentation, stages, index =>
+            ValueEditorControl.IssueParameter(document, family.Definition.Value,
+                ["stages", index.ToString(), "FormEditorID"]).Parameter == parameter);
+    }
+
     private FormSelection BulkFormSelection(PresetField field, string parameter)
     {
-        var excluded = new HashSet<FormRow>();
         var family = BehaviorFamily.Find(document, RuleId)!;
-        if (field.MatchSourceType && family.Definition.Value.Get("stages") is { Kind: ValueKind.Sequence } stages)
-            foreach (var stage in stages.Items)
-            {
-                if (PresetSchema.InactiveReason(field, stage, "stage", document.Category) is not null ||
-                    stage.Get("FormEditorID") is not { Kind: ValueKind.Scalar } item || item.Text == "$" + parameter) continue;
-                var values = item.Text.StartsWith('$') && family.Parameters.Contains(item.Text[1..])
-                    ? family.Rows.Select(row => BehaviorFamily.GetArgument(document, row.Id, item.Text[1..])) : [item];
-                foreach (var value in values)
-                    if (presentation.ResolveForm(value.Text) is { } form) excluded.Add(form);
-            }
+        var excluded = field.MatchSourceType
+            ? (family.Rows.Count == 0 ? [family.Definition] : family.Rows).SelectMany(row => OtherStageForms(row.Id, parameter)).ToArray() : [];
         return FormSelection.ForField(field, document.Category, CommonSources(), excluded);
     }
 
@@ -712,7 +703,10 @@ public sealed class BehaviorEditorControl : UserControl
 
     private void NotifyChanged()
     {
-        Capture(); presentation = new PresetPresentation(document, forms, groups); Changed?.Invoke(this, EventArgs.Empty);
+        Capture(); presentation = new PresetPresentation(document, forms, groups);
+        commonEditor.UpdateSourceForms(CommonSources());
+        if (cellRowId is not null) cellEditor?.UpdateSourceForms(Sources(cellRowId));
+        Changed?.Invoke(this, EventArgs.Empty);
     }
 
     private void ShowError(Exception error, string title) =>

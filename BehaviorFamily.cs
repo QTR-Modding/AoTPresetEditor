@@ -141,11 +141,18 @@ public sealed class BehaviorFamily
             : setting;
     }
 
-    private static PresetValue? ResolveSetting(PresetDocument document, PresetValue value, string key,
+    internal static PresetValue? ResolveValue(PresetDocument document, PresetValue value, string? key = null)
+    {
+        try { return ResolveSetting(document, value, key, false, []); }
+        catch (InvalidDataException) { return null; }
+    }
+
+    private static PresetValue? ResolveSetting(PresetDocument document, PresetValue value, string? key,
         bool materialize, HashSet<string> active)
     {
+        if (key is null && value.Kind is ValueKind.Mapping or ValueKind.Sequence) return value;
         if (value.Kind == ValueKind.Mapping)
-            return value.Get(key) ?? (value.Get("<<") is { } inherited ? ResolveSetting(document, inherited, key, materialize, active) : null);
+            return value.Get(key!) ?? (value.Get("<<") is { } inherited ? ResolveSetting(document, inherited, key, materialize, active) : null);
         if (value.Kind == ValueKind.Sequence)
         {
             foreach (var child in value.Items)
@@ -161,7 +168,7 @@ public sealed class BehaviorFamily
         }
         if (!TryCall(value, out var name, out var arguments) ||
             document.Blocks.FirstOrDefault(block => block.Kind == BlockKind.Template && block.Key == name) is not { } template ||
-            !active.Add("template:" + name)) return null;
+            !active.Add("template:" + name)) return key is null ? value : null;
         try
         {
             var parameters = TemplateCall.FindParameters(template.Value, document);
@@ -169,6 +176,8 @@ public sealed class BehaviorFamily
             var bindings = parameters.Select((parameter, index) => (parameter,
                 value: index < arguments.Count ? arguments[index] : PresetValue.UnsetArgument()))
                 .ToDictionary(item => item.parameter, item => item.value, StringComparer.Ordinal);
+            if (key is not null && ResolveSetting(document, template.Value, key, materialize, active) is { } setting)
+                return Substitute(setting, bindings, document, [], materialize, resolveAliases: true);
             var resolved = Substitute(template.Value, bindings, document, [], materialize, resolveAliases: true);
             return ResolveSetting(document, resolved, key, materialize, active);
         }

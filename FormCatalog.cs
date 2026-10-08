@@ -58,8 +58,9 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
         (!RequiresEditorId || form.EditorId.Length != 0) &&
         (ExcludedForms is null || !ExcludedForms.Contains(form));
 
-    // Acoustic spaces pass AoT's bound-object check but have no inventory or 3D item representation.
+    // These magic definitions pass the native bound-object check but are not ordinary inventory or placed objects.
     public bool IsPickerChoice(FormRow form) => Matches(form) &&
+        (!(TriggerOnly || BoundObjectOnly) || form.Type is not ("DualCastData" or "ObjectEffect" or "LeveledSpell" or "Spell")) &&
         (!BoundObjectOnly || !form.Type.Equals("AcousticSpace", StringComparison.OrdinalIgnoreCase)) &&
         (!InventoryOwnerOnly || form.Type is "Npc" or "Container");
 }

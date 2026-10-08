@@ -23,6 +23,7 @@ public sealed class ValueEditorControl : UserControl
     private readonly Action<bool>? changeAppliesTo;
     private const string AllItemsPrecedence = "If another preset defines stages for a particular item, that item uses those stages instead.";
     private IReadOnlyList<FormRow>? sourceForms;
+    private readonly Func<IEnumerable<FormRow>>? otherStageForms;
     private readonly string context;
     private readonly string title;
     private readonly PresetField? field;
@@ -54,14 +55,14 @@ public sealed class ValueEditorControl : UserControl
         string context, string title, bool parametersAllowed = false, PresetField? field = null, string? blockName = null,
         IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null, bool behaviorMode = false, bool allowVariations = true,
         IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null,
-        Action<bool>? changeAppliesTo = null)
-        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms, showHeading, editSections, changeAppliesTo) { }
+        Action<bool>? changeAppliesTo = null, Func<IEnumerable<FormRow>>? otherStageForms = null)
+        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms, showHeading, editSections, changeAppliesTo, otherStageForms) { }
 
     private ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed, PresetField? field, string? blockName,
         IReadOnlyList<FormGroupDefinition> groups, ValueEditorControl? parent, Action<PresetValue>? replace, bool behaviorMode = false, bool allowVariations = true,
         IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null,
-        Action<bool>? changeAppliesTo = null)
+        Action<bool>? changeAppliesTo = null, Func<IEnumerable<FormRow>>? otherStageForms = null)
     {
         this.parent = parent;
         root = parent?.root ?? this;
@@ -70,6 +71,7 @@ public sealed class ValueEditorControl : UserControl
         this.editSections = editSections;
         this.changeAppliesTo = parent is null ? changeAppliesTo : null;
         this.sourceForms = parent?.sourceForms ?? sourceForms;
+        this.otherStageForms = otherStageForms;
         blockId = parent is null ? document.Blocks.FirstOrDefault(block => ReferenceEquals(block.Value, value))?.Id : root.blockId;
         this.document = parent is null ? document.Clone() : root.document;
         this.forms = forms; this.groups = groups; this.context = context; this.title = title;
@@ -222,6 +224,10 @@ public sealed class ValueEditorControl : UserControl
                 }
             }
             if (path.Count == 0) return (null, 0);
+            if (value.Kind == ValueKind.Mapping && value.Get(path[0]) is null && value.Get("<<") is { } inherited)
+                return IssueParameter(document, inherited, path, active);
+            if (value.Kind == ValueKind.Sequence && !int.TryParse(path[0], out _))
+                return IssueParameter(document, value.Items.FirstOrDefault(item => BehaviorFamily.ResolveValue(document, item, path[0]) is not null), path, active);
             var child = value.Kind == ValueKind.Mapping ? value.Get(path[0])
                 : value.Kind == ValueKind.Sequence && int.TryParse(path[0], out var position) && position >= 0 && position < value.Items.Count ? value.Items[position] : null;
             var result = IssueParameter(document, child, path.Skip(1).ToArray(), active);
@@ -880,7 +886,7 @@ public sealed class ValueEditorControl : UserControl
         valueOptions = new WrapPanel();
         if (Value.IsUnsetArgument && field?.Kind == FieldKind.Text)
             valueOptions.Children.Add(EditorControls.Button("Use empty text", () => SetValue(new PresetValue { Kind = ValueKind.Scalar, Style = ScalarStyle.DoubleQuoted })));
-        if (field?.Kind is FieldKind.Form or FieldKind.FormList || field is null) choices.Children.Add(EditorControls.Button("Choose form...", () =>
+        if (field?.Kind is FieldKind.Form or FieldKind.FormList) choices.Children.Add(EditorControls.Button("Choose form...", () =>
         {
             var picker = new FormPickerWindow(forms, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
             if (picker.ShowDialog() == true && picker.SelectedForms.FirstOrDefault() is { } form) entry.Text = form.Identifier;
@@ -928,26 +934,68 @@ public sealed class ValueEditorControl : UserControl
         if (field?.MatchSourceType == true && !IsDefinition)
         {
             sources.UnionWith(root.sourceForms ?? []);
-            var rule = this;
-            while (rule is not null && PresetSchema.NormalizeContext(rule.context) != "rule") rule = rule.parent;
-            if (rule is not null)
+            excluded.UnionWith(root.otherStageForms?.Invoke() ?? []);
+            for (var ancestor = this; ancestor is not null; ancestor = ancestor.parent)
             {
-                var authored = rule.Value.Get("owners") ?? rule.Value.Get("forms");
-                var source = authored is not null && !IsReference(authored) ? rule.Value : rule.effective ?? rule.Value;
-                sources.UnionWith(presentation.SourceForms(source).Where(new FormSelection(Category: Document.Category).Matches));
-                var currentStage = this;
-                while (currentStage is not null && PresetSchema.NormalizeContext(currentStage.context) != "stage") currentStage = currentStage.parent;
-                var stages = rule.Value.Get("stages");
-                if (stages is not null && IsReference(stages)) stages = rule.effective?.Get("stages");
-                if (stages is { Kind: ValueKind.Sequence })
-                    foreach (var stage in stages.Items.Where(stage => !ReferenceEquals(stage, currentStage?.Value) && !ReferenceEquals(stage, currentStage?.effective)))
-                        if (stage.Get("FormEditorID") is { Kind: ValueKind.Scalar } item &&
-                            PresetSchema.InactiveReason(field, stage, "stage", Document.Category) is null &&
-                            presentation.ResolveForm(item.Text) is { } form) excluded.Add(form);
+                var normalized = PresetSchema.NormalizeContext(ancestor.context);
+                if (normalized is "stage" or "stages" && (ancestor.Value.Kind == ValueKind.Sequence || ancestor.field?.Kind == FieldKind.ObjectList))
+                    excluded.UnionWith(StageItemForms(Document, presentation, ancestor.Value,
+                        index => ancestor.EditsPath([index.ToString(), "FormEditorID"], this)));
+                if (normalized != "rule") continue;
+                sources.UnionWith(RuleSourceForms(Document, presentation, ancestor.Value));
+                var stages = BehaviorFamily.ResolveValue(Document, ancestor.Value, "stages") ?? ancestor.effective?.Get("stages");
+                excluded.UnionWith(StageItemForms(Document, presentation, stages,
+                    index => ancestor.EditsPath(["stages", index.ToString(), "FormEditorID"], this)));
+                break;
             }
         }
         return AoTPresetEditor.FormSelection.ForField(field, Document.Category, sources, excluded);
     }
+
+    internal static IReadOnlyList<FormRow> RuleSourceForms(PresetDocument document, PresetPresentation presentation, PresetValue rule)
+    {
+        var selection = BehaviorFamily.ResolveValue(document, rule, "owners") ?? BehaviorFamily.ResolveValue(document, rule, "forms");
+        if (selection is null || BehaviorFamily.ResolveValue(document, selection) is not { } resolved) return [];
+        var values = resolved.Kind == ValueKind.Sequence ? resolved.Items : [resolved];
+        var items = PresetValue.List();
+        items.Items.AddRange(values.Select(value => BehaviorFamily.ResolveValue(document, value)).OfType<PresetValue>());
+        var source = PresetValue.Map(); source.Set("owners", items);
+        return presentation.SourceForms(source).Where(new FormSelection(Category: document.Category).Matches).ToArray();
+    }
+    internal static IEnumerable<FormRow> StageItemForms(PresetDocument document, PresetPresentation presentation,
+        PresetValue? value, Func<int, bool> editing)
+    {
+        if (value is null || BehaviorFamily.ResolveValue(document, value) is not { Kind: ValueKind.Sequence } stages) yield break;
+        for (var index = 0; index < stages.Items.Count; index++)
+        {
+            if (editing(index)) continue;
+            var stage = stages.Items[index];
+            var number = BehaviorFamily.ResolveValue(document, stage, "no");
+            if (number is not null && BehaviorFamily.ResolveValue(document, number) is { } resolvedNumber &&
+                PresetSchema.TryUnsigned(resolvedNumber.Text, out var stageNumber) && stageNumber == 0) continue;
+            var item = BehaviorFamily.ResolveValue(document, stage, "FormEditorID");
+            if (item is not null && BehaviorFamily.ResolveValue(document, item) is { Kind: ValueKind.Scalar } resolved &&
+                presentation.ResolveForm(resolved.Text) is { } form) yield return form;
+        }
+    }
+
+    private bool EditsPath(IReadOnlyList<string> path, ValueEditorControl editor)
+    {
+        if (ReferenceEquals(this, editor)) return true;
+        if (IsCall(Value, out var template, out _))
+        {
+            var parameter = IssueParameter(Document, template!.Value, path);
+            var argument = children.FirstOrDefault(child => child.Editor.field?.Key == parameter.Parameter).Editor;
+            return argument?.EditsPath(path.Skip(parameter.PathLength).ToArray(), editor) == true;
+        }
+        if (path.Count == 0) return false;
+        var child = Value.Kind == ValueKind.Mapping
+            ? children.FirstOrDefault(child => child.Editor.field?.Key == path[0]).Editor
+            : int.TryParse(path[0], out var index) && index >= 0 && index < Value.Items.Count
+                ? children.FirstOrDefault(child => ReferenceEquals(child.Editor.Value, Value.Items[index])).Editor : null;
+        return child?.EditsPath(path.Skip(1).ToArray(), editor) == true;
+    }
+
     private void AdoptDocument(PresetDocument updated)
     {
         updated.RebindValue(root.Value, root.document); root.document = updated; root.presentation = new PresetPresentation(updated, forms, groups);

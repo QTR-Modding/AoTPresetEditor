@@ -269,6 +269,8 @@ public static class PresetSchema
         else if (constrained.All(field => field.Kind is FieldKind.Integer or FieldKind.Number))
             kind = constrained.Any(field => field.Kind == FieldKind.Integer) ? FieldKind.Integer : FieldKind.Number;
         else if (constrained.Any(field => field.Kind != kind)) return null;
+        if (kind == FieldKind.ObjectList && constrained.Any(field => NormalizeContext(field.ChildContext) != NormalizeContext(first.ChildContext)))
+            return null;
         string[]? types = null;
         foreach (var field in constrained.Where(field => field.FormTypes is not null))
             types = types is null ? field.FormTypes : types.Intersect(field.FormTypes!, StringComparer.OrdinalIgnoreCase).ToArray();

@@ -25,6 +25,8 @@ internal static class BehaviorEditorChecks
         IssueLocations();
         ReferencedIssueVariables();
         SourceFilters();
+        StagePickerRoutes();
+        StagePickerDraftSources();
         BehaviorSummaries();
     }
 
@@ -639,12 +641,177 @@ internal static class BehaviorEditorChecks
             Require(selection.Matches(valid) && selection.Matches(current) && !selection.Matches(source) &&
                 !selection.Matches(wrongType) && !selection.Matches(wrongCategory),
                 "Single and bulk stage replacement choices must share source, form type, and category restrictions.");
-        Require(!bulk.Matches(used), "Bulk stage replacement must exclude forms already used by other common stages.");
+        Require(!bulk.Matches(used) && !single.Matches(used), "Single and bulk stage replacements must exclude forms already used by other stages.");
         var sourceField = PresetSchema.GetFields("rule", PresetKind.Custom).Single(field => field.Key == "owners");
         Require(FormSelection.ForField(sourceField, "FOOD", [source]).Matches(source),
             "Source-item fields must not inherit replacement-only source exclusions.");
     }
 
+    private static void StagePickerRoutes()
+    {
+        FormRow Form(string id, string type = "Ingestible", ItemCategories category = ItemCategories.FOOD) =>
+            new(id, id, type, "Test.esp", "Test.esp", id, category, IsBoundObject: true);
+        var source = Form("Raw"); var current = Form("Current"); var used = Form("Used");
+        var otherCurrent = Form("OtherCurrent"); var otherUsed = Form("OtherUsed"); var valid = Form("New");
+        var initial = Form("InitialOnly"); var wrongType = Form("WrongType", "Ingredient");
+        var wrongCategory = Form("WrongCategory", category: ItemCategories.POSN);
+        FormRow[] forms = [source, current, used, otherCurrent, otherUsed, valid, initial, wrongType, wrongCategory];
+        const string definitions = """
+            templates:
+              identity: $value
+              stage:
+                no: $number
+                name: ''
+                duration: 1
+                FormEditorID: $item
+              steps:
+              - {no: 0, name: '', duration: 1, FormEditorID: InitialOnly}
+              - stage(1, identity($replacement))
+              - stage(2, $other)
+              age:
+                owners: identity(Raw)
+                stages: steps($replacement, $other)
+                finalFormEditorID: New
+            ownerLists:
+            - age(Current, Used)
+            - age(OtherCurrent, OtherUsed)
+            """;
+        var document = PresetDocument.Parse(definitions, "FOOD", PresetKind.Custom);
+        var rules = document.Blocks.Where(block => block.Kind == BlockKind.Rule).ToArray();
+        var behavior = new BehaviorEditorControl(document, forms, rules[0].Id);
+        Field<TabControl>(behavior, "tabs").SelectedIndex = 1;
+        SelectCell(behavior, 0, 0);
+        CheckStageChoices(Field<ValueEditorControl>(behavior, "cellEditor"), forms,
+            [current, otherCurrent, otherUsed, valid, initial], "A scalar variable must exclude only sibling stage items from its own row.");
+        SelectCell(behavior, 1, 0);
+        CheckStageChoices(Field<ValueEditorControl>(behavior, "cellEditor"), forms,
+            [current, used, otherCurrent, valid, initial], "Another row must use its own stage exclusions.");
+        SelectCell(behavior, 0, 1);
+        CellInput(behavior).Text = "New";
+        SelectCell(behavior, 0, 0);
+        CheckStageChoices(Field<ValueEditorControl>(behavior, "cellEditor"), forms,
+            [current, used, otherCurrent, otherUsed, initial], "Editing a sibling variable must update exclusions before another preview.");
+
+        var expanded = PresetCatalog.Expand(definitions, CancellationToken.None).GetAwaiter().GetResult();
+        var presentation = new PresetPresentation(document, forms, expandedYaml: expanded);
+        var direct = new ValueEditorControl(document, forms, rules[0].Value, rules[0].Context, "Rule");
+        var argument = Descendants<ValueEditorControl>(direct).Single(editor => Field<PresetField?>(editor, "field")?.Key == "replacement");
+        CheckStageChoices(argument, forms, [current, otherCurrent, otherUsed, valid, initial],
+            "A whole-rule template argument must resolve nested source selectors and sibling stages before a preview.");
+        direct.UpdatePresentation(presentation, presentation.EffectiveValue(rules[0]));
+        CheckStageChoices(argument, forms, [current, otherCurrent, otherUsed, valid, initial],
+            "Refreshing the expansion must preserve the same stage item choices.");
+
+        foreach (var mergedFields in new[] { "{FormEditorID: $item}", "[{FormEditorID: $item}, {FormEditorID: New}]" })
+        {
+            var merged = PresetDocument.Parse(definitions.Replace("FormEditorID: $item", "<<: " + mergedFields), "FOOD", PresetKind.Custom);
+            var mergedRule = merged.Blocks.First(block => block.Kind == BlockKind.Rule);
+            var mergedBehavior = new BehaviorEditorControl(merged, forms, mergedRule.Id);
+            Field<TabControl>(mergedBehavior, "tabs").SelectedIndex = 1;
+            SelectCell(mergedBehavior, 0, 0);
+            CheckStageChoices(Field<ValueEditorControl>(mergedBehavior, "cellEditor"), forms,
+                [current, otherCurrent, otherUsed, valid, initial], "Merged stage templates must preserve the edited variable's own value and merge precedence.");
+        }
+        foreach (var stageArgument in new[]
+        {
+            "[{no: 0, name: '', duration: 1, FormEditorID: InitialOnly}, {no: 1, name: '', duration: 1, FormEditorID: Current}, {no: 2, name: '', duration: 1, FormEditorID: Used}]",
+            "steps(Current, Used)"
+        })
+        {
+            var yaml = """
+                templates:
+                  identity: $value
+                  steps:
+                  - {no: 0, name: '', duration: 1, FormEditorID: InitialOnly}
+                  - {no: 1, name: '', duration: 1, FormEditorID: identity($replacement)}
+                  - {no: 2, name: '', duration: 1, FormEditorID: $other}
+                  age: {owners: Raw, stages: $stages, finalFormEditorID: New}
+                ownerLists: []
+                """;
+            var listDocument = PresetDocument.Parse(yaml, "FOOD", PresetKind.Custom);
+            var listRule = listDocument.Add(BlockKind.Rule, "Stages", "CustomRule");
+            listRule.Value = PresetValue.Scalar(TemplateCall.Format("age", [PresetYaml.Parse(stageArgument)]));
+            var listBehavior = new BehaviorEditorControl(listDocument, forms, listRule.Id);
+            Field<TabControl>(listBehavior, "tabs").SelectedIndex = 1;
+            SelectCell(listBehavior, 0, 0);
+            var list = Field<ValueEditorControl>(listBehavior, "cellEditor");
+            if (list.Value.Kind == ValueKind.Sequence) Field<ListBox>(list, "entryList").SelectedIndex = 1;
+            var item = Descendants<ValueEditorControl>(list).Single(editor =>
+                Field<PresetField?>(editor, "field")?.MatchSourceType == true && editor.Value.Text == "Current");
+            CheckStageChoices(item, forms, [current, otherCurrent, otherUsed, valid, initial],
+                "A stages variable must retain sibling restrictions for both literal lists and nested template arguments.");
+        }
+    }
+
+    private static void StagePickerDraftSources()
+    {
+        FormRow Form(string id, string type = "Ingestible") =>
+            new(id, id, type, "Test.esp", "Test.esp", id, ItemCategories.FOOD, IsBoundObject: true);
+        var raw = Form("Raw"); var current = Form("Current"); var used = Form("Used"); var valid = Form("New");
+        var berries = Form("Berries", "Ingredient"); var agedBerries = Form("AgedBerries", "Ingredient");
+        FormRow[] forms = [raw, current, used, valid, berries, agedBerries];
+        const string yaml = """
+            loop: &loop {other: *loop}
+            templates:
+              age:
+                owners: Raw
+                stages:
+                - {no: 0, name: '', duration: 1}
+                - {no: 1, name: '', duration: 1, FormEditorID: $item}
+                - {no: 2, name: '', duration: 1, FormEditorID: Used}
+                finalFormEditorID: New
+                unknown: *loop
+            ownerLists:
+            - age(Current)
+            """;
+        var document = PresetDocument.Parse(yaml, "FOOD", PresetKind.Custom);
+        var rule = document.Blocks.Single(block => block.Kind == BlockKind.Rule);
+        var behavior = new BehaviorEditorControl(document, forms, rule.Id);
+        Field<TabControl>(behavior, "tabs").SelectedIndex = 1;
+        SelectCell(behavior, 0, 0);
+        CheckStageChoices(Field<ValueEditorControl>(behavior, "cellEditor"), forms, [current, valid],
+            "An unrelated cyclic alias must not prevent opening a draft or resolving its known source and stage restrictions.");
+        Require(!PresetValidation.Check(document, CancellationToken.None).GetAwaiter().GetResult().IsValid,
+            "Opening a malformed draft must leave its reference error visible to validation.");
+
+        var literal = PresetDocument.Parse("""
+            ownerLists:
+            - owners: Raw
+              stages:
+              - {no: 0, name: '', duration: 1}
+              - {no: 1, name: '', duration: 1, FormEditorID: Current}
+              finalFormEditorID: New
+            """, "FOOD", PresetKind.Custom);
+        var literalRule = literal.Blocks.Single(block => block.Kind == BlockKind.Rule);
+        var literalBehavior = new BehaviorEditorControl(literal, forms, literalRule.Id);
+        var common = Common(literalBehavior);
+        Input(common, "owners").Text = "Berries";
+        var stage = CollectionEntry(common, "stages", 1);
+        var stageItem = Descendants<ValueEditorControl>(stage).Single(editor => Field<PresetField?>(editor, "field")?.Key == "FormEditorID");
+        CheckStageChoices(stageItem, forms, [agedBerries],
+            "Changing the common source must replace stale source-type constraints before the next preview.");
+
+        var detached = document.Clone();
+        detached.Blocks.RemoveAll(block => block.Kind != BlockKind.Template);
+        var template = detached.Blocks.Single(); template.Value.Remove("unknown");
+        var detachedBehavior = new BehaviorEditorControl(detached, forms, template.Id);
+        Require(BehaviorFamily.Find(detachedBehavior.Document, template.Id)!.Rows.Count == 0,
+            "The detached-stage fixture must have no variable rows.");
+        var descriptor = PresetSchema.GetParameterField(template, "item", detached)!;
+        var selection = (FormSelection)typeof(BehaviorEditorControl).GetMethod("BulkFormSelection", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(detachedBehavior, [descriptor, "item"])!;
+        Require(forms.Where(selection.IsPickerChoice).ToHashSet().SetEquals([current, valid]),
+            "A detached behavior must use its common source and sibling stage when choosing forms for its first row.");
+    }
+    private static void CheckStageChoices(ValueEditorControl editor, IReadOnlyList<FormRow> forms,
+        IReadOnlyList<FormRow> expected, string message)
+    {
+        var selection = (FormSelection)typeof(ValueEditorControl).GetMethod("FormSelection", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(editor, null)!;
+        var picker = new FormPickerWindow(forms, selection: selection);
+        try { Require(Field<DataGrid>(picker, "results").Items.Cast<FormRow>().ToHashSet().SetEquals(expected), message); }
+        finally { picker.Close(); }
+    }
     private static ValueEditorControl Common(BehaviorEditorControl editor) => Field<ValueEditorControl>(editor, "commonEditor");
     private static ValueEditorControl CollectionEntry(ValueEditorControl editor, string key, int index)
     {

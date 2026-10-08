@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using AoTPresetEditor;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
@@ -33,6 +34,11 @@ internal static class FormSelectionChecks
         var ammunition = mod.Ammunitions.AddNew(); ammunition.EditorID = "Ammunition";
         var light = mod.Lights.AddNew(); light.EditorID = "Light";
         var spell = mod.Spells.AddNew(); spell.EditorID = "Spell";
+        var enchantment = mod.ObjectEffects.AddNew(); enchantment.EditorID = "Enchantment";
+        var leveledSpell = mod.LeveledSpells.AddNew(); leveledSpell.EditorID = "LeveledSpell";
+        var dualCast = mod.DualCastData.AddNew(); dualCast.EditorID = "DualCast";
+        var acoustic = mod.AcousticSpaces.AddNew(); acoustic.EditorID = "AcousticSpace";
+        var texture = mod.TextureSets.AddNew(); texture.EditorID = "TextureSet";
         var armorAddon = mod.ArmorAddons.AddNew(); armorAddon.EditorID = "ArmorAddon";
         var location = mod.Locations.AddNew(); location.EditorID = "Location";
         var perk = mod.Perks.AddNew(); perk.EditorID = "Perk";
@@ -59,15 +65,15 @@ internal static class FormSelectionChecks
             "Equipment and miscellaneous item categories must come from record type.");
         Require(Row("Key").Categories == ItemCategories.None, "Keys must not inherit the MISC category from the engine class hierarchy.");
         foreach (var id in new[] { "Food", "FoodIngredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Location", "Perk", "Fire" })
-            Require(Row(id).IsTrigger, $"{id} must be accepted by the trigger picker.");
+            Require(Row(id).IsTrigger, $"{id} must pass AoT's native trigger type check.");
         foreach (var id in new[] { "Keyword", "FormList", "Sound", "MagicEffect", "ArmorAddon" })
-            Require(!Row(id).IsTrigger, $"{id} must not be offered as a direct trigger.");
+            Require(!Row(id).IsTrigger, $"{id} must fail AoT's native trigger type check.");
 
         var resultSelection = new FormSelection(BoundObjectOnly: true);
         foreach (var id in new[] { "Food", "Medicine", "PoisonedFood", "Ingredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Fire" })
-            Require(resultSelection.Matches(Row(id)), $"{id} must be offered as a bound-object result, independently of the source category.");
+            Require(resultSelection.Matches(Row(id)), $"{id} must pass native bound-object validation, independently of the source category.");
         foreach (var id in new[] { "Keyword", "FormList", "Sound", "MagicEffect", "ArmorAddon", "Location", "Perk" })
-            Require(!resultSelection.Matches(Row(id)), $"{id} must not be offered as a bound-object result.");
+            Require(!resultSelection.Matches(Row(id)), $"{id} must fail native bound-object validation.");
         Require(new FormSelection(BoundObjectOnly: true, TriggerOnly: true).Matches(Row("Key")) &&
             !new FormSelection(BoundObjectOnly: true, TriggerOnly: true).Matches(Row("Location")),
             "Combined parameter constraints must retain the bound-object requirement.");
@@ -98,10 +104,85 @@ internal static class FormSelectionChecks
         Require(Field<DataGrid>(triggerPicker, "results").Items.Cast<FormRow>().All(form => form.IsTrigger),
             "Trigger filtering must exclude unrelated record types.");
         triggerPicker.Close();
+        PickerControls(forms);
         ContainerSelections(forms);
         AddonSettings(forms);
         SourceGroups(forms);
         KnownForms(forms);
+    }
+
+    private static void PickerControls(IReadOnlyList<FormRow> forms)
+    {
+        string[] magicDefinitions = ["Spell", "ObjectEffect", "LeveledSpell", "DualCastData"];
+        foreach (var form in forms.Where(form => magicDefinitions.Contains(form.Type)))
+            Require(new FormSelection(TriggerOnly: true).Matches(form) && new FormSelection(BoundObjectOnly: true).Matches(form),
+                "Hiding magic definitions from suggestions must preserve AoT-compatible manual/imported identifiers.");
+
+        foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon })
+        foreach (var context in new[] { "rule", "stage", "transformer", "modulator", "effect" })
+        foreach (var descriptor in PresetSchema.GetFields(context, kind).Where(field => field.Kind is FieldKind.Form or FieldKind.FormList))
+        {
+            var document = new PresetDocument { Category = "FOOD", Kind = kind };
+            var source = forms.Single(form => form.EditorId == "Food");
+            var expected = forms.Where(form => descriptor.Key switch
+            {
+                "owners" or "forms" => (form.Categories & ItemCategories.FOOD) != 0 && form.EditorId.Length > 0,
+                "containers" => form.Type is "Npc" or "Container",
+                "sound" => form.Type == "SoundDescriptor",
+                "art_object" => form.Type == "ArtObject",
+                "effect_shader" => form.Type == "EffectShader",
+                "finalFormEditorID" => form.IsBoundObject && form.Type != "AcousticSpace" && !magicDefinitions.Contains(form.Type),
+                "FormEditorID" when context == "stage" => form.Type == "Ingestible" && (form.Categories & ItemCategories.FOOD) != 0 && form != source,
+                "FormEditorID" when context == "effect" => form.Type == "MagicEffect",
+                "FormEditorID" => form.IsTrigger && !magicDefinitions.Contains(form.Type),
+                _ => throw new InvalidOperationException("Unreviewed form field: " + context + "." + descriptor.Key)
+            }).ToHashSet();
+            var scalar = new ValueEditorControl(document, forms, PresetValue.Scalar(""), "Value", descriptor.Label,
+                field: descriptor, sourceForms: [source]);
+            CheckPicker(scalar, "Choose form...", expected, kind + "/" + context + "/" + descriptor.Key);
+            if (descriptor.Kind != FieldKind.FormList) continue;
+            var sequence = PresetValue.List(); sequence.Items.Add(PresetValue.Scalar(""));
+            var list = new ValueEditorControl(document, forms, sequence, "Value", descriptor.Label,
+                field: descriptor, sourceForms: [source]);
+            CheckPicker(list, "Choose forms...", expected, kind + "/" + context + "/" + descriptor.Key + " list");
+            var entry = Descendants<ValueEditorControl>(list).Single();
+            CheckPicker(entry, "Choose form...", expected, kind + "/" + context + "/" + descriptor.Key + " entry");
+        }
+    }
+
+    private static void CheckPicker(ValueEditorControl editor, string action, HashSet<FormRow> expected, string route)
+    {
+        // Invoke the real button and inspect its modal's displayed rows, including inherited list-entry constraints.
+        Exception? failure = null;
+        var response = Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            var picker = PresentationSource.CurrentSources.Cast<PresentationSource>().Select(source => source.RootVisual)
+                .OfType<FormPickerWindow>().Single();
+            try
+            {
+                picker.Opacity = 0; picker.ShowInTaskbar = false;
+                var displayed = Field<DataGrid>(picker, "results").Items.Cast<FormRow>().ToHashSet();
+                Require(displayed.SetEquals(expected), route + " offered incorrect forms: " +
+                    string.Join(", ", displayed.Except(expected).Select(form => form.Type + ":" + form.EditorId)));
+                Require(Field<ComboBox>(picker, "types").Items.Cast<string>().Skip(1).ToHashSet()
+                    .SetEquals(expected.Select(form => form.Type)), route + " type filter must contain only applicable types.");
+            }
+            catch (Exception error) { failure = error; }
+            finally { picker.Close(); }
+        }));
+        try { Descendants<Button>(editor).Single(button => Equals(button.Content, action)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); }
+        finally { response.Abort(); }
+        if (failure is not null) throw failure;
+        Require(response.Status == DispatcherOperationStatus.Completed, route + " must open its form picker.");
+    }
+
+    private static IEnumerable<T> Descendants<T>(DependencyObject parent) where T : DependencyObject
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(parent).OfType<DependencyObject>())
+        {
+            if (child is T match) yield return match;
+            foreach (var nested in Descendants<T>(child)) yield return nested;
+        }
     }
 
     private static void ContainerSelections(IReadOnlyList<FormRow> forms)
