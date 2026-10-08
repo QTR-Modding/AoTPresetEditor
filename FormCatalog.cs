@@ -28,7 +28,7 @@ public sealed record FormRow(string Name, string EditorId, string Type, string P
 
 public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, string? Category = null, bool TriggerOnly = false,
     bool BoundObjectOnly = false, IReadOnlyCollection<FormRow>? ExcludedForms = null, bool RequiresEditorId = false,
-    ContainerScope ContainerScope = ContainerScope.None, ItemCategories WorldItemCategory = ItemCategories.None)
+    bool InventoryOwnerOnly = false)
 {
     private readonly ItemCategories category = Enum.TryParse<ItemCategories>(Category, true, out var value) ? value : ItemCategories.None;
 
@@ -45,8 +45,7 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
             }
         return new(types, field?.MatchPresetCategory == true ? category : null,
             field?.TriggerOnly == true, field?.BoundObjectOnly == true, excluded, field?.RequiresEditorId == true,
-            field?.ContainerScope ?? ContainerScope.None,
-            Enum.TryParse<ItemCategories>(category, true, out var worldCategory) ? worldCategory : ItemCategories.None);
+            field?.InventoryOwnerOnly == true);
     }
 
     public bool Matches(FormRow form) =>
@@ -60,8 +59,7 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
     // Acoustic spaces pass AoT's bound-object check but have no inventory or 3D item representation.
     public bool IsPickerChoice(FormRow form) => Matches(form) &&
         (!BoundObjectOnly || !form.Type.Equals("AcousticSpace", StringComparison.OrdinalIgnoreCase)) &&
-        (ContainerScope == ContainerScope.None || form.Type is "Npc" or "Container" ||
-            ContainerScope == ContainerScope.InventoriesAndWorldItems && (form.Categories & WorldItemCategory) != 0);
+        (!InventoryOwnerOnly || form.Type is "Npc" or "Container");
 }
 
 public sealed record CatalogResult(IReadOnlyList<FormRow> Forms, IReadOnlyList<string> Plugins, string PluginsPath);

@@ -134,8 +134,8 @@ internal static class SchemaPickerChecks
             "A merged map inside a stage must infer its FormEditorID as a stage item, not a trigger.");
         Require(Parameter("result") is { Kind: FieldKind.Form, BoundObjectOnly: true },
             "Scalar forwarding templates must retain the final item's bound-object constraint.");
-        Require(Parameter("where") is { ContainerScope: ContainerScope.Inventories },
-            "A parameter used for both rule and trigger filters must retain the stricter inventory picker scope.");
+        Require(Parameter("where") is { InventoryOwnerOnly: true },
+            "A parameter passed through nested rule and trigger filters must retain inventory-owner-only picker choices.");
         var conflict = document.Blocks.Single(block => block.Key == "conflicting");
         Require(PresetSchema.GetParameterField(conflict, "same", document)?.FormTypes is { Length: 0 },
             "Different destination types must still intersect when a parameter passes through separate wrappers.");

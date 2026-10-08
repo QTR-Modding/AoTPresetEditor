@@ -3,12 +3,11 @@ using System.Globalization;
 namespace AoTPresetEditor;
 
 public enum FieldKind { Text, Form, FormList, Number, Integer, IntegerList, Boolean, Color, ObjectList }
-public enum ContainerScope { None, Inventories, InventoriesAndWorldItems }
 
 public sealed record PresetField(string Key, string Label, FieldKind Kind, string Help,
     bool Required = false, string ChildContext = "", string[]? FormTypes = null, string? DefaultText = null,
     bool AllowsGroups = false, bool MatchPresetCategory = false, bool TriggerOnly = false, bool BoundObjectOnly = false,
-    bool MatchSourceType = false, bool RequiresEditorId = false, ContainerScope ContainerScope = ContainerScope.None);
+    bool MatchSourceType = false, bool RequiresEditorId = false, bool InventoryOwnerOnly = false);
 
 public static class PresetSchema
 {
@@ -23,7 +22,7 @@ public static class PresetSchema
     private static readonly PresetField[] TriggerFields =
     [
         new("allowed_stages", "Allowed stages", FieldKind.IntegerList, "Stage numbers this trigger affects. Unset or empty means all stages; 0 selects the initial stage."),
-        new("containers", "Containers", FieldKind.FormList, "Restrict this effect to the selected inventories; leave empty for no restriction. Items lying in the world ignore this filter.", AllowsGroups: true, ContainerScope: ContainerScope.Inventories)
+        new("containers", "Containers", FieldKind.FormList, "Restrict this effect to the selected inventories; leave empty for no restriction. Items lying in the world ignore this filter.", AllowsGroups: true, InventoryOwnerOnly: true)
     ];
     private static readonly PresetField[] StageFields =
     [
@@ -62,7 +61,7 @@ public static class PresetSchema
     [
         new("stages", "Stages", FieldKind.ObjectList, "The sequence of stages, beginning with stage 0.", true, "stage"),
         new("finalFormEditorID", "Final item", FieldKind.Form, "Object produced after the last stage. Required even if an infinite stage prevents reaching it.", true, BoundObjectOnly: true),
-        new("containers", "Containers", FieldKind.FormList, "Restrict stage progression and transformations to the selected inventories and the listed items lying in the world; leave empty for no restriction.", AllowsGroups: true, ContainerScope: ContainerScope.InventoriesAndWorldItems),
+        new("containers", "Containers", FieldKind.FormList, "Restrict stage progression and transformations to the selected inventories and the listed items lying in the world; leave empty for no restriction.", AllowsGroups: true, InventoryOwnerOnly: true),
         new("timeModulators", "Time modifiers", FieldKind.ObjectList, "Speed up, slow down, pause, or reverse an item's progress through its stages while the selected conditions apply.", ChildContext: "modulator"),
         new("transformers", "Transformations", FieldKind.ObjectList, "Pause stage progression and turn the item into the chosen result after the selected conditions have remained active for the specified time.", ChildContext: "transformer")
     ];
@@ -282,8 +281,7 @@ public static class PresetSchema
             BoundObjectOnly = known.Any(field => field.BoundObjectOnly),
             MatchSourceType = known.Any(field => field.MatchSourceType),
             RequiresEditorId = known.Any(field => field.RequiresEditorId),
-            ContainerScope = known.Any(field => field.ContainerScope == ContainerScope.Inventories) ? ContainerScope.Inventories
-                : known.Any(field => field.ContainerScope == ContainerScope.InventoriesAndWorldItems) ? ContainerScope.InventoriesAndWorldItems : ContainerScope.None
+            InventoryOwnerOnly = known.Any(field => field.InventoryOwnerOnly)
         };
     }
     public static IReadOnlyList<string> Validate(PresetValue value, string context, string category, bool partial = false) =>

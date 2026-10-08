@@ -107,34 +107,26 @@ internal static class FormSelectionChecks
         FormRow Row(string editorId) => forms.Single(form => form.EditorId == editorId);
         foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon })
         foreach (var context in new[] { "rule", "transformer", "modulator" })
+        foreach (var category in Enum.GetValues<ItemCategories>().Where(category => category != ItemCategories.None))
         {
             var field = PresetSchema.GetFields(context, kind).Single(field => field.Key == "containers");
-            var selection = FormSelection.ForField(field, "FOOD");
+            var selection = FormSelection.ForField(field, category.ToString());
             foreach (var id in new[] { "Player", "Chest" })
-                Require(selection.IsPickerChoice(Row(id)), $"{kind}/{context} Containers must offer inventory-owner base forms.");
-            foreach (var id in new[] { "Food", "FoodIngredient" })
-                Require(selection.IsPickerChoice(Row(id)) == (context == "rule"),
-                    $"{kind}/{context} Containers must offer world-item bases only for the rule-level filter.");
-            Require(selection.IsPickerChoice(forms.Single(form => form.EditorId.Length == 0)) == (context == "rule"),
-                "A rule's world-item filter does not require an EditorID.");
-            foreach (var id in new[] { "Ingredient", "Armor", "Keyword", "MagicEffect", "Sound", "Fire" })
+                Require(selection.IsPickerChoice(Row(id)), $"{kind}/{context}/{category} Containers must offer inventory-owner base forms.");
+            foreach (var id in new[] { "Food", "FoodIngredient", "Ingredient", "Armor", "Keyword", "MagicEffect", "Sound", "Fire" })
             {
-                Require(!selection.IsPickerChoice(Row(id)), $"{kind}/{context} Containers must not suggest {id} for FOOD.");
-                Require(selection.Matches(Row(id)), "Nonmatching manual/imported Containers identifiers must remain valid.");
+                Require(!selection.IsPickerChoice(Row(id)), $"{kind}/{context}/{category} Containers must not suggest {id}.");
+                Require(selection.Matches(Row(id)), "World-item and nonmatching manual/imported Containers identifiers must remain valid.");
             }
+            var unnamed = forms.Single(form => form.EditorId.Length == 0);
+            Require(!selection.IsPickerChoice(unnamed) && selection.Matches(unnamed),
+                "World-item identifiers without EditorIDs must remain valid through manual entry without appearing in Containers choices.");
             var picker = new FormPickerWindow(forms, selection: selection);
             var displayed = Field<DataGrid>(picker, "results").Items.Cast<FormRow>().ToArray();
-            Require(displayed.Length == (context == "rule" ? 6 : 2) && displayed.All(selection.IsPickerChoice),
-                "The actual Containers picker must contain only applicable inventory/world records.");
+            Require(displayed.Length == 2 && displayed.Contains(Row("Player")) && displayed.Contains(Row("Chest")),
+                "Every Containers picker must offer only NPC and Container base forms, regardless of preset category or filter position.");
             picker.Close();
         }
-        var ruleField = PresetSchema.GetFields("rule", PresetKind.Custom).Single(field => field.Key == "containers");
-        var armorSelection = FormSelection.ForField(ruleField, "ARMO");
-        Require(armorSelection.IsPickerChoice(Row("Armor")) && armorSelection.IsPickerChoice(Row("Player")) &&
-            !armorSelection.IsPickerChoice(Row("Food")), "Rule Containers must use the current preset category for world items.");
-        var ingredientSelection = FormSelection.ForField(ruleField, "INGR");
-        Require(ingredientSelection.IsPickerChoice(Row("Ingredient")) && ingredientSelection.IsPickerChoice(Row("FoodIngredient")),
-            "A world item with overlapping categories must remain available in either category's filter.");
         Require(new FormSelection().IsPickerChoice(Row("MagicEffect")), "The standalone form browser must remain unrestricted.");
     }
 
@@ -218,6 +210,19 @@ internal static class FormSelectionChecks
         visuals.Set("containers", PresetValue.Scalar("Sound"));
         visuals.Get("transformers")!.Items[0].Set("containers", PresetValue.Scalar("Sound"));
         Require(Errors(visuals).Count == 0, "Valid effect types and intentionally nonmatching inventory-filter sentinels must remain allowed.");
+
+        foreach (var filterForm in new[] { food, forms.Single(form => form.EditorId == "FoodIngredient"), forms.Single(form => form.EditorId == "Armor"),
+            forms.Single(form => form.EditorId.Length == 0), forms.Single(form => form.EditorId == "Sound") })
+        {
+            var manual = rule.Clone();
+            manual.Set("containers", PresetValue.Scalar(filterForm.Identifier));
+            manual.Get("transformers")!.Items[0].Set("containers", PresetValue.Scalar(filterForm.Identifier));
+            var modulator = PresetYaml.Parse("{FormEditorID: Fire, magnitude: 0}");
+            modulator.Set("containers", PresetValue.Scalar(filterForm.Identifier));
+            var modulators = PresetValue.List(); modulators.Items.Add(modulator); manual.Set("timeModulators", modulators);
+            Require(Errors(manual).Count == 0,
+                "Hiding world-item and nonmatching Containers suggestions must not invalidate manually entered identifiers at any filter position.");
+        }
 
         var effects = rule.Clone(); var generatedStage = effects.Get("stages")!.Items[1];
         generatedStage.Fields.Remove("FormEditorID");
