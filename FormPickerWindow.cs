@@ -24,6 +24,7 @@ public sealed class FormPickerWindow : Window
     private readonly TextBlock count = new();
     private readonly TextBlock selection = new() { TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly DataGrid results = new();
+    private readonly SoundPreview soundPreview = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 0) };
     private readonly Button choose = new() { Content = "Choose", IsDefault = true, Visibility = Visibility.Collapsed };
     private readonly Button clear = new() { Content = "Clear selection", Visibility = Visibility.Collapsed };
     private readonly HashSet<FormRow> selected = [];
@@ -63,7 +64,7 @@ public sealed class FormPickerWindow : Window
         results.SelectionChanged += Results_SelectionChanged;
         results.MouseDoubleClick += Results_DoubleClick;
         choose.Click += (_, _) => ActivateSelection();
-        Closed += (_, _) => searchTimer.Stop();
+        Closed += (_, _) => { searchTimer.Stop(); soundPreview.Stop(); };
         Loaded += (_, _) => search.Focus();
         FilterForms();
     }
@@ -75,6 +76,9 @@ public sealed class FormPickerWindow : Window
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(soundPreview, 3); layout.Children.Add(soundPreview);
 
         var header = new TextBlock { Text = purpose, FontSize = 16, FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(0, 0, 0, 8), TextWrapping = TextWrapping.Wrap,
@@ -114,7 +118,7 @@ public sealed class FormPickerWindow : Window
         buttons.Children.Add(new Button { Content = browseOnly ? "Close" : "Cancel", IsCancel = true });
         buttons.Children.Add(choose);
         Grid.SetColumn(buttons, 1); footer.Children.Add(buttons);
-        Grid.SetRow(footer, 3); layout.Children.Add(footer);
+        Grid.SetRow(footer, 4); layout.Children.Add(footer);
         return layout;
     }
 
@@ -237,6 +241,9 @@ public sealed class FormPickerWindow : Window
 
     private void UpdateSelection()
     {
+        var current = results.SelectedItem as FormRow;
+        soundPreview.Visibility = current?.Type == "SoundDescriptor" ? Visibility.Visible : Visibility.Collapsed;
+        soundPreview.SetSamples(current?.Assets, current?.SoundFiles ?? []);
         choose.IsEnabled = selected.Count > 0;
         choose.Visibility = clear.Visibility = selected.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         selection.Text = multiple

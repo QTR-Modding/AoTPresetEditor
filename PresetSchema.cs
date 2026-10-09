@@ -14,7 +14,7 @@ public static class PresetSchema
     private static readonly string[] ItemTypes = ["Ingestible", "Ingredient", "Armor", "Weapon", "Scroll", "Book", "SoulGem", "MiscItem"];
     private static readonly PresetField[] VisualFields =
     [
-        new("color", "Tint", FieldKind.Color, "Hexadecimal color for items lying in the world: RRGGBB, or RRGGBBAA with a nonzero red component. For example, FF0000 is red and FF000080 is half-opacity red. Zero removes tint."),
+        new("color", "Tint", FieldKind.Color, "Color for items lying in the world. Use the color picker, or enter #RRGGBB or #RRGGBBAA (including opacity). Zero removes tint. Existing colors without # keep their original meaning."),
         new("sound", "Sound", FieldKind.Form, "Sound played by items lying in the world.", FormTypes: ["SoundDescriptor"]),
         new("art_object", "Art object", FieldKind.Form, "Art effect attached to items lying in the world.", FormTypes: ["ArtObject"]),
         new("effect_shader", "Effect shader", FieldKind.Form, "Shader applied to items lying in the world.", FormTypes: ["EffectShader"])
@@ -424,8 +424,11 @@ public static class PresetSchema
                     errors.Add($"{label}: choose true or false.");
                 break;
             case FieldKind.Color:
-                if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];
-                if (text.Length == 0 || !uint.TryParse(text, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out _))
+                var explicitColor = text.StartsWith('#');
+                if (explicitColor) text = text[1..];
+                else if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];
+                if (text.Length == 0 || explicitColor && text.Length is not (6 or 8) ||
+                    !uint.TryParse(text, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out _))
                     errors.Add($"{label}: enter an RGB or RGBA hexadecimal color.");
                 break;
         }

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Environments;
+using Mutagen.Bethesda.Assets.DI;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Aspects;
 using Mutagen.Bethesda.Plugins.Order;
@@ -23,6 +24,8 @@ public enum ItemCategories
 public sealed record FormRow(string Name, string EditorId, string Type, string Plugin, string Winner, string Identifier,
     ItemCategories Categories = ItemCategories.None, bool IsTrigger = false, bool IsBoundObject = false, FormID? RuntimeId = null)
 {
+    public IAssetProvider? Assets { get; init; }
+    public IReadOnlyList<string> SoundFiles { get; init; } = [];
     public IComparable IdentifierSortKey => PresetPresentation.IdentifierSortKey(Identifier);
 }
 
@@ -98,7 +101,9 @@ public static class FormCatalog
         }
 
         AssignRuntimeIds(forms, environment.LoadOrder.ListedOrder.Select(listing => listing.Mod!));
+        var assets = GameAssets.FromLoadOrder(dataFolder, environment.LoadOrder.ListedOrder.Select(listing => listing.ModKey));
         return new CatalogResult(forms.Values
+            .Select(form => form.Type == "SoundDescriptor" ? form with { Assets = assets } : form)
             .OrderBy(form => form.Type, StringComparer.OrdinalIgnoreCase)
             .ThenBy(form => form.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(form => form.EditorId, StringComparer.OrdinalIgnoreCase)
@@ -145,7 +150,10 @@ public static class FormCatalog
             string origin = record.FormKey.ModKey.FileName.String;
             var boundObject = IsBoundObject(record);
             forms[record.FormKey] = new FormRow(name, record.EditorID ?? "", record.Registration.Name, origin, winner,
-                $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter, boundObject);
+                $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter, boundObject)
+            {
+                SoundFiles = record is ISoundDescriptorGetter sound ? sound.SoundFiles.Select(file => file.DataRelativePath.Path).ToArray() : []
+            };
         }
     }
 

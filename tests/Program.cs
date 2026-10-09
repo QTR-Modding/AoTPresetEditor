@@ -47,6 +47,8 @@ internal static class Program
             Check("Save to mod keyboard shortcut", SaveShortcutChecks.Run);
             Check("Form group files and draft isolation", FormGroupChecks.Run);
             Check("Form applicability", FormSelectionChecks.Run);
+            Check("Tint picker and color encoding", TintPickerChecks.Run);
+            Check("Sound playback controls and asset selection", SoundPreviewChecks.Run);
             Check("Preset and companion export rollback", PresetExportChecks.Run);
             Check("Mixed behavior projects and export rollback", PresetProjectChecks.Run);
             Check("Folder and multiple preset opening", PresetOpenChecks.Run);

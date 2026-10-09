@@ -883,17 +883,32 @@ public sealed class ValueEditorControl : UserControl
         };
         entry.TextChanged += (_, _) => { capture(); NotifyChanged(); };
         var choices = new WrapPanel();
+        if (field?.Kind == FieldKind.Color) choices.Children.Add(TintPickerWindow.CreateButton(entry));
+        var soundPreview = field?.FormTypes?.Contains("SoundDescriptor") == true ? new SoundPreview() : null;
         valueOptions = new WrapPanel();
         if (Value.IsUnsetArgument && field?.Kind == FieldKind.Text)
             valueOptions.Children.Add(EditorControls.Button("Use empty text", () => SetValue(new PresetValue { Kind = ValueKind.Scalar, Style = ScalarStyle.DoubleQuoted })));
         if (field?.Kind is FieldKind.Form or FieldKind.FormList) choices.Children.Add(EditorControls.Button("Choose form...", () =>
         {
+            soundPreview?.Stop();
             var picker = new FormPickerWindow(forms, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
             if (picker.ShowDialog() == true && picker.SelectedForms.FirstOrDefault() is { } form) entry.Text = form.Identifier;
         }));
         if (parent == root) root.AddAllItemsChoice(choices, field);
         if (field?.AllowsGroups == true) choices.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group => entry.Text = group.Name)));
         content.Children.Add(choices.Children.Count == 0 ? entry : FormEntryRow(entry, choices));
+        if (soundPreview is not null)
+        {
+            void UpdateSound()
+            {
+                var form = presentation.ResolveForm(entry.Text);
+                soundPreview.Visibility = form?.Type == "SoundDescriptor" ? Visibility.Visible : Visibility.Collapsed;
+                soundPreview.SetSamples(form?.Assets, form?.SoundFiles ?? []);
+            }
+            UpdateSound();
+            entry.TextChanged += (_, _) => UpdateSound();
+            content.Children.Add(soundPreview);
+        }
         if (field?.Kind is FieldKind.FormList or FieldKind.IntegerList || field is null) valueOptions.Children.Add(EditorControls.Button("Use a list of values...", () =>
         {
             Capture(); var list = PresetValue.List();

@@ -48,6 +48,13 @@ Validation checks AoT field requirements, values, stage numbering, templates, sh
 
 Transformations and time modifiers need stages, which can come from another preset. The editor checks the current workspace and loaded presets and shows a warning when it cannot find or verify those stages. This warning does not prevent saving.
 
+## Preview world effects
+
+1. Under **World effects**, click the color swatch beside **Tint**. Choose a color and opacity, then **Apply**. **Cancel** keeps the original value; **No tint** explicitly removes an inherited tint. The hexadecimal field remains editable.
+2. Select a **Sound** and press **Play** to hear its audio sample. **Stop** ends playback. Sounds with several samples have a sample selector. These controls are also available when selecting sounds in a form picker or the form browser. Changing the selection or leaving the preview stops playback.
+
+The tint picker writes quoted `#RRGGBB` or `#RRGGBBAA` values and requires an AoT build with [the tint encoding update](https://github.com/QTR-Modding/AlchemyOfTime/pull/55). Older color values keep their existing meaning. Sound previews play the audio file directly; Skyrim's positional audio and other sound settings are not simulated.
+
 ## Use form groups
 
 A form group is a named list of forms. For example, select Raw Beef and Venison in **Applies to**, then choose **Create group from list...**. The group editor opens with those items filled in. Name the group `RawMeat` and choose **Create group**. **Applies to** now uses `RawMeat` instead of listing both items. You can change the members before creating the group; canceling keeps the original list.
