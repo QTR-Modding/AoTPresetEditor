@@ -344,11 +344,20 @@ internal static class SchemaPickerChecks
         picker.Close();
         Require(picker.SelectedGroup is null && picker.CreatedGroups.Count == 0, "Canceling the picker must not expose pending group drafts.");
         Require(installed.Members.Count == 3, "Viewing a group must preserve its source members.");
-        var editor = new GroupEditorWindow([installed], forms);
+        var editor = new GroupEditorWindow([installed], forms, initialMembers: ["FoodBeef", "IceCrack"]);
+        var create = Field<Button>(editor, "create");
+        Require(!create.IsEnabled, "A group with members still needs a valid name before creation.");
         Field<TextBox>(editor, "name").Text = "existing";
         Require(Field<TextBlock>(editor, "nameStatus").Text.Contains("already exists"), "New group names must avoid case-insensitive filename collisions.");
+        var members = Field<DataGrid>(editor, "members");
+        members.SelectedItem = members.Items[1];
+        Click(Descendants<Button>(editor).Single(button => Equals(button.Content, "Remove selected")));
+        Require(members.Items.Count == 1 && !create.IsEnabled, "Editing members must not permit a duplicate group name.");
         Field<TextBox>(editor, "name").Text = "FoodBeef";
         Require(Field<TextBlock>(editor, "nameStatus").Text.Contains("use the group first"), "Form-name collisions must explain group-first resolution.");
+        Require(create.IsEnabled, "Correcting the name must enable creation with the remaining valid member.");
+        Field<TextBox>(editor, "name").Clear();
+        Require(!create.IsEnabled, "Clearing a previously valid name must prevent creation again.");
         editor.Close();
     }
 

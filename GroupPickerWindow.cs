@@ -202,8 +202,8 @@ public sealed class GroupEditorWindow : Window
         create.ToolTip = "Adds this group to the preset. Save to mod exports it with the preset.";
         EditorControls.Footer(footer, create, EditorControls.Button("Cancel", () => DialogResult = false, isCancel: true));
         DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer); layout.Children.Add(members); Content = layout;
-        name.TextChanged += (_, _) => CheckName();
-        Refresh(); CheckName();
+        name.TextChanged += (_, _) => UpdateValidation();
+        Refresh();
     }
 
     private void AddForms()
@@ -223,11 +223,8 @@ public sealed class GroupEditorWindow : Window
 
     private void Refresh()
     {
-        var rows = GroupPickerWindow.MemberRows(identifiers, forms, constraint);
-        members.ItemsSource = rows;
-        create.IsEnabled = !GroupPickerWindow.HasNoApplicableMembers(rows, constraint);
-        status.Text = !create.IsEnabled ? "No applicable members found in the loaded game data. Add a suitable form."
-            : $"{identifiers.Count} members" + (forms.Any(form => constraint?.IsPickerChoice(form) ?? true) ? "" : " · No applicable forms in the loaded catalog.");
+        members.ItemsSource = GroupPickerWindow.MemberRows(identifiers, forms, constraint);
+        UpdateValidation();
     }
 
     private string? NameError()
@@ -238,10 +235,13 @@ public sealed class GroupEditorWindow : Window
             ? "A group with this name already exists. Choose a different name." : null;
     }
 
-    private void CheckName()
+    private void UpdateValidation()
     {
         var error = NameError();
-        create.Visibility = error is null ? Visibility.Visible : Visibility.Collapsed;
+        var noApplicableMembers = GroupPickerWindow.HasNoApplicableMembers(members.Items.Cast<GroupPickerWindow.MemberRow>().ToArray(), constraint);
+        create.IsEnabled = error is null && !noApplicableMembers;
+        status.Text = noApplicableMembers ? "No applicable members found in the loaded game data. Add a suitable form."
+            : $"{identifiers.Count} members" + (forms.Any(form => constraint?.IsPickerChoice(form) ?? true) ? "" : " · No applicable forms in the loaded catalog.");
         nameStatus.Text = error ?? (forms.Any(form => form.EditorId.Equals(name.Text.Trim(), StringComparison.OrdinalIgnoreCase))
             ? "This name also identifies a form. AoT will use the group first in fields that accept groups."
             : "Use this name wherever a preset field accepts form groups.");
