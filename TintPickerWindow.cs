@@ -35,7 +35,7 @@ public sealed class TintPickerWindow : Window
         layout.Children.Add(new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         panel.Children.Add(noTint);
         preview.Height = 58; preview.CornerRadius = new CornerRadius(4);
-        var previewGrid = new Grid { Background = Checkerboard(), Margin = new Thickness(0, 0, 0, 12) };
+        var previewGrid = new Grid { Background = EditorControls.Checkerboard(), Margin = new Thickness(0, 0, 0, 12) };
         previewGrid.Children.Add(preview); panel.Children.Add(previewGrid);
         foreach (var (name, value) in new (string, Color)[]
         {
@@ -100,7 +100,7 @@ public sealed class TintPickerWindow : Window
     public static Button CreateButton(TextBox entry)
     {
         var swatch = new Border { Width = 24, Height = 24, BorderThickness = new Thickness(1), BorderBrush = Brushes.Gray,
-            Background = Checkerboard() };
+            Background = EditorControls.Checkerboard() };
         var colorFill = new Border(); var overlay = new Grid(); overlay.Children.Add(colorFill);
         var mark = new TextBlock { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             Foreground = Brushes.Black, FontSize = 18, FontWeight = FontWeights.Bold };
@@ -149,13 +149,4 @@ public sealed class TintPickerWindow : Window
     public static string Encode(Color color) => color.A == byte.MaxValue
         ? $"#{color.R:X2}{color.G:X2}{color.B:X2}" : $"#{color.R:X2}{color.G:X2}{color.B:X2}{color.A:X2}";
 
-    private static DrawingBrush Checkerboard()
-    {
-        const double size = 8;
-        var drawing = new DrawingGroup();
-        drawing.Children.Add(new GeometryDrawing(Brushes.WhiteSmoke, null, new RectangleGeometry(new Rect(0, 0, size, size))));
-        drawing.Children.Add(new GeometryDrawing(Brushes.LightGray, null, new RectangleGeometry(new Rect(0, 0, size / 2, size / 2))));
-        drawing.Children.Add(new GeometryDrawing(Brushes.LightGray, null, new RectangleGeometry(new Rect(size / 2, size / 2, size / 2, size / 2))));
-        return new DrawingBrush(drawing) { TileMode = TileMode.Tile, ViewportUnits = BrushMappingMode.Absolute, Viewport = new Rect(0, 0, size, size) };
-    }
 }

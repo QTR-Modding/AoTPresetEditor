@@ -9,6 +9,16 @@ namespace AoTPresetEditor;
 
 internal static class EditorControls
 {
+    public static DrawingBrush Checkerboard()
+    {
+        const double size = 8;
+        var drawing = new DrawingGroup();
+        drawing.Children.Add(new GeometryDrawing(Brushes.WhiteSmoke, null, new RectangleGeometry(new Rect(0, 0, size, size))));
+        drawing.Children.Add(new GeometryDrawing(Brushes.LightGray, null, new RectangleGeometry(new Rect(0, 0, size / 2, size / 2))));
+        drawing.Children.Add(new GeometryDrawing(Brushes.LightGray, null, new RectangleGeometry(new Rect(size / 2, size / 2, size / 2, size / 2))));
+        return new DrawingBrush(drawing) { TileMode = TileMode.Tile, ViewportUnits = BrushMappingMode.Absolute, Viewport = new Rect(0, 0, size, size) };
+    }
+
     public static void FitToOwner(Window window, double ownerFraction = 0.94, double screenFraction = 0.85)
     {
         window.SourceInitialized += (_, _) =>

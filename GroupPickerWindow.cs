@@ -15,6 +15,7 @@ public sealed class GroupPickerWindow : Window
     private readonly TextBlock description = EditorControls.Text("");
     private readonly TextBlock source = EditorControls.Text("");
     private readonly DataGrid members = CreateMemberGrid();
+    private readonly SoundPreview soundPreview = new() { Visibility = Visibility.Collapsed };
     private readonly Button choose;
 
     public FormGroupDefinition? SelectedGroup { get; private set; }
@@ -51,6 +52,26 @@ public sealed class GroupPickerWindow : Window
         splitter.SetResourceReference(BackgroundProperty, "DividerStrokeColorDefaultBrush");
         Grid.SetColumn(splitter, 1); columns.Children.Add(splitter);
         var right = new DockPanel();
+        var preview = ModelPreviewWindow.CreateButton(() => (members.SelectedItem as MemberRow)?.Form);
+        var textures = TexturePreviewWindow.CreateButton(() => (members.SelectedItem as MemberRow)?.Form);
+        preview.Visibility = textures.Visibility = Visibility.Collapsed;
+        var previewButtons = new WrapPanel(); previewButtons.Children.Add(preview); previewButtons.Children.Add(textures);
+        var previews = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        previews.Children.Add(previewButtons); previews.Children.Add(soundPreview);
+        members.SelectionChanged += (_, _) =>
+        {
+            var form = (members.SelectedItem as MemberRow)?.Form;
+            preview.IsEnabled = ModelPreviewWindow.CanPreview(form);
+            preview.Visibility = preview.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+            textures.IsEnabled = TexturePreviewWindow.CanPreview(form);
+            textures.Visibility = textures.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+            soundPreview.Visibility = form?.SoundFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            soundPreview.SetSamples(form?.Assets, form?.SoundFiles ?? []);
+            previews.Visibility = preview.IsEnabled || textures.IsEnabled || soundPreview.Visibility == Visibility.Visible
+                ? Visibility.Visible : Visibility.Collapsed;
+        };
+        Closed += (_, _) => soundPreview.Stop();
+        DockPanel.SetDock(previews, Dock.Bottom); right.Children.Add(previews);
         source.TextWrapping = TextWrapping.NoWrap; source.TextTrimming = TextTrimming.CharacterEllipsis;
         source.SetBinding(ToolTipProperty, new Binding(nameof(TextBlock.Text)) { Source = source });
         var details = new StackPanel(); details.Children.Add(description); source.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush"); details.Children.Add(source);
@@ -97,6 +118,7 @@ public sealed class GroupPickerWindow : Window
 
     private void NewGroup()
     {
+        soundPreview.Stop();
         var editor = new GroupEditorWindow(groups, forms, constraint) { Owner = this };
         if (editor.ShowDialog() != true || editor.Group is not { } group) return;
         groups.Add(group); created.Add(group); search.Text = ""; Filter(); groupList.SelectedItem = group;
@@ -168,6 +190,7 @@ public sealed class GroupEditorWindow : Window
     private readonly List<string> identifiers = [];
     private readonly TextBox name = new();
     private readonly DataGrid members = GroupPickerWindow.CreateMemberGrid();
+    private readonly SoundPreview soundPreview = new() { Visibility = Visibility.Collapsed };
     private readonly TextBlock status = EditorControls.Text("");
     private readonly TextBlock nameStatus = EditorControls.Text("");
     private readonly Button create;
@@ -196,8 +219,24 @@ public sealed class GroupEditorWindow : Window
         var remove = EditorControls.Button("Remove selected", RemoveSelected); remove.Visibility = Visibility.Collapsed;
         members.SelectionChanged += (_, _) => remove.Visibility = members.SelectedItems.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         actions.Children.Add(remove); header.Children.Add(actions);
+        var preview = ModelPreviewWindow.CreateButton(() => (members.SelectedItem as GroupPickerWindow.MemberRow)?.Form);
+        var textures = TexturePreviewWindow.CreateButton(() => (members.SelectedItem as GroupPickerWindow.MemberRow)?.Form);
+        preview.Visibility = textures.Visibility = Visibility.Collapsed;
+        members.SelectionChanged += (_, _) =>
+        {
+            var form = (members.SelectedItem as GroupPickerWindow.MemberRow)?.Form;
+            preview.IsEnabled = ModelPreviewWindow.CanPreview(form);
+            preview.Visibility = preview.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+            textures.IsEnabled = TexturePreviewWindow.CanPreview(form);
+            textures.Visibility = textures.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+            soundPreview.Visibility = form?.SoundFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            soundPreview.SetSamples(form?.Assets, form?.SoundFiles ?? []);
+        };
+        Closed += (_, _) => soundPreview.Stop();
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
-        var footer = new StackPanel(); footer.Children.Add(status);
+        var footer = new StackPanel();
+        var previewButtons = new WrapPanel(); previewButtons.Children.Add(preview); previewButtons.Children.Add(textures);
+        footer.Children.Add(previewButtons); footer.Children.Add(soundPreview); footer.Children.Add(status);
         create = EditorControls.Button("Create group", Create, isDefault: true);
         create.ToolTip = "Adds this group to the preset. Save to mod exports it with the preset.";
         EditorControls.Footer(footer, create, EditorControls.Button("Cancel", () => DialogResult = false, isCancel: true));
@@ -208,6 +247,7 @@ public sealed class GroupEditorWindow : Window
 
     private void AddForms()
     {
+        soundPreview.Stop();
         var picker = new FormPickerWindow(forms, multiple: true, selection: constraint, purpose: "Choose group members") { Owner = this };
         if (picker.ShowDialog() != true) return;
         foreach (var form in picker.SelectedForms)

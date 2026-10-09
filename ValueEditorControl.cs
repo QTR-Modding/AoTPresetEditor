@@ -703,6 +703,16 @@ public sealed class ValueEditorControl : UserControl
         var down = new Button { Content = "Move down" };
         var edit = new Button { Content = "Edit entry" };
         var createGroup = EditorControls.Button("Create group from list...", CreateGroupFromList);
+        var modelPreview = field?.Kind == FieldKind.FormList ? ModelPreviewWindow.CreateButton(SelectedForm) : null;
+        var texturePreview = field?.Kind == FieldKind.FormList ? TexturePreviewWindow.CreateButton(SelectedForm) : null;
+        var soundPreview = field?.Kind == FieldKind.FormList ? new SoundPreview { Visibility = Visibility.Collapsed } : null;
+        FormRow? SelectedForm()
+        {
+            var index = list.SelectedIndex;
+            if (index < 0 || index >= Value.Items.Count) return null;
+            var item = effective is { Kind: ValueKind.Sequence } && index < effective.Items.Count ? effective.Items[index] : Value.Items[index];
+            return item.Kind == ValueKind.Scalar ? presentation.ResolveForm(item.Text) : null;
+        }
         void RefreshList(int selected)
         {
             list.ItemsSource = Value.Items.Select((item, index) => new ListBoxItem
@@ -721,6 +731,7 @@ public sealed class ValueEditorControl : UserControl
                     ? ListEntrySummary(effective.Items[index], index, resolved: true) : ListEntrySummary(Value.Items[index], index);
             if (!compact && list.SelectedIndex >= 0 && details.Children.OfType<TextBlock>().FirstOrDefault() is { } caption)
                 caption.Text = ItemHeading(list.SelectedIndex);
+            UpdatePreviews();
         };
         void SelectEntry()
         {
@@ -741,6 +752,7 @@ public sealed class ValueEditorControl : UserControl
         { Capture(); Value.Items.Add(NewListItem()); RefreshList(Value.Items.Count - 1); ShowEntry(); NotifyChanged(); });
         if (field?.Kind == FieldKind.FormList) actions.Children.Add(EditorControls.Button("Choose forms...", () =>
         {
+            soundPreview?.Stop();
             var picker = new FormPickerWindow(forms, multiple: true, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
             if (picker.ShowDialog() != true) return;
             foreach (var form in picker.SelectedForms)
@@ -768,6 +780,8 @@ public sealed class ValueEditorControl : UserControl
             else ShowEntry();
         };
         actions.Children.Add(edit); actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
+        if (modelPreview is not null) actions.Children.Add(modelPreview);
+        if (texturePreview is not null) actions.Children.Add(texturePreview);
         void ShowActions()
         {
             createGroup.Visibility = GroupMembersFromList() is null ? Visibility.Collapsed : Visibility.Visible;
@@ -777,6 +791,26 @@ public sealed class ValueEditorControl : UserControl
             var canReorder = !ItemContext().Equals("stage", StringComparison.OrdinalIgnoreCase);
             up.Visibility = canReorder && list.SelectedIndex > 0 ? Visibility.Visible : Visibility.Collapsed;
             down.Visibility = canReorder && list.SelectedIndex >= 0 && list.SelectedIndex < Value.Items.Count - 1 ? Visibility.Visible : Visibility.Collapsed;
+            UpdatePreviews();
+        }
+        void UpdatePreviews()
+        {
+            var form = details.Visibility == Visibility.Visible ? null : SelectedForm();
+            if (modelPreview is not null)
+            {
+                modelPreview.IsEnabled = ModelPreviewWindow.CanPreview(form);
+                modelPreview.Visibility = modelPreview.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+            }
+            if (texturePreview is not null)
+            {
+                texturePreview.IsEnabled = TexturePreviewWindow.CanPreview(form);
+                texturePreview.Visibility = texturePreview.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+            }
+            if (soundPreview is not null)
+            {
+                soundPreview.Visibility = form?.SoundFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+                soundPreview.SetSamples(form?.Assets, form?.SoundFiles ?? []);
+            }
         }
         void ShowEntry()
         {
@@ -795,7 +829,9 @@ public sealed class ValueEditorControl : UserControl
         }
         list.SelectionChanged += (_, _) => { SelectEntry(); ShowActions(); };
         list.MouseDoubleClick += (_, _) => ShowEntry();
-        content.Children.Add(list); content.Children.Add(actions); content.Children.Add(details);
+        content.Children.Add(list); content.Children.Add(actions);
+        if (soundPreview is not null) content.Children.Add(soundPreview);
+        content.Children.Add(details);
         RefreshList(Value.Items.Count > 0 ? 0 : -1); ShowActions();
         if (context == "Inheritance") content.Children.Add(Help("Earlier settings take precedence. Values entered on the containing block override inherited values."));
         else if (ItemContext() is "transformer" or "modulator") content.Children.Insert(0, Help("Checked from top to bottom. The first matching trigger wins."));
@@ -884,7 +920,7 @@ public sealed class ValueEditorControl : UserControl
         entry.TextChanged += (_, _) => { capture(); NotifyChanged(); };
         var choices = new WrapPanel();
         if (field?.Kind == FieldKind.Color) choices.Children.Add(TintPickerWindow.CreateButton(entry));
-        var soundPreview = field?.FormTypes?.Contains("SoundDescriptor") == true ? new SoundPreview() : null;
+        var soundPreview = field?.Kind is FieldKind.Form or FieldKind.FormList ? new SoundPreview() : null;
         valueOptions = new WrapPanel();
         if (Value.IsUnsetArgument && field?.Kind == FieldKind.Text)
             valueOptions.Children.Add(EditorControls.Button("Use empty text", () => SetValue(new PresetValue { Kind = ValueKind.Scalar, Style = ScalarStyle.DoubleQuoted })));
@@ -904,6 +940,14 @@ public sealed class ValueEditorControl : UserControl
                 modelPreview.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
             }
             UpdateModelPreview(); entry.TextChanged += (_, _) => UpdateModelPreview(); choices.Children.Add(modelPreview);
+            var texturePreview = TexturePreviewWindow.CreateButton(() => presentation.ResolveForm(entry.Text));
+            void UpdateTexturePreview()
+            {
+                var available = TexturePreviewWindow.CanPreview(presentation.ResolveForm(entry.Text));
+                texturePreview.IsEnabled = available;
+                texturePreview.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
+            }
+            UpdateTexturePreview(); entry.TextChanged += (_, _) => UpdateTexturePreview(); choices.Children.Add(texturePreview);
         }
         if (parent == root) root.AddAllItemsChoice(choices, field);
         if (field?.AllowsGroups == true) choices.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group => entry.Text = group.Name)));
@@ -913,7 +957,7 @@ public sealed class ValueEditorControl : UserControl
             void UpdateSound()
             {
                 var form = presentation.ResolveForm(entry.Text);
-                soundPreview.Visibility = form?.Type == "SoundDescriptor" ? Visibility.Visible : Visibility.Collapsed;
+                soundPreview.Visibility = form?.SoundFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
                 soundPreview.SetSamples(form?.Assets, form?.SoundFiles ?? []);
             }
             UpdateSound();

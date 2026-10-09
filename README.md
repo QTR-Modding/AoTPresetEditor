@@ -55,11 +55,13 @@ Transformations and time modifiers need stages, which can come from another pres
 
 The tint picker writes quoted `#RRGGBB` or `#RRGGBBAA` values and requires an AoT build with [the tint encoding update](https://github.com/QTR-Modding/AlchemyOfTime/pull/55). Older color values keep their existing meaning. Sound previews play the audio file directly; Skyrim's positional audio and other sound settings are not simulated.
 
-## Preview item models
+## Preview models and textures
 
-Choose **Preview model...** beside a selected item or in a form picker to inspect its model and textures without running Skyrim. Drag to rotate, scroll to zoom, and use **Reset view** to fit the item again. Armor previews show the dropped item, not the armor worn by a character.
+Select a form and choose **Preview model...** to inspect its model without running Skyrim. The action is available in form pickers, fields, lists, and form groups. Drag to rotate, scroll to zoom, and use **Reset view** to fit the model again. When a form has several models, the menu at the top lets you choose between them, including armor variants and separate outfit pieces. **Show geometry** makes transparent surfaces visible without their textures.
 
-The preview uses the active profile's winning model and diffuse textures. Skyrim lighting, animations, particles, and effects are not reproduced. Missing assets or unsupported parts are identified in the preview.
+The preview uses the active profile's winning models and textures. NPCs can show their body and exported head in a fixed pose; the preview identifies missing parts and appearance details it cannot reproduce. Art objects can show their static surfaces. Skyrim lighting, animations, and particle motion are not reproduced.
+
+**Preview textures...** shows the source images used by effect shaders and texture sets. Cube maps appear as six faces in a cross. These images help identify the selected effect; they do not play the effect as it appears in Skyrim.
 
 ## Use form groups
 

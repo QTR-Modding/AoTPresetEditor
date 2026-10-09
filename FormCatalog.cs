@@ -5,6 +5,7 @@ using System.Linq;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Environments;
 using Mutagen.Bethesda.Assets.DI;
+using Mutagen.Bethesda.Assets;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Aspects;
 using Mutagen.Bethesda.Plugins.Cache;
@@ -27,12 +28,15 @@ public sealed record FormRow(string Name, string EditorId, string Type, string P
 {
     public IAssetProvider? Assets { get; init; }
     public IReadOnlyList<string> SoundFiles { get; init; } = [];
-    public string ModelPath { get; init; } = "";
-    public IReadOnlyList<ModelTextureReplacement> ModelAlternateTextures { get; init; } = [];
+    public IReadOnlyList<ModelPreviewSource> Models { get; init; } = [];
+    public IReadOnlyList<TexturePreviewSource> Textures { get; init; } = [];
     public IComparable IdentifierSortKey => PresetPresentation.IdentifierSortKey(Identifier);
 }
 
 public sealed record ModelTextureReplacement(string Name, int Index, FormKey TextureSet, string? DiffusePath = null);
+public sealed record ModelPreviewPart(string Path, IReadOnlyList<ModelTextureReplacement> AlternateTextures, string? DiffusePath = null);
+public sealed record ModelPreviewSource(string Label, IReadOnlyList<ModelPreviewPart> Parts, string Note = "");
+public sealed record TexturePreviewSource(string Label, string Path);
 
 public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, string? Category = null, bool TriggerOnly = false,
     bool BoundObjectOnly = false, IReadOnlyCollection<FormRow>? ExcludedForms = null, bool RequiresEditorId = false,
@@ -106,10 +110,9 @@ public static class FormCatalog
         }
 
         AssignRuntimeIds(forms, environment.LoadOrder.ListedOrder.Select(listing => listing.Mod!));
-        ResolveModelTextures(forms, environment.LinkCache);
         var assets = GameAssets.FromLoadOrder(dataFolder, environment.LoadOrder.ListedOrder.Select(listing => listing.ModKey));
+        ResolvePreviewAssets(forms, environment.LinkCache, assets);
         return new CatalogResult(forms.Values
-            .Select(form => form.Type == "SoundDescriptor" || form.ModelPath.Length != 0 ? form with { Assets = assets } : form)
             .OrderBy(form => form.Type, StringComparer.OrdinalIgnoreCase)
             .ThenBy(form => form.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(form => form.EditorId, StringComparer.OrdinalIgnoreCase)
@@ -155,41 +158,250 @@ public static class FormCatalog
             };
             string origin = record.FormKey.ModKey.FileName.String;
             var boundObject = IsBoundObject(record);
-            var model = GetItemModel(record);
             forms[record.FormKey] = new FormRow(name, record.EditorID ?? "", record.Registration.Name, origin, winner,
                 $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter, boundObject)
             {
                 SoundFiles = record is ISoundDescriptorGetter sound ? sound.SoundFiles.Select(file => file.DataRelativePath.Path).ToArray() : [],
-                ModelPath = model?.File.DataRelativePath.Path ?? "",
-                ModelAlternateTextures = model?.AlternateTextures?.Select(texture =>
-                    new ModelTextureReplacement(texture.Name, texture.Index, texture.NewTexture.FormKey)).ToArray() ?? []
+                Textures = GetTextures(record)
             };
         }
     }
 
-    private static IModelGetter? GetItemModel(IMajorRecordGetter record)
+    private static IReadOnlyList<ModelPreviewSource> GetDirectModels(IMajorRecordGetter record, ILinkCache cache)
     {
-        var model = record switch
+        var models = new List<ModelPreviewSource>();
+        if (record is IModeledGetter modeled) AddModel(models, "Model", modeled.Model);
+        switch (record)
         {
-            IArmorGetter armor => armor.WorldModel?.Male?.Model is { File.IsNull: false } male
-                ? male : armor.WorldModel?.Female?.Model,
-            IModeledGetter modeled when record is IIngestibleGetter or IIngredientGetter or IWeaponGetter or IScrollGetter or
-                IBookGetter or ISoulGemGetter or IMiscItemGetter or IAmmunitionGetter or IKeyGetter or IAlchemicalApparatusGetter => modeled.Model,
-            _ => null
-        };
-        return model?.File.IsNull == false ? model : null;
+            case IArmorGetter armor:
+                AddModel(models, "Male world model", armor.WorldModel?.Male?.Model);
+                AddModel(models, "Female world model", armor.WorldModel?.Female?.Model);
+                break;
+            case IArmorAddonGetter addon:
+                AddModel(models, "Male worn model", addon.WorldModel?.Male, SkinDiffuse(addon, false, cache));
+                AddModel(models, "Female worn model", addon.WorldModel?.Female, SkinDiffuse(addon, true, cache));
+                AddModel(models, "Male first-person model", addon.FirstPersonModel?.Male, SkinDiffuse(addon, false, cache));
+                AddModel(models, "Female first-person model", addon.FirstPersonModel?.Female, SkinDiffuse(addon, true, cache));
+                break;
+            case IWeaponGetter weapon: AddModel(models, "Scope", weapon.ScopeModel); break;
+            case IProjectileGetter projectile: AddModelPath(models, "Muzzle flash", projectile.MuzzleFlashModel?.DataRelativePath.Path); break;
+            case IFurnitureGetter furniture: AddModelPath(models, "Marker model", furniture.ModelFilename?.DataRelativePath.Path); break;
+            case IWeatherGetter weather: AddModel(models, "Aurora", weather.Aurora); break;
+            case IWorldspaceGetter worldspace: AddModel(models, "Clouds", worldspace.CloudModel); break;
+            case IDebrisGetter debris:
+                for (var index = 0; index < debris.Models.Count; index++)
+                    AddModelPath(models, $"Debris {index + 1}", debris.Models[index].ModelFilename.DataRelativePath.Path);
+                break;
+            case IStaticGetter item when item.Lod is { } lod:
+                AddModelPath(models, "LOD 0", lod.Level0?.DataRelativePath.Path);
+                AddModelPath(models, "LOD 1", lod.Level1?.DataRelativePath.Path);
+                AddModelPath(models, "LOD 2", lod.Level2?.DataRelativePath.Path);
+                AddModelPath(models, "LOD 3", lod.Level3?.DataRelativePath.Path);
+                break;
+            case IBodyPartDataGetter body:
+                foreach (var part in body.Parts)
+                    AddModelPath(models, $"{part.Name} limb replacement", part.LimbReplacementModel);
+                break;
+            case IRaceGetter race:
+                AddModelPath(models, "Male skeleton", race.SkeletalModel?.Male?.File.DataRelativePath.Path);
+                AddModelPath(models, "Female skeleton", race.SkeletalModel?.Female?.File.DataRelativePath.Path);
+                AddModel(models, "Male head", race.HeadData?.Male?.Model);
+                AddModel(models, "Female head", race.HeadData?.Female?.Model);
+                break;
+        }
+        if (record is IHasDestructibleGetter { Destructible: { } destruction })
+            for (var index = 0; index < destruction.Stages.Count; index++)
+                AddModel(models, $"Destruction stage {destruction.Stages[index].Data?.Index ?? index}", destruction.Stages[index].Model);
+        return models;
     }
 
-    private static void ResolveModelTextures(Dictionary<FormKey, FormRow> forms, ILinkCache cache)
+    private static void AddModel(List<ModelPreviewSource> models, string label, IModelGetter? model, string? diffuse = null)
     {
-        foreach (var (key, form) in forms.Where(pair => pair.Value.ModelAlternateTextures.Count != 0).ToArray())
+        if (model?.File.IsNull != false) return;
+        models.Add(new(label, [ModelPart(model) with { DiffusePath = diffuse }]));
+    }
+
+    private static ModelPreviewPart ModelPart(IModelGetter model) => new(model.File.DataRelativePath.Path,
+        model.AlternateTextures?.Select(texture => new ModelTextureReplacement(texture.Name, texture.Index, texture.NewTexture.FormKey)).ToArray() ?? []);
+
+    private static void AddModelPath(List<ModelPreviewSource> models, string label, string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path)) models.Add(new(label, [new(path, [])]));
+    }
+
+    private static IReadOnlyList<TexturePreviewSource> GetTextures(IMajorRecordGetter record)
+    {
+        var textures = new List<TexturePreviewSource>();
+        void Add(string label, string? path)
         {
-            var replacements = form.ModelAlternateTextures.Select(replacement =>
-                cache.TryResolve<ITextureSetGetter>(replacement.TextureSet, out var texture) && !texture.IsDeleted
-                    ? replacement with { DiffusePath = texture.Diffuse?.DataRelativePath.Path ?? "" }
-                    : replacement).ToArray();
-            forms[key] = form with { ModelAlternateTextures = replacements };
+            if (!string.IsNullOrWhiteSpace(path)) textures.Add(new(label, path));
         }
+        switch (record)
+        {
+            case IEffectShaderGetter shader:
+                Add("Fill", shader.FillTexture?.DataRelativePath.Path);
+                Add("Particles", shader.ParticleShaderTexture?.DataRelativePath.Path);
+                Add("Holes", shader.HolesTexture?.DataRelativePath.Path);
+                Add("Membrane palette", shader.MembranePaletteTexture?.DataRelativePath.Path);
+                Add("Particle palette", shader.ParticlePaletteTexture?.DataRelativePath.Path);
+                break;
+            case ITextureSetGetter texture:
+                Add("Diffuse", texture.Diffuse?.DataRelativePath.Path);
+                Add("Normal / gloss", texture.NormalOrGloss?.DataRelativePath.Path);
+                Add("Environment mask / subsurface tint", texture.EnvironmentMaskOrSubsurfaceTint?.DataRelativePath.Path);
+                Add("Glow / detail", texture.GlowOrDetailMap?.DataRelativePath.Path);
+                Add("Height", texture.Height?.DataRelativePath.Path);
+                Add("Environment", texture.Environment?.DataRelativePath.Path);
+                Add("Multilayer", texture.Multilayer?.DataRelativePath.Path);
+                Add("Backlight mask / specular", texture.BacklightMaskOrSpecular?.DataRelativePath.Path);
+                break;
+        }
+        return textures;
+    }
+
+    private static void ResolvePreviewAssets(Dictionary<FormKey, FormRow> forms, ILinkCache cache, IAssetProvider assets)
+    {
+        foreach (var (key, form) in forms.ToArray())
+        {
+            var models = new List<ModelPreviewSource>();
+            var sounds = form.SoundFiles;
+            if (cache.TryResolve<ISkyrimMajorRecordGetter>(key, out var record))
+            {
+                models.AddRange(GetDirectModels(record, cache));
+                AddLinkedModels(models, record, cache, assets);
+                if (record is ISoundMarkerGetter marker && Resolve<ISoundDescriptorGetter>(cache, marker.SoundDescriptor.FormKey) is { } sound)
+                    sounds = sound.SoundFiles.Select(file => file.DataRelativePath.Path).ToArray();
+            }
+            var resolved = models.Select(source => source with
+            {
+                Parts = source.Parts.Select(part => part with
+                {
+                    AlternateTextures = part.AlternateTextures.Select(replacement =>
+                        Resolve<ITextureSetGetter>(cache, replacement.TextureSet) is { } texture
+                            ? replacement with { DiffusePath = texture.Diffuse?.DataRelativePath.Path ?? "" }
+                            : replacement).ToArray()
+                }).ToArray()
+            }).ToArray();
+            forms[key] = form with
+            {
+                Models = resolved, SoundFiles = sounds,
+                Assets = form.Type is "SoundDescriptor" or "SoundMarker" || models.Count != 0 || form.Textures.Count != 0 ? assets : null
+            };
+        }
+    }
+
+    private static T? Resolve<T>(ILinkCache cache, FormKey key) where T : class, IMajorRecordGetter =>
+        !key.IsNull && cache.TryResolve<T>(key, out var record) && !record.IsDeleted ? record : null;
+
+    private static void AddLinkedModels(List<ModelPreviewSource> models, ISkyrimMajorRecordGetter record, ILinkCache cache, IAssetProvider assets)
+    {
+        void Add(string label, FormKey key)
+        {
+            if (Resolve<ISkyrimMajorRecordGetter>(cache, key) is not { } linked) return;
+            foreach (var source in GetDirectModels(linked, cache))
+                models.Add(source with { Label = source.Label == "Model" ? label : label + ": " + source.Label });
+        }
+        switch (record)
+        {
+            case IArmorGetter armor:
+                foreach (var link in armor.Armature)
+                    if (Resolve<IArmorAddonGetter>(cache, link.FormKey) is { } addon)
+                        Add(addon.EditorID ?? "Worn model", addon.FormKey);
+                break;
+            case IArmorAddonGetter addon: Add("Art object", addon.ArtObject.FormKey); break;
+            case IWeaponGetter weapon: Add("First-person model", weapon.FirstPersonModel.FormKey); break;
+            case IAmmunitionGetter ammo: Add("Projectile", ammo.Projectile.FormKey); break;
+            case ILoadScreenGetter screen: Add("Loading screen model", screen.LoadingScreenNif.FormKey); break;
+            case IMagicEffectGetter effect:
+                Add("Menu model", effect.MenuDisplayObject.FormKey);
+                Add("Casting art", effect.CastingArt.FormKey);
+                Add("Hit art", effect.HitEffectArt.FormKey);
+                Add("Enchanting art", effect.EnchantArt.FormKey);
+                Add("Projectile", effect.Projectile.FormKey);
+                Add("Explosion", effect.Explosion.FormKey);
+                break;
+            case IVisualEffectGetter visual: Add("Effect art", visual.EffectArt.FormKey); break;
+            case IDualCastDataGetter dual:
+                Add("Hit art", dual.HitEffectArt.FormKey);
+                Add("Projectile", dual.Projectile.FormKey);
+                Add("Explosion", dual.Explosion.FormKey);
+                break;
+            case IEffectShaderGetter shader: Add("Addon model", shader.AddonModels.FormKey); break;
+            case IHeadPartGetter head:
+                foreach (var link in head.ExtraParts) Add("Extra head part", link.FormKey);
+                break;
+            case INpcGetter npc: AddNpcModels(models, npc, cache, assets); break;
+            case IRaceGetter race:
+                var skin = Resolve<IArmorGetter>(cache, race.Skin.FormKey);
+                foreach (var female in new[] { false, true })
+                {
+                    var parts = SkinParts(skin, race, female, cache);
+                    if (parts.Count != 0) models.Insert(0, new(female ? "Female body" : "Male body", parts,
+                        "Fixed pose. Body-weight morphs, skin tint, clothing, and animation are not shown."));
+                }
+                break;
+        }
+    }
+
+    private static void AddNpcModels(List<ModelPreviewSource> models, INpcGetter npc, ILinkCache cache, IAssetProvider assets)
+    {
+        var traits = ResolveNpcTemplate(npc, NpcConfiguration.TemplateFlag.Traits, cache);
+        if (traits is null || Resolve<IRaceGetter>(cache, traits.Race.FormKey) is not { } race) return;
+        var female = traits.Configuration.Flags.HasFlag(NpcConfiguration.Flag.Female);
+        var skin = Resolve<IArmorGetter>(cache, traits.WornArmor.FormKey) ?? Resolve<IArmorGetter>(cache, race.Skin.FormKey);
+        var parts = SkinParts(skin, race, female, cache);
+        var facePath = $@"Meshes\Actors\Character\FaceGenData\FaceGeom\{traits.FormKey.ModKey.FileName.String}\{traits.FormKey.ID:X8}.nif";
+        var hasFace = assets.Exists(new DataRelativePath(facePath));
+        if (hasFace) parts.Add(new(facePath, []));
+        if (parts.Count != 0) models.Insert(0, new(hasFace ? "Body and exported head" : "Body", parts,
+            "Fixed pose. Body-weight morphs, skin tint, clothing, and animation are not shown."));
+        if (hasFace) models.Add(new("Exported head", [new(facePath, [])]));
+        foreach (var link in traits.HeadParts)
+            if (Resolve<IHeadPartGetter>(cache, link.FormKey) is { } head)
+                AddModel(models, "Head part: " + (head.EditorID ?? head.FormKey.ToString()), head.Model);
+        var inventory = ResolveNpcTemplate(npc, NpcConfiguration.TemplateFlag.Inventory, cache);
+        if (inventory is not null && Resolve<IOutfitGetter>(cache, inventory.DefaultOutfit.FormKey) is { } outfit)
+            foreach (var link in outfit.Items ?? [])
+                if (Resolve<IArmorGetter>(cache, link.FormKey) is { } armor)
+                {
+                    var outfitParts = SkinParts(armor, race, female, cache);
+                    if (outfitParts.Count != 0) models.Add(new("Outfit: " + (armor.Name?.String ?? armor.EditorID ?? armor.FormKey.ToString()),
+                        outfitParts, "This clothing piece is shown by itself in a fixed pose. Leveled outfit choices are not resolved."));
+                }
+    }
+
+    private static INpcGetter? ResolveNpcTemplate(INpcGetter npc, NpcConfiguration.TemplateFlag flag, ILinkCache cache)
+    {
+        var visited = new HashSet<FormKey>();
+        while (npc.Configuration.TemplateFlags.HasFlag(flag))
+        {
+            if (!visited.Add(npc.FormKey) || Resolve<INpcGetter>(cache, npc.Template.FormKey) is not { } template) return null;
+            npc = template;
+        }
+        return npc;
+    }
+
+    private static List<ModelPreviewPart> SkinParts(IArmorGetter? armor, IRaceGetter race, bool female, ILinkCache cache)
+    {
+        var parts = new List<ModelPreviewPart>();
+        if (armor is null) return parts;
+        var races = new HashSet<FormKey> { race.FormKey };
+        while (Resolve<IRaceGetter>(cache, race.ArmorRace.FormKey) is { } inherited && races.Add(inherited.FormKey)) race = inherited;
+        foreach (var link in armor.Armature)
+        {
+            if (Resolve<IArmorAddonGetter>(cache, link.FormKey) is not { } addon ||
+                !races.Contains(addon.Race.FormKey) && !addon.AdditionalRaces.Any(link => races.Contains(link.FormKey))) continue;
+            var model = female ? addon.WorldModel?.Female : addon.WorldModel?.Male;
+            if (model?.File.IsNull != false) continue;
+            parts.Add(ModelPart(model) with { DiffusePath = SkinDiffuse(addon, female, cache) });
+        }
+        return parts;
+    }
+
+    private static string? SkinDiffuse(IArmorAddonGetter addon, bool female, ILinkCache cache)
+    {
+        var texture = female ? addon.SkinTexture?.Female : addon.SkinTexture?.Male;
+        return texture is null ? null : Resolve<ITextureSetGetter>(cache, texture.FormKey)?.Diffuse?.DataRelativePath.Path;
     }
 
     private static ItemCategories GetCategories(IMajorRecordGetter record)
