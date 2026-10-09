@@ -25,6 +25,7 @@ internal static class ModelPreviewChecks
             var assets = GameAssets.FromLoadOrder(folder, [], []);
             var form = CatalogMetadata(assets);
             RelatedMetadata(assets, folder);
+            NpcAppearanceMetadata(assets, folder);
             PreviewControls(form with { Assets = assets });
             LoadingAndCancellation(form with { Assets = assets });
         }
@@ -160,6 +161,78 @@ internal static class ModelPreviewChecks
         Require(rows[animationTemplate.FormKey].Models.First().Parts.Single().Path == @"Meshes\body\own-skin.nif",
             "The model-animation template flag must not replace an NPC's own skin; skin belongs to the traits flag.");
         Require(rows[cyclic.FormKey].Models.Count == 0, "A cyclic NPC template must not produce an invented appearance.");
+    }
+
+    private static void NpcAppearanceMetadata(IAssetProvider assets, string folder)
+    {
+        var mod = new SkyrimMod(ModKey.FromNameAndExtension("NpcAppearance.esm"), SkyrimRelease.SkyrimSE);
+        var race = mod.Races.AddNew(); race.HeadBipedObject = BipedObject.Head; race.HairBipedObject = BipedObject.Hair;
+        race.BipedObjectNames[BipedObject.Shield] = "SHIELD";
+        race.SkeletalModel = new GenderedItem<SimpleModel?>(new SimpleModel { File = @"body\male-skeleton.nif" },
+            new SimpleModel { File = @"body\female-skeleton.nif" });
+        Armor Armor(string model, BipedObjectFlag occupied, BipedObjectFlag slots, byte priority, bool maleOnly = false)
+        {
+            var armor = mod.Armors.AddNew(); armor.BodyTemplate = new BodyTemplate { FirstPersonFlags = occupied };
+            var addon = mod.ArmorAddons.AddNew(); addon.Race.SetTo(race.FormKey);
+            addon.BodyTemplate = new BodyTemplate { FirstPersonFlags = slots }; addon.Priority = new GenderedItem<byte>(priority, priority);
+            addon.WorldModel = new GenderedItem<Model?>(new Model { File = model }, maleOnly ? null : new Model { File = model });
+            armor.Armature.Add(addon.FormKey); return armor;
+        }
+        var bodySlots = BipedObjectFlag.Body | BipedObjectFlag.Forearms | BipedObjectFlag.Calves;
+        var skin = Armor(@"body\naked.nif", BipedObjectFlag.Body, bodySlots, 0); race.Skin.SetTo(skin.FormKey);
+        var cuirass = Armor(@"armor\cuirass.nif", BipedObjectFlag.Body, bodySlots, 5);
+        var boots = Armor(@"armor\boots.nif", BipedObjectFlag.Feet, BipedObjectFlag.Feet | BipedObjectFlag.Calves, 10);
+        var gloves = Armor(@"armor\gloves.nif", BipedObjectFlag.Hands, BipedObjectFlag.Hands | BipedObjectFlag.Forearms, 10);
+        var helmet = Armor(@"armor\helmet.nif", BipedObjectFlag.Hair, BipedObjectFlag.Hair, 5);
+        var shield = Armor(@"armor\shield.nif", BipedObjectFlag.Shield, BipedObjectFlag.Shield, 0, maleOnly: true);
+        var outfit = mod.Outfits.AddNew(); outfit.Items = [cuirass.ToLink<IOutfitTargetGetter>(), boots.ToLink<IOutfitTargetGetter>(),
+            gloves.ToLink<IOutfitTargetGetter>(), helmet.ToLink<IOutfitTargetGetter>(), shield.ToLink<IOutfitTargetGetter>()];
+        var color = mod.Colors.AddNew(); color.Color = System.Drawing.Color.FromArgb(64, 32, 16);
+        var hair = mod.HeadParts.AddNew(); hair.EditorID = "Hair"; hair.Type = HeadPart.TypeEnum.Hair;
+        hair.Model = new Model { File = @"head\hair.nif" };
+        var hairline = mod.HeadParts.AddNew(); hairline.EditorID = "Hairline"; hairline.Type = HeadPart.TypeEnum.Misc;
+        hair.ExtraParts.Add(hairline.FormKey);
+        var brows = mod.HeadParts.AddNew(); brows.EditorID = "Brows"; brows.Type = HeadPart.TypeEnum.Eyebrows;
+        var face = mod.HeadParts.AddNew(); face.EditorID = "Face"; face.Type = HeadPart.TypeEnum.Face;
+        var npc = mod.Npcs.AddNew(); npc.Race.SetTo(race.FormKey); npc.Configuration.Flags = NpcConfiguration.Flag.Female;
+        npc.TextureLighting = System.Drawing.Color.FromArgb(200, 100, 50); npc.HairColor.SetTo(color.FormKey); npc.DefaultOutfit.SetTo(outfit.FormKey);
+        npc.HeadParts.Add(hair.FormKey); npc.HeadParts.Add(brows.FormKey); npc.HeadParts.Add(face.FormKey);
+        var head = Path.Combine(folder, $@"Meshes\Actors\Character\FaceGenData\FaceGeom\{mod.ModKey.FileName.String}\{npc.FormKey.ID:X8}.nif");
+        Directory.CreateDirectory(Path.GetDirectoryName(head)!); File.WriteAllBytes(head, [0]);
+        var inventoryTemplate = mod.Npcs.AddNew(); inventoryTemplate.Race.SetTo(race.FormKey);
+        inventoryTemplate.Configuration.Flags = NpcConfiguration.Flag.Female; inventoryTemplate.Template.SetTo(npc.FormKey);
+        inventoryTemplate.Configuration.TemplateFlags = NpcConfiguration.TemplateFlag.Inventory;
+        var leveled = mod.LeveledItems.AddNew(); var randomOutfit = mod.Outfits.AddNew(); randomOutfit.Items = [leveled.ToLink<IOutfitTargetGetter>()];
+        var randomNpc = mod.Npcs.AddNew(); randomNpc.Race.SetTo(race.FormKey); randomNpc.DefaultOutfit.SetTo(randomOutfit.FormKey);
+        var conflict = mod.Outfits.AddNew(); conflict.Items = [cuirass.ToLink<IOutfitTargetGetter>(), skin.ToLink<IOutfitTargetGetter>()];
+        var conflictingNpc = mod.Npcs.AddNew(); conflictingNpc.Race.SetTo(race.FormKey); conflictingNpc.DefaultOutfit.SetTo(conflict.FormKey);
+        var rows = new Dictionary<FormKey, FormRow>();
+        typeof(FormCatalog).GetMethod("AddRecords", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [mod, mod.ModKey.FileName.String, rows]);
+        using var cache = mod.ToImmutableLinkCache();
+        typeof(FormCatalog).GetMethod("ResolvePreviewAssets", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [rows, cache, assets]);
+        var dressed = rows[npc.FormKey].Models.First();
+        Require(dressed.Label == "Default outfit" && dressed.Parts.All(part => !part.Path.EndsWith("naked.nif")),
+            "Deterministic default outfits must replace fully covered skin models and become the primary preview.");
+        var torso = dressed.Parts.Single(part => part.Path.EndsWith("cuirass.nif"));
+        Require(torso.ExcludedPartitions!.Contains(34) && torso.ExcludedPartitions.Contains(38) && !torso.ExcludedPartitions.Contains(32),
+            "Higher-priority gloves and boots must hide the cuirass's forearm and calf partitions without hiding its body.");
+        var facePart = dressed.Parts.Single(part => part.Path == Path.GetRelativePath(folder, head));
+        Require(facePart.ExcludedShapes!.SetEquals(["Hair", "Hairline"]),
+            "An open helmet must hide its covered hair and extra hair parts, while preserving the face and brows.");
+        Require(dressed.Appearance is { SkinTint: { } skinColor, HairTint: { } hairColor, SkeletonPath: @"Meshes\body\female-skeleton.nif" } &&
+            Math.Abs(skinColor.X - 200f / 255f) < .0001f && hairColor == new System.Numerics.Vector3(.5f, .25f, .125f),
+            "NPC appearance must carry record skin/hair tint with the native normalization and the correct skeleton.");
+        Require(rows[npc.FormKey].Models.Single(source => source.Label == "Head part: Hair").Appearance == dressed.Appearance,
+            "An independent NPC head-part preview must retain the NPC's appearance colors.");
+        Require(dressed.Parts.Single(part => part.Path.EndsWith("shield.nif")).AttachmentNode == "SHIELD",
+            "A female NPC must fall back to an authored male shield model and retain its race-defined attachment node.");
+        Require(rows[inventoryTemplate.FormKey].Models.First().Label == "Default outfit", "NPC default outfits must follow the Inventory template flag.");
+        Require(rows[randomNpc.FormKey].Models.All(source => source.Label != "Default outfit") &&
+            rows[conflictingNpc.FormKey].Models.All(source => source.Label != "Default outfit"),
+            "Leveled or conflicting default equipment must not be presented as a deterministic dressed appearance.");
+        Require(rows[npc.FormKey].Models.Any(source => source.Label == "Body and exported head") &&
+            rows[npc.FormKey].Models.Count(source => source.Label.StartsWith("Outfit: ")) == 5,
+            "The dressed source must preserve the independent body/head and outfit-piece choices.");
     }
 
     private static void PreviewControls(FormRow model)

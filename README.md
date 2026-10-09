@@ -59,7 +59,9 @@ The tint picker writes quoted `#RRGGBB` or `#RRGGBBAA` values and requires an Ao
 
 Select a form and choose **Preview model...** to inspect its model without running Skyrim. The action is available in form pickers, fields, lists, and form groups. Drag to rotate, scroll to zoom, and use **Reset view** to fit the model again. When a form has several models, the menu at the top lets you choose between them, including armor variants and separate outfit pieces. **Show geometry** makes transparent surfaces visible without their textures.
 
-The preview uses the active profile's winning models and textures. NPCs can show their body and exported head in a fixed pose; the preview identifies missing parts and appearance details it cannot reproduce. Art objects can show their static surfaces. Skyrim lighting, animations, and particle motion are not reproduced.
+The preview uses the active profile's winning models and textures, including supported normal maps, shine, glow, reflections, and vertex colors. NPCs can show their default outfit, body, and exported head in a fixed pose, with skin and hair colors. The preview identifies missing parts and appearance details it cannot reproduce.
+
+Models with supported animation offer **Play/Pause**, a position slider, and a clip selector when several animations are available. These include opening containers and art-object movement, fades, and moving textures. Supported particle emitters can also play. Lighting and effects can differ from Skyrim; unsupported animation, particle physics, and material features are identified in the preview.
 
 **Preview textures...** shows the source images used by effect shaders and texture sets. Cube maps appear as six faces in a cross. These images help identify the selected effect; they do not play the effect as it appears in Skyrim.
 

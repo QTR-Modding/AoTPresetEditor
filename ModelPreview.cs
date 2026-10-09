@@ -9,17 +9,31 @@ using NiflySharp;
 using NiflySharp.Blocks;
 using NiflySharp.Structs;
 using Pfim;
+using HelixToolkit.SharpDX.Model;
+using Gpu = HelixToolkit.SharpDX;
+using Numerics = System.Numerics;
+using GpuColor = HelixToolkit.Maths.Color4;
 
 namespace AoTPresetEditor;
 
-public sealed record ModelPreviewResult(Model3DGroup Model, string Details);
+public sealed record ModelPreviewMesh(Gpu.MeshGeometry3D Geometry, PhongMaterialCore Material, bool DoubleSided, bool Transparent,
+    IReadOnlyList<GpuColor>? VertexColors = null, bool Visible = true);
+public sealed record ModelPreviewParticleMesh(ModelPreviewParticleSystem System, Gpu.TextureModel Texture);
+public sealed record ModelPreviewResult(IReadOnlyList<ModelPreviewMesh> Meshes, string Details,
+    ModelPreviewAnimation? Animation = null, Gpu.TextureModel? EnvironmentMap = null,
+    IReadOnlyList<ModelPreviewParticleMesh>? Particles = null)
+{
+    public IReadOnlyList<ModelPreviewAnimationClip> Clips => (Animation?.Clips ?? [])
+        .Concat(Particles?.SelectMany(particle => particle.System.Clips) ?? [])
+        .GroupBy(clip => clip.Name).Select(group => group.First() with { Duration = group.Max(clip => clip.Duration) }).ToArray();
+}
 
 public static class ModelPreview
 {
     private const int MaxModelBytes = 64 * 1024 * 1024;
     private const int MaxTextureBytes = 32 * 1024 * 1024;
     private const long MaxTexturePixels = 16 * 1024 * 1024;
-    private const int MaxDecodedTextureBytes = 128 * 1024 * 1024;
+    private const int MaxDecodedTextureBytes = 256 * 1024 * 1024;
     private const int MaxVertices = 1_000_000;
     private const int MaxTriangles = 1_000_000;
     private const int MaxDetailMessages = 6;
@@ -29,40 +43,25 @@ public static class ModelPreview
     public static ModelPreviewResult Load(ModelPreviewSource source, IAssetProvider assets, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var model = new Model3DGroup();
+        var model = new List<ModelPreviewMesh>();
+        var particles = new List<ModelPreviewParticleMesh>();
         var messages = new HashSet<string>();
         var budget = new PreviewBudget();
+        var animation = new ModelPreviewAnimation();
         foreach (var part in source.Parts)
         {
-            try { LoadPart(part, assets, model, budget, messages, cancellationToken); }
+            try { LoadPart(part, source.Appearance, assets, model, particles, budget, animation, messages, cancellationToken); }
             catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
             { messages.Add($"{part.Path}: {error.Message}"); }
         }
         cancellationToken.ThrowIfCancellationRequested();
-        if (model.Children.Count == 0)
+        if (model.Count == 0 && particles.Count == 0)
             throw new InvalidDataException("No geometry could be shown. " + string.Join(" ", messages.Take(MaxDetailMessages)));
-        // Transparent surfaces must follow opaque geometry or their depth writes hide surfaces behind their clear pixels.
-        var ordered = model.Children.OrderBy(HasTransparency).ToArray();
-        model.Children.Clear();
-        foreach (var geometry in ordered) model.Children.Add(geometry);
-        model.Freeze();
-        var details = "Static model and textures. Game lighting, animation, and live effects are not reproduced.";
+        var details = "Offline preview. Lighting and effects can differ from Skyrim.";
         if (source.Note.Length > 0) details += "\n" + source.Note;
         if (messages.Count > 0) details += "\n" + string.Join("\n", messages.Take(MaxDetailMessages));
         if (messages.Count > MaxDetailMessages) details += $"\n{messages.Count - MaxDetailMessages} more texture or material limitations.";
-        return new(model, details);
-    }
-
-    private static bool HasTransparency(Model3D model)
-    {
-        var brush = ((GeometryModel3D)model).Material switch
-        {
-            DiffuseMaterial diffuse => diffuse.Brush,
-            EmissiveMaterial emissive => emissive.Brush,
-            _ => null
-        };
-        return brush?.Opacity < 1 || brush is SolidColorBrush { Color.A: < byte.MaxValue } ||
-            brush is ImageBrush { ImageSource: BitmapSource bitmap } && bitmap.Format == PixelFormats.Bgra32;
+        return new(model, details, animation.Clips.Count > 0 ? animation : null, budget.EnvironmentMap, particles);
     }
 
     public static BitmapSource LoadTexture(IAssetProvider assets, string path, CancellationToken cancellationToken)
@@ -164,23 +163,35 @@ public static class ModelPreview
         public int Vertices;
         public int Triangles;
         public long TextureBytes;
+        public readonly Dictionary<(string Path, bool Alpha, bool AlphaOnly, string? Detail, string? Tint), Gpu.TextureModel> Textures = [];
+        public string? EnvironmentPath;
+        public Gpu.TextureModel? EnvironmentMap;
     }
 
-    private static void LoadPart(ModelPreviewPart part, IAssetProvider assets, Model3DGroup model, PreviewBudget budget,
+    private static void LoadPart(ModelPreviewPart part, ModelPreviewAppearance? appearance, IAssetProvider assets,
+        List<ModelPreviewMesh> model, List<ModelPreviewParticleMesh> particles, PreviewBudget budget, ModelPreviewAnimation animation,
         HashSet<string> messages, CancellationToken cancellationToken)
     {
         using var stream = ReadAsset(assets, AssetPath(part.Path, "meshes"), MaxModelBytes, cancellationToken);
         var nif = new NifFile();
         if (nif.Load(stream) != 0 || !nif.Valid) throw new InvalidDataException("The model file could not be read as a supported NIF.");
         cancellationToken.ThrowIfCancellationRequested();
-        var initialShapes = model.Children.Count;
+        var initialShapes = model.Count;
+        var initialParticles = particles.Count;
+        var bindings = new List<(INiShape Shape, int MeshIndex, Numerics.Matrix4x4 InitialWorld)>();
+        var attachment = AttachmentTransform(part, appearance, assets, cancellationToken);
         var shapeIndex = 0;
         var usedReplacements = new HashSet<int>();
         foreach (var shape in SceneShapes(nif, cancellationToken))
         {
             var index = shapeIndex++;
             cancellationToken.ThrowIfCancellationRequested();
-            if (shape is NiParticleSystem) { messages.Add("Particle systems are omitted."); continue; }
+            if (part.ExcludedShapes?.Contains(shape.Name.String) == true) continue;
+            if (shape is NiParticleSystem system)
+            {
+                LoadParticles(nif, system, attachment, assets, particles, budget, messages, cancellationToken);
+                continue;
+            }
             if (shape.IsSkinned || shape.HasSkinInstance)
             {
                 var skin = nif.GetBlock<NiSkinInstance>(shape.SkinInstanceRef);
@@ -194,76 +205,258 @@ public static class ModelPreview
             if (budget.Vertices > MaxVertices || budget.Triangles > MaxTriangles)
                 throw new InvalidDataException("This model exceeds the preview geometry limit.");
             var shader = nif.GetShader(shape);
-            var lighting = shader as BSLightingShaderProperty;
-            var effect = shader as BSEffectShaderProperty;
-            var mesh = BuildMesh(nif, shape, vertices, shader, cancellationToken);
-            Brush brush = new SolidColorBrush(Colors.LightGray);
-            if (lighting is not null || effect is not null)
+            var mesh = BuildMesh(nif, shape, vertices, part, attachment, cancellationToken);
+            if (mesh.TriangleIndices.Count == 0) continue;
+            var gpu = new Gpu.MeshGeometry3D
             {
-                var replacements = part.AlternateTextures.Where(x => x.Index == index).ToList();
-                string? texture = effect is not null ? effect.SourceTexture?.Content :
-                    nif.GetBlock<BSShaderTextureSet>(lighting!.TextureSetRef)?.Textures.FirstOrDefault()?.Content;
-                if (lighting?.IsTypeSkinTint == true && part.DiffusePath is not null) texture = part.DiffusePath;
-                if (replacements.Count > 0 && lighting is not null && !lighting.IsTypeSkinTint)
+                Positions = new(mesh.Positions.Select(p => new Numerics.Vector3((float)p.X, (float)p.Y, (float)p.Z))),
+                Normals = new(mesh.Normals.Select(n => new Numerics.Vector3((float)n.X, (float)n.Y, (float)n.Z))),
+                TextureCoordinates = new(mesh.TextureCoordinates.Select(uv => new Numerics.Vector2((float)uv.X, (float)uv.Y))),
+                TriangleIndices = new(mesh.TriangleIndices)
+            };
+            if (gpu.Normals.Count != gpu.Positions.Count) gpu.UpdateNormals();
+            gpu.UpdateBounds();
+            var material = BuildMaterial(nif, shape, index, part, appearance, assets, budget, usedReplacements, messages, cancellationToken);
+            IReadOnlyList<GpuColor>? vertexColors = null;
+            if (shader is not null && (shader.HasVertexColors || shader.HasVertexAlpha))
+            {
+                var colors = shape is BSTriShape triangleShape ? triangleShape.VertexColors : shape.GeometryData?.VertexColors;
+                if (colors?.Count == vertices.Count)
                 {
-                    usedReplacements.Add(index);
-                    if (replacements.Count != 1 || replacements[0].DiffusePath is null)
-                    {
-                        texture = null;
-                        messages.Add($"Alternate texture for shape {index} could not be resolved; showing neutral geometry.");
-                    }
-                    else texture = replacements[0].DiffusePath;
+                    vertexColors = colors.Select(c => new GpuColor(shader.HasVertexColors ? c.R : 1,
+                        shader.HasVertexColors ? c.G : 1, shader.HasVertexColors ? c.B : 1, shader.HasVertexAlpha ? c.A : 1)).ToArray();
+                    gpu.Colors = new(vertexColors.Select(c => c * material.DiffuseColor));
+                    // Helix applies the alpha-map RGB after vertex-color selection; this preserves vertex color * texture.
+                    material.DiffuseAlphaMap = material.DiffuseMap;
+                    material.DiffuseMap = null;
+                    material.VertexColorBlendingFactor = 1;
                 }
-                else if (replacements.Count > 0 && lighting is not null) usedReplacements.Add(index);
-                Color4? tint = null;
-                if (effect is not null)
-                {
-                    tint = new Color4(effect.BaseColor.R * effect.BaseColorScale, effect.BaseColor.G * effect.BaseColorScale,
-                        effect.BaseColor.B * effect.BaseColorScale, effect.BaseColor.A);
-                    var color = tint.Value;
-                    if (!float.IsFinite(color.R) || !float.IsFinite(color.G) || !float.IsFinite(color.B))
-                        throw new InvalidDataException("The model contains an invalid material color.");
-                    brush = new SolidColorBrush(Color.FromScRgb(1, Math.Clamp(color.R, 0, 1), Math.Clamp(color.G, 0, 1), Math.Clamp(color.B, 0, 1)));
-                    messages.Add("Effect surfaces show their texture and color; particle motion and game shading are not reproduced.");
-                    if (effect.HasGreyscaleToPaletteColor || effect.HasGreyscaleToPaletteAlpha)
-                        messages.Add("Effect palette colors are not reproduced.");
-                }
-                var alpha = nif.GetBlock(shape.AlphaPropertyRef) ?? shape.Properties?.References
-                    .Select(x => nif.GetBlock<NiAlphaProperty>(x.Index)).FirstOrDefault(x => x is not null);
-                var textureAlpha = alpha is not null && (alpha.Flags.AlphaBlend || alpha.Flags.AlphaTest);
-                if (alpha is not null && alpha.Flags.AlphaTest) messages.Add("Alpha testing is approximated with transparency.");
-                if (alpha is not null && alpha.Flags.AlphaBlend) messages.Add("Transparency uses standard blending; Skyrim blend modes and sorting can differ.");
-                if (!string.IsNullOrWhiteSpace(texture) && mesh.TextureCoordinates.Count == vertices.Count)
-                {
-                    try
-                    {
-                        var bitmap = ReadTexture(assets, AssetPath(texture, "textures"), textureAlpha, ref budget.TextureBytes, cancellationToken, tint);
-                        brush = new ImageBrush(bitmap)
-                        {
-                            Viewport = new Rect(0, 0, 1, 1), ViewportUnits = BrushMappingMode.Absolute,
-                            TileMode = TileMode.Tile, Stretch = Stretch.Fill
-                        };
-                    }
-                    catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
-                    {
-                        messages.Add($"Texture {texture}: {error.Message} Showing geometry without that texture.");
-                    }
-                }
-                else if (string.IsNullOrWhiteSpace(texture) && effect is null) messages.Add("Some shapes have no diffuse texture; showing neutral geometry.");
-                else if (!string.IsNullOrWhiteSpace(texture)) messages.Add("Some shapes have no usable texture coordinates; showing neutral geometry.");
-                var opacity = lighting?.Alpha ?? effect!.BaseColor.A;
-                if (!float.IsFinite(opacity)) throw new InvalidDataException("The model contains an invalid material opacity.");
-                brush.Opacity = Math.Clamp(opacity, 0, 1);
             }
-            else messages.Add("Unsupported materials are shown as neutral geometry.");
-            if (shape.HasVertexColors) messages.Add("Vertex colors are not simulated.");
-            Material material = effect is not null ? new EmissiveMaterial(brush) : new DiffuseMaterial(brush);
-            model.Children.Add(new GeometryModel3D(mesh, material) { BackMaterial = shader?.DoubleSided == true ? material : null });
+            var alpha = nif.GetBlock(shape.AlphaPropertyRef) ?? shape.Properties?.References
+                .Select(x => nif.GetBlock<NiAlphaProperty>(x.Index)).FirstOrDefault(x => x is not null);
+            var transparent = material.DiffuseColor.Alpha < 1 || shader?.HasVertexAlpha == true ||
+                alpha is not null && (alpha.Flags.AlphaBlend || alpha.Flags.AlphaTest);
+            var initialWorld = ShapeTransform(nif, shape);
+            initialWorld.Append(attachment);
+            bindings.Add((shape, model.Count, shape.IsSkinned || shape.HasSkinInstance ? Numerics.Matrix4x4.Identity : ToNumerics(initialWorld)));
+            model.Add(new(gpu, material, shader?.DoubleSided == true, transparent, vertexColors, ShapeVisible(nif, shape)));
         }
         if (part.AlternateTextures.Any(x => !usedReplacements.Contains(x.Index)))
             messages.Add("Some alternate textures target geometry that is not shown.");
         if (nif.HasUnknownBlocks) messages.Add("The NIF contains unsupported blocks.");
-        if (model.Children.Count == initialShapes) messages.Add($"{part.Path}: no supported triangle geometry.");
+        if (model.Count == initialShapes && particles.Count == initialParticles && part.ExcludedPartitions is not { Count: > 0 } && part.ExcludedShapes is not { Count: > 0 })
+            messages.Add($"{part.Path}: no supported triangle geometry.");
+        animation.AddPart(nif, bindings, messages);
+    }
+
+    private static void LoadParticles(NifFile nif, NiParticleSystem shape, Matrix3D attachment, IAssetProvider assets,
+        List<ModelPreviewParticleMesh> particles, PreviewBudget budget, HashSet<string> messages, CancellationToken token)
+    {
+        var world = ShapeTransform(nif, shape);
+        world.Append(attachment);
+        var system = ModelPreviewParticleSystem.Create(nif, shape, ToNumerics(world), messages, token);
+        if (system is null) return;
+        var shader = (BSEffectShaderProperty)nif.GetShader(shape)!;
+        var path = shader.SourceTexture?.Content;
+        if (string.IsNullOrWhiteSpace(path)) { messages.Add($"{system.Name}: the particle texture is missing."); return; }
+        var texture = SurfaceTexture(assets, path, true, budget, messages, token);
+        if (texture is null) return;
+        const int verticesPerParticle = 4, trianglesPerParticle = 2;
+        budget.Vertices = checked(budget.Vertices + system.MaximumParticleCount * verticesPerParticle);
+        budget.Triangles = checked(budget.Triangles + system.MaximumParticleCount * trianglesPerParticle);
+        if (budget.Vertices > MaxVertices || budget.Triangles > MaxTriangles)
+            throw new InvalidDataException("This model exceeds the preview geometry limit.");
+        particles.Add(new(system, texture));
+    }
+
+    private enum TextureSlot { Diffuse, Normal, Glow, Detail, Environment, EnvironmentMask, FaceTint, Specular }
+
+    private static PhongMaterialCore BuildMaterial(NifFile nif, INiShape shape, int index, ModelPreviewPart part,
+        ModelPreviewAppearance? appearance, IAssetProvider assets, PreviewBudget budget, HashSet<int> usedReplacements,
+        HashSet<string> messages, CancellationToken token)
+    {
+        var material = new PhongMaterialCore
+        {
+            DiffuseColor = new GpuColor(1, 1, 1, 1), AmbientColor = new GpuColor(.2f, .2f, .2f, 1),
+            SpecularColor = new GpuColor(0, 0, 0, 1), EmissiveColor = new GpuColor(0, 0, 0, 1), EnableAutoTangent = true
+        };
+        var shader = nif.GetShader(shape);
+        var lighting = shader as BSLightingShaderProperty;
+        var effect = shader as BSEffectShaderProperty;
+        if (lighting is null && effect is null) { messages.Add("Unsupported materials are shown as neutral geometry."); return material; }
+        material.UVTransform = new Gpu.UVTransform(0, shader!.UVScale.U, shader.UVScale.V, shader.UVOffset.U, shader.UVOffset.V);
+        var slots = lighting is null ? [] : nif.GetBlock<BSShaderTextureSet>(lighting.TextureSetRef)?.Textures.Select(x => x.Content).ToArray() ?? [];
+        string? Slot(TextureSlot slot) => slots.ElementAtOrDefault((int)slot);
+        var diffuse = effect?.SourceTexture?.Content ?? Slot(TextureSlot.Diffuse);
+        if (lighting?.IsTypeSkinTint == true && part.DiffusePath is not null) diffuse = part.DiffusePath;
+        var replacements = part.AlternateTextures.Where(x => x.Index == index).ToArray();
+        if (replacements.Length > 0 && lighting is not null)
+        {
+            usedReplacements.Add(index);
+            if (!lighting.IsTypeSkinTint)
+            {
+                diffuse = replacements.Length == 1 ? replacements[0].DiffusePath : null;
+                if (diffuse is null) messages.Add($"Alternate texture for shape {index} could not be resolved.");
+            }
+        }
+        var alpha = nif.GetBlock(shape.AlphaPropertyRef) ?? shape.Properties?.References
+            .Select(x => nif.GetBlock<NiAlphaProperty>(x.Index)).FirstOrDefault(x => x is not null);
+        var textureAlpha = alpha is not null && (alpha.Flags.AlphaBlend || alpha.Flags.AlphaTest);
+        if (alpha?.Flags.AlphaTest == true) messages.Add("Alpha testing is approximated with transparency.");
+        if (alpha?.Flags.AlphaBlend == true) messages.Add("Transparency uses standard blending; Skyrim blend modes can differ.");
+        var opacity = lighting?.Alpha ?? effect!.BaseColor.A;
+        if (!float.IsFinite(opacity)) throw new InvalidDataException("The model contains an invalid material opacity.");
+        material.DiffuseColor = new GpuColor(1, 1, 1, Math.Clamp(opacity, 0, 1));
+        material.DiffuseMap = SurfaceTexture(assets, diffuse, textureAlpha, budget, messages, token,
+            faceDetail: lighting?.IsTypeFaceTint == true ? Slot(TextureSlot.Detail) : null,
+            faceTint: lighting?.IsTypeFaceTint == true ? Slot(TextureSlot.FaceTint) : null);
+        if (lighting is not null)
+        {
+            Numerics.Vector3? tint = lighting.IsTypeSkinTint ? appearance?.SkinTint ?? new Numerics.Vector3(lighting.SkinTintColor.R, lighting.SkinTintColor.G, lighting.SkinTintColor.B) :
+                lighting.IsTypeHairTint ? appearance?.HairTint ?? new Numerics.Vector3(lighting.HairTintColor.R, lighting.HairTintColor.G, lighting.HairTintColor.B) : null;
+            if (tint is { } color) material.DiffuseColor = new GpuColor(color.X, color.Y, color.Z, material.DiffuseColor.Alpha);
+            if (!lighting.ModelSpace) material.NormalMap = SurfaceTexture(assets, Slot(TextureSlot.Normal), false, budget, messages, token);
+            else if (!string.IsNullOrWhiteSpace(Slot(TextureSlot.Normal))) messages.Add("Model-space normal maps are not yet reproduced.");
+            if (lighting.HasSpecular)
+            {
+                var specular = lighting.SpecularColor;
+                material.SpecularColor = new GpuColor(specular.R * lighting.SpecularStrength, specular.G * lighting.SpecularStrength,
+                    specular.B * lighting.SpecularStrength, 1);
+                material.SpecularShininess = lighting.Glossiness;
+                material.SpecularColorMap = lighting.ModelSpace
+                    ? SurfaceTexture(assets, Slot(TextureSlot.Specular), false, budget, messages, token)
+                    : SurfaceTexture(assets, Slot(TextureSlot.Normal), true, budget, messages, token, alphaOnly: true);
+            }
+            if (lighting.Emissive || lighting.HasGlowmap)
+            {
+                var glow = lighting.EmissiveColor;
+                material.EmissiveColor = new GpuColor(glow.R * lighting.EmissiveMultiple, glow.G * lighting.EmissiveMultiple,
+                    glow.B * lighting.EmissiveMultiple, 1);
+                if (lighting.HasGlowmap) material.EmissiveMap = SurfaceTexture(assets, Slot(TextureSlot.Glow), false, budget, messages, token);
+            }
+            if (lighting.HasEnvironmentMapping || lighting.HasEyeEnvironmentMapping)
+            {
+                var path = Slot(TextureSlot.Environment);
+                if (!string.IsNullOrWhiteSpace(path) && EnvironmentTexture(assets, path, budget, messages, token))
+                {
+                    var strength = Math.Clamp(lighting.HasEyeEnvironmentMapping ? lighting.EyeCubemapScale : lighting.EnvironmentMapScale, 0, 1);
+                    material.ReflectiveColor = new GpuColor(strength, strength, strength, 1);
+                    material.RenderEnvironmentMap = true;
+                    if (!string.IsNullOrWhiteSpace(Slot(TextureSlot.EnvironmentMask))) messages.Add("Reflection masks are not yet reproduced.");
+                }
+            }
+        }
+        else
+        {
+            var color = effect!.BaseColor;
+            var scale = effect.BaseColorScale;
+            material.EmissiveColor = new GpuColor(color.R * scale, color.G * scale, color.B * scale, 1);
+            material.EmissiveMap = material.DiffuseMap;
+            material.DiffuseColor = new GpuColor(0, 0, 0, material.DiffuseColor.Alpha);
+            if (effect.HasGreyscaleToPaletteColor || effect.HasGreyscaleToPaletteAlpha) messages.Add("Effect palette colors are not yet reproduced.");
+            if (effect.HasVertexColors) messages.Add("Vertex colors on glowing effect surfaces are approximate.");
+        }
+        var components = new[] { material.DiffuseColor.Red, material.DiffuseColor.Green, material.DiffuseColor.Blue,
+            material.SpecularColor.Red, material.SpecularColor.Green, material.SpecularColor.Blue, material.SpecularShininess,
+            material.EmissiveColor.Red, material.EmissiveColor.Green, material.EmissiveColor.Blue,
+            material.ReflectiveColor.Red, material.UVTransform.Scaling.X, material.UVTransform.Scaling.Y,
+            material.UVTransform.Translation.X, material.UVTransform.Translation.Y };
+        if (components.Any(value => !float.IsFinite(value))) throw new InvalidDataException("The model contains invalid material values.");
+        return material;
+    }
+
+    private static Gpu.TextureModel? SurfaceTexture(IAssetProvider assets, string? path, bool alpha, PreviewBudget budget,
+        HashSet<string> messages, CancellationToken token, bool alphaOnly = false, string? faceDetail = null, string? faceTint = null)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        try
+        {
+            path = AssetPath(path, "textures");
+            var key = (path.ToUpperInvariant(), alpha, alphaOnly, faceDetail?.ToUpperInvariant(), faceTint?.ToUpperInvariant());
+            if (budget.Textures.TryGetValue(key, out var cached)) return cached;
+            var bitmap = ReadTexture(assets, path, alpha, ref budget.TextureBytes, token);
+            var converted = new FormatConvertedBitmap(bitmap, PixelFormats.Bgra32, null, 0);
+            const int bytesPerPixel = 4;
+            var stride = checked(bitmap.PixelWidth * bytesPerPixel);
+            var pixels = new byte[checked(stride * bitmap.PixelHeight)];
+            converted.CopyPixels(pixels, stride, 0);
+            var hasDetail = false;
+            foreach (var maskPath in new[] { faceDetail, faceTint })
+                if (!string.IsNullOrWhiteSpace(maskPath))
+                {
+                    try
+                    {
+                        OverlayFaceTexture(assets, maskPath, bitmap.PixelWidth, bitmap.PixelHeight, pixels, budget, token);
+                        hasDetail |= maskPath == faceDetail;
+                    }
+                    catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
+                    { messages.Add($"Face texture {maskPath}: {error.Message}"); }
+                }
+            if (hasDetail)
+                for (var i = 0; i < pixels.Length; i += bytesPerPixel)
+                    for (var channel = 0; channel < 3; channel++) pixels[i + channel] = (byte)Math.Min(pixels[i + channel] * 2, byte.MaxValue);
+            if (alphaOnly)
+                for (var i = 0; i < pixels.Length; i += bytesPerPixel)
+                { pixels[i] = pixels[i + 1] = pixels[i + 2] = pixels[i + 3]; pixels[i + 3] = byte.MaxValue; }
+            token.ThrowIfCancellationRequested();
+            var texture = new Gpu.TextureModel(pixels, SharpDX.DXGI.Format.B8G8R8A8_UNorm, bitmap.PixelWidth, bitmap.PixelHeight);
+            budget.Textures.Add(key, texture);
+            return texture;
+        }
+        catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
+        { messages.Add($"Texture {path}: {error.Message}"); return null; }
+    }
+
+    private static void OverlayFaceTexture(IAssetProvider assets, string path, int width, int height,
+        byte[] pixels, PreviewBudget budget, CancellationToken token)
+    {
+        var mask = ReadTexture(assets, AssetPath(path, "textures"), false, ref budget.TextureBytes, token);
+        var resized = new TransformedBitmap(mask, new ScaleTransform((double)width / mask.PixelWidth, (double)height / mask.PixelHeight));
+        var maskRgba = new FormatConvertedBitmap(resized, PixelFormats.Bgra32, null, 0);
+        const int bytesPerPixel = 4;
+        var stride = width * bytesPerPixel;
+        var maskPixels = new byte[pixels.Length];
+        maskRgba.CopyPixels(maskPixels, stride, 0);
+        for (var row = 0; row < height; row++)
+        {
+            token.ThrowIfCancellationRequested();
+            for (var i = row * stride; i < (row + 1) * stride; i += bytesPerPixel)
+                for (var channel = 0; channel < 3; channel++)
+                {
+                    var basis = pixels[i + channel] / (float)byte.MaxValue;
+                    var blend = maskPixels[i + channel] / (float)byte.MaxValue;
+                    var overlay = basis < .5f ? 2 * basis * blend : 1 - 2 * (1 - basis) * (1 - blend);
+                    pixels[i + channel] = (byte)Math.Clamp(overlay * byte.MaxValue, 0, byte.MaxValue);
+                }
+        }
+    }
+
+    private static bool EnvironmentTexture(IAssetProvider assets, string path, PreviewBudget budget, HashSet<string> messages, CancellationToken token)
+    {
+        path = AssetPath(path, "textures");
+        if (budget.EnvironmentPath is not null)
+        {
+            if (budget.EnvironmentPath.Equals(path, StringComparison.OrdinalIgnoreCase)) return true;
+            messages.Add("Some surfaces use a different reflection map; their reflections are omitted."); return false;
+        }
+        try
+        {
+            var stream = ReadAsset(assets, path, MaxTextureBytes, token);
+            try
+            {
+                if (!IsCubeTexture(stream)) throw new InvalidDataException("The reflection texture is not a cubemap.");
+                var header = new DdsHeader(stream);
+                budget.TextureBytes += checked((long)header.Width * header.Height * 6 * 4);
+                if (budget.TextureBytes > MaxDecodedTextureBytes) throw new InvalidDataException("The preview texture memory limit was reached.");
+                stream.Position = 0;
+                budget.EnvironmentMap = new Gpu.TextureModel(stream, false);
+                budget.EnvironmentPath = path;
+                return true;
+            }
+            catch { stream.Dispose(); throw; }
+        }
+        catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
+        { messages.Add($"Reflection texture {path}: {error.Message}"); return false; }
     }
 
     private static IEnumerable<INiShape> SceneShapes(NifFile nif, CancellationToken cancellationToken)
@@ -284,9 +477,10 @@ public static class ModelPreview
     }
 
     private static MeshGeometry3D BuildMesh(NifFile nif, INiShape shape, List<System.Numerics.Vector3> vertices,
-        INiShader? shader, CancellationToken cancellationToken)
+        ModelPreviewPart part, Matrix3D attachment, CancellationToken cancellationToken)
     {
         var transform = shape.IsSkinned || shape.HasSkinInstance ? Matrix3D.Identity : ShapeTransform(nif, shape);
+        if (!shape.IsSkinned && !shape.HasSkinInstance) transform.Append(attachment);
         var mesh = new MeshGeometry3D();
         foreach (var vertex in vertices)
         {
@@ -296,7 +490,7 @@ public static class ModelPreview
                 throw new InvalidDataException("The model contains invalid vertex coordinates.");
             mesh.Positions.Add(point);
         }
-        foreach (var triangle in shape.Triangles)
+        foreach (var triangle in VisibleTriangles(nif, shape, part.ExcludedPartitions))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (triangle.V1 >= vertices.Count || triangle.V2 >= vertices.Count || triangle.V3 >= vertices.Count)
@@ -315,14 +509,64 @@ public static class ModelPreview
         if (coordinates?.Count == vertices.Count)
             foreach (var uv in coordinates)
             {
-                var u = uv.U * (shader?.UVScale.U ?? 1) + (shader?.UVOffset.U ?? 0);
-                var v = uv.V * (shader?.UVScale.V ?? 1) + (shader?.UVOffset.V ?? 0);
+                var u = uv.U;
+                var v = uv.V;
                 if (!float.IsFinite(u) || !float.IsFinite(v)) throw new InvalidDataException("The model contains invalid texture coordinates.");
                 mesh.TextureCoordinates.Add(new Point(u, v));
             }
         if (shape.IsSkinned || shape.HasSkinInstance) ApplySkinning(nif, shape, vertices, normals, mesh, cancellationToken);
         return mesh;
     }
+
+    private static IEnumerable<Triangle> VisibleTriangles(NifFile nif, INiShape shape, IReadOnlySet<int>? excluded)
+    {
+        if (excluded is null || excluded.Count == 0) return shape.Triangles;
+        var skin = nif.GetBlock<BSDismemberSkinInstance>(shape.SkinInstanceRef);
+        var partitions = nif.GetBlock(skin?.SkinPartition);
+        if (skin is null || partitions is null) return shape.Triangles;
+        if (skin.Partitions.Count != partitions.Partitions.Count) throw new InvalidDataException("The model's body partitions do not match its skin data.");
+        var hidden = new HashSet<Triangle>();
+        for (var i = 0; i < skin.Partitions.Count; i++)
+        {
+            if (!excluded.Contains((int)skin.Partitions[i].BodyPart)) continue;
+            var partition = partitions.Partitions[i];
+            if (partition.TrianglesCopy is null || partition.TrianglesCopy.Count == 0) partition.GenerateTrueTrianglesFromMappedTriangles();
+            foreach (var entry in partition.TrianglesCopy ?? []) { var triangle = entry; triangle.Rotate(); hidden.Add(triangle); }
+        }
+        return shape.Triangles.Where(entry => { var triangle = entry; triangle.Rotate(); return !hidden.Contains(triangle); });
+    }
+
+    private static Matrix3D AttachmentTransform(ModelPreviewPart part, ModelPreviewAppearance? appearance, IAssetProvider assets, CancellationToken token)
+    {
+        if (part.AttachmentNode is null) return Matrix3D.Identity;
+        if (appearance?.SkeletonPath is null) throw new InvalidDataException("The attachment has no skeleton model.");
+        using var stream = ReadAsset(assets, AssetPath(appearance.SkeletonPath, "meshes"), MaxModelBytes, token);
+        var nif = new NifFile(stream);
+        var node = nif.Blocks.OfType<NiNode>().FirstOrDefault(x => x.Name.String.Equals(part.AttachmentNode, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidDataException($"Skeleton attachment {part.AttachmentNode} was not found.");
+        var result = Matrix3D.Identity;
+        var visited = new HashSet<INiObject>(ReferenceEqualityComparer.Instance);
+        for (; node is not null; node = nif.GetParentNode(node))
+        {
+            token.ThrowIfCancellationRequested();
+            if (!visited.Add(node)) throw new InvalidDataException("The attachment skeleton contains a cycle.");
+            result.Append(Transform(node.Rotation, node.Translation, node.Scale));
+        }
+        return result;
+    }
+
+    public static void UpdateVertexTint(ModelPreviewMesh mesh, GpuColor tint)
+    {
+        if (mesh.VertexColors is null) return;
+        mesh.Geometry.Colors = new(mesh.VertexColors.Select(color => color * tint));
+        mesh.Geometry.UpdateColors();
+    }
+
+    private static Numerics.Matrix4x4 ToNumerics(Matrix3D matrix) => new(
+        (float)matrix.M11, (float)matrix.M12, (float)matrix.M13, (float)matrix.M14,
+        (float)matrix.M21, (float)matrix.M22, (float)matrix.M23, (float)matrix.M24,
+        (float)matrix.M31, (float)matrix.M32, (float)matrix.M33, (float)matrix.M34,
+        (float)matrix.OffsetX, (float)matrix.OffsetY, (float)matrix.OffsetZ, (float)matrix.M44);
 
     private static void ApplySkinning(NifFile nif, INiShape shape, List<System.Numerics.Vector3> vertices,
         List<System.Numerics.Vector3>? normals, MeshGeometry3D mesh, CancellationToken cancellationToken)
@@ -424,6 +668,18 @@ public static class ModelPreview
                 foreach (var weight in data.BoneList[bone].VertexWeights) yield return (weight.Index, bone, weight.Weight);
     }
 
+    private static bool ShapeVisible(NifFile nif, INiShape shape)
+    {
+        const uint hiddenFlag = 1;
+        var visited = new HashSet<NiAVObject>();
+        for (var node = shape as NiAVObject; node is not null; node = nif.GetParentNode(node))
+        {
+            if (!visited.Add(node)) throw new InvalidDataException("The model contains a cycle in its node hierarchy.");
+            if ((node.Flags_ui & hiddenFlag) != 0) return false;
+        }
+        return true;
+    }
+
     private static Matrix3D ShapeTransform(NifFile nif, INiShape shape)
     {
         var transform = Transform(shape.Rotation, shape.Translation, shape.Scale);
@@ -445,6 +701,7 @@ public static class ModelPreview
     private static string AssetPath(string path, string directory)
     {
         path = path.Trim().Replace('/', '\\');
+        if (path.StartsWith("data\\", StringComparison.OrdinalIgnoreCase)) path = path["data\\".Length..];
         if (Path.IsPathRooted(path) || path.Split('\\').Contains(".."))
             throw new InvalidDataException("Model assets must use paths relative to the game Data folder.");
         return path.StartsWith(directory + "\\", StringComparison.OrdinalIgnoreCase) ? path : directory + "\\" + path;
@@ -479,13 +736,13 @@ public static class ModelPreview
         }
     }
 
-    private static BitmapSource ReadTexture(IAssetProvider assets, string path, bool useAlpha, ref long decodedBytes, CancellationToken cancellationToken, Color4? tint = null)
+    private static BitmapSource ReadTexture(IAssetProvider assets, string path, bool useAlpha, ref long decodedBytes, CancellationToken cancellationToken)
     {
         using var stream = ReadAsset(assets, path, MaxTextureBytes, cancellationToken);
-        return ReadTexture(stream, useAlpha, ref decodedBytes, cancellationToken, tint);
+        return ReadTexture(stream, useAlpha, ref decodedBytes, cancellationToken);
     }
 
-    private static BitmapSource ReadTexture(MemoryStream stream, bool useAlpha, ref long decodedBytes, CancellationToken cancellationToken, Color4? tint = null)
+    private static BitmapSource ReadTexture(MemoryStream stream, bool useAlpha, ref long decodedBytes, CancellationToken cancellationToken)
     {
         if (IsCubeTexture(stream)) throw new NotSupportedException("A cubemap cannot be used as a flat model texture.");
         using var image = Pfimage.FromStream(stream, new PfimConfig(allocator: new TextureAllocator(MaxDecodedTextureBytes - decodedBytes)));
@@ -496,25 +753,6 @@ public static class ModelPreview
         var format = TexturePixelFormat(image.Format);
         BitmapSource bitmap = BitmapSource.Create(image.Width, image.Height, BitmapDpi, BitmapDpi, format, null, image.Data, image.Stride);
         if (!useAlpha && format == PixelFormats.Bgra32) bitmap = new FormatConvertedBitmap(bitmap, PixelFormats.Bgr32, null, 0);
-        if (tint is { } color)
-        {
-            var rgba = new FormatConvertedBitmap(bitmap, PixelFormats.Bgra32, null, 0);
-            const int bytesPerPixel = 4;
-            var stride = checked(image.Width * bytesPerPixel);
-            var pixels = new byte[checked(stride * image.Height)];
-            rgba.CopyPixels(pixels, stride, 0);
-            for (var row = 0; row < image.Height; row++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                for (var offset = row * stride; offset < (row + 1) * stride; offset += bytesPerPixel)
-                {
-                    pixels[offset] = (byte)Math.Clamp(pixels[offset] * color.B, 0, byte.MaxValue);
-                    pixels[offset + 1] = (byte)Math.Clamp(pixels[offset + 1] * color.G, 0, byte.MaxValue);
-                    pixels[offset + 2] = (byte)Math.Clamp(pixels[offset + 2] * color.R, 0, byte.MaxValue);
-                }
-            }
-            bitmap = BitmapSource.Create(image.Width, image.Height, BitmapDpi, BitmapDpi, PixelFormats.Bgra32, null, pixels, stride);
-        }
         bitmap.Freeze();
         return bitmap;
     }

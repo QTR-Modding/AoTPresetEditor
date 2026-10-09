@@ -50,6 +50,9 @@ internal static class Program
             Check("Tint picker and color encoding", TintPickerChecks.Run);
             Check("Sound playback controls and asset selection", SoundPreviewChecks.Run);
             Check("Form model metadata and preview controls", ModelPreviewChecks.Run);
+            Check("Authored model animation", ModelAnimationChecks.Run);
+            Check("Model material maps and vertex colors", ModelMaterialChecks.Run);
+            Check("Authored particle preview", ModelParticleChecks.Run);
             Check("Preview access in lists and groups", PreviewAccessChecks.Run);
             Check("Preset and companion export rollback", PresetExportChecks.Run);
             Check("Mixed behavior projects and export rollback", PresetProjectChecks.Run);

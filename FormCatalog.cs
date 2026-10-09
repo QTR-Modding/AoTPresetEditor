@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Numerics;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Environments;
 using Mutagen.Bethesda.Assets.DI;
@@ -34,8 +35,10 @@ public sealed record FormRow(string Name, string EditorId, string Type, string P
 }
 
 public sealed record ModelTextureReplacement(string Name, int Index, FormKey TextureSet, string? DiffusePath = null);
-public sealed record ModelPreviewPart(string Path, IReadOnlyList<ModelTextureReplacement> AlternateTextures, string? DiffusePath = null);
-public sealed record ModelPreviewSource(string Label, IReadOnlyList<ModelPreviewPart> Parts, string Note = "");
+public sealed record ModelPreviewPart(string Path, IReadOnlyList<ModelTextureReplacement> AlternateTextures, string? DiffusePath = null,
+    IReadOnlySet<int>? ExcludedPartitions = null, IReadOnlySet<string>? ExcludedShapes = null, string? AttachmentNode = null);
+public sealed record ModelPreviewAppearance(Vector3? SkinTint, Vector3? HairTint, string? SkeletonPath = null);
+public sealed record ModelPreviewSource(string Label, IReadOnlyList<ModelPreviewPart> Parts, string Note = "", ModelPreviewAppearance? Appearance = null);
 public sealed record TexturePreviewSource(string Label, string Path);
 
 public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, string? Category = null, bool TriggerOnly = false,
@@ -215,10 +218,10 @@ public static class FormCatalog
         return models;
     }
 
-    private static void AddModel(List<ModelPreviewSource> models, string label, IModelGetter? model, string? diffuse = null)
+    private static void AddModel(List<ModelPreviewSource> models, string label, IModelGetter? model, string? diffuse = null, ModelPreviewAppearance? appearance = null)
     {
         if (model?.File.IsNull != false) return;
-        models.Add(new(label, [ModelPart(model) with { DiffusePath = diffuse }]));
+        models.Add(new(label, [ModelPart(model) with { DiffusePath = diffuse }], Appearance: appearance));
     }
 
     private static ModelPreviewPart ModelPart(IModelGetter model) => new(model.File.DataRelativePath.Path,
@@ -335,7 +338,7 @@ public static class FormCatalog
                 var skin = Resolve<IArmorGetter>(cache, race.Skin.FormKey);
                 foreach (var female in new[] { false, true })
                 {
-                    var parts = SkinParts(skin, race, female, cache);
+                    var parts = WornModels(skin, race, female, cache).Select(model => model.Part).ToList();
                     if (parts.Count != 0) models.Insert(0, new(female ? "Female body" : "Male body", parts,
                         "Fixed pose. Body-weight morphs, skin tint, clothing, and animation are not shown."));
                 }
@@ -349,25 +352,106 @@ public static class FormCatalog
         if (traits is null || Resolve<IRaceGetter>(cache, traits.Race.FormKey) is not { } race) return;
         var female = traits.Configuration.Flags.HasFlag(NpcConfiguration.Flag.Female);
         var skin = Resolve<IArmorGetter>(cache, traits.WornArmor.FormKey) ?? Resolve<IArmorGetter>(cache, race.Skin.FormKey);
-        var parts = SkinParts(skin, race, female, cache);
+        var body = WornModels(skin, race, female, cache);
+        var parts = body.Select(model => model.Part).ToList();
+        var appearance = NpcAppearance(traits, race, female, cache);
+        const string poseNote = "Fixed pose. Body-weight morphs and animation are not shown.";
         var facePath = $@"Meshes\Actors\Character\FaceGenData\FaceGeom\{traits.FormKey.ModKey.FileName.String}\{traits.FormKey.ID:X8}.nif";
         var hasFace = assets.Exists(new DataRelativePath(facePath));
         if (hasFace) parts.Add(new(facePath, []));
-        if (parts.Count != 0) models.Insert(0, new(hasFace ? "Body and exported head" : "Body", parts,
-            "Fixed pose. Body-weight morphs, skin tint, clothing, and animation are not shown."));
-        if (hasFace) models.Add(new("Exported head", [new(facePath, [])]));
+        if (parts.Count != 0) models.Insert(0, new(hasFace ? "Body and exported head" : "Body", parts, poseNote, appearance));
+        if (hasFace) models.Add(new("Exported head", [new(facePath, [])], Appearance: appearance));
         foreach (var link in traits.HeadParts)
             if (Resolve<IHeadPartGetter>(cache, link.FormKey) is { } head)
-                AddModel(models, "Head part: " + (head.EditorID ?? head.FormKey.ToString()), head.Model);
+                AddModel(models, "Head part: " + (head.EditorID ?? head.FormKey.ToString()), head.Model, appearance: appearance);
         var inventory = ResolveNpcTemplate(npc, NpcConfiguration.TemplateFlag.Inventory, cache);
         if (inventory is not null && Resolve<IOutfitGetter>(cache, inventory.DefaultOutfit.FormKey) is { } outfit)
+        {
+            var armors = new List<IArmorGetter>();
+            var deterministic = true;
             foreach (var link in outfit.Items ?? [])
                 if (Resolve<IArmorGetter>(cache, link.FormKey) is { } armor)
                 {
-                    var outfitParts = SkinParts(armor, race, female, cache);
+                    armors.Add(armor);
+                    var outfitParts = WornModels(armor, race, female, cache).Select(model => model.Part).ToList();
+                    if (outfitParts.Count == 0 || armor.Armature.Any(addon => Resolve<IArmorAddonGetter>(cache, addon.FormKey) is null)) deterministic = false;
                     if (outfitParts.Count != 0) models.Add(new("Outfit: " + (armor.Name?.String ?? armor.EditorID ?? armor.FormKey.ToString()),
-                        outfitParts, "This clothing piece is shown by itself in a fixed pose. Leveled outfit choices are not resolved."));
+                        outfitParts, "This clothing piece is shown by itself. " + poseNote, appearance));
                 }
+                else deterministic = false;
+            var occupied = default(BipedObjectFlag);
+            foreach (var armor in armors)
+            {
+                var slots = armor.BodyTemplate?.FirstPersonFlags ?? default;
+                if ((occupied & slots) != 0) deterministic = false;
+                occupied |= slots;
+            }
+            if (deterministic && armors.Count != 0)
+            {
+                var worn = body.Concat(armors.SelectMany(armor => WornModels(armor, race, female, cache))).ToList();
+                var dressed = OutfitParts(worn);
+                if (hasFace) dressed.Add(new(facePath, [], ExcludedShapes: CoveredHeadShapes(traits, race, female, occupied, cache)));
+                if (dressed.Count != 0) models.Insert(0, new("Default outfit", dressed, poseNote, appearance));
+            }
+            else if (!deterministic && models.Count != 0)
+                models[0] = models[0] with { Note = models[0].Note + " The default outfit contains unresolved choices, missing models, or conflicting equipment; available pieces are shown separately." };
+        }
+    }
+
+    private static ModelPreviewAppearance NpcAppearance(INpcGetter npc, IRaceGetter race, bool female, ILinkCache cache)
+    {
+        const float hairColorScale = 128f;
+        var skin = npc.TextureLighting;
+        var hair = Resolve<IColorRecordGetter>(cache, npc.HairColor.FormKey)?.Color;
+        var skeleton = female && race.SkeletalModel?.Female?.File.IsNull == false ? race.SkeletalModel.Female : race.SkeletalModel?.Male;
+        return new(skin is { } body ? new Vector3(body.R, body.G, body.B) / byte.MaxValue : null,
+            hair is { } color ? new Vector3(color.R, color.G, color.B) / hairColorScale : null, skeleton?.File.DataRelativePath.Path);
+    }
+
+    private static HashSet<string> CoveredHeadShapes(INpcGetter npc, IRaceGetter race, bool female, BipedObjectFlag covered, ILinkCache cache)
+    {
+        var hidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var hideHead = (covered & SlotFlag(race.HeadBipedObject)) != 0;
+        var hideHair = (covered & (SlotFlag(race.HairBipedObject) | BipedObjectFlag.LongHair)) != 0;
+        if (!hideHead && !hideHair) return hidden;
+        var visited = new HashSet<FormKey>();
+        void Add(IHeadPartGetter part)
+        {
+            if (!visited.Add(part.FormKey)) return;
+            if (!string.IsNullOrWhiteSpace(part.EditorID)) hidden.Add(part.EditorID);
+            foreach (var extra in part.ExtraParts)
+                if (Resolve<IHeadPartGetter>(cache, extra.FormKey) is { } child) Add(child);
+        }
+        var defaults = female ? race.HeadData?.Female : race.HeadData?.Male;
+        var keys = (defaults?.HeadParts.Select(part => part.Head.FormKey) ?? []).Concat(npc.HeadParts.Select(part => part.FormKey));
+        foreach (var key in keys)
+            if (Resolve<IHeadPartGetter>(cache, key) is { } part && (part.Type == HeadPart.TypeEnum.Hair ? hideHair : hideHead)) Add(part);
+        return hidden;
+    }
+
+    private const int BipedSlotCount = sizeof(uint) * 8;
+    private const int SkyrimPartitionOffset = 30;
+    private static BipedObjectFlag SlotFlag(BipedObject slot) => (uint)slot < BipedSlotCount ? (BipedObjectFlag)(1u << (int)slot) : default;
+
+    private sealed record WornModel(ModelPreviewPart Part, BipedObjectFlag Slots, byte Priority);
+
+    private static List<ModelPreviewPart> OutfitParts(IReadOnlyList<WornModel> models)
+    {
+        var winners = new WornModel?[BipedSlotCount];
+        foreach (var model in models)
+            for (var slot = 0; slot < BipedSlotCount; slot++)
+                if ((model.Slots & (BipedObjectFlag)(1u << slot)) != 0 && (winners[slot] is null || winners[slot]!.Priority < model.Priority))
+                    winners[slot] = model;
+        var parts = new List<ModelPreviewPart>();
+        foreach (var model in models)
+        {
+            if (model.Slots != default && !winners.Any(winner => ReferenceEquals(winner, model))) continue;
+            var excluded = new HashSet<int>();
+            for (var slot = 0; slot < BipedSlotCount; slot++)
+                if (winners[slot] is { } winner && !ReferenceEquals(winner, model)) excluded.Add(slot + SkyrimPartitionOffset);
+            parts.Add(model.Part with { ExcludedPartitions = excluded });
+        }
+        return parts;
     }
 
     private static INpcGetter? ResolveNpcTemplate(INpcGetter npc, NpcConfiguration.TemplateFlag flag, ILinkCache cache)
@@ -381,19 +465,23 @@ public static class FormCatalog
         return npc;
     }
 
-    private static List<ModelPreviewPart> SkinParts(IArmorGetter? armor, IRaceGetter race, bool female, ILinkCache cache)
+    private static List<WornModel> WornModels(IArmorGetter? armor, IRaceGetter race, bool female, ILinkCache cache)
     {
-        var parts = new List<ModelPreviewPart>();
+        var parts = new List<WornModel>();
         if (armor is null) return parts;
+        var shieldNode = race.BipedObjectNames.GetValueOrDefault(BipedObject.Shield);
         var races = new HashSet<FormKey> { race.FormKey };
         while (Resolve<IRaceGetter>(cache, race.ArmorRace.FormKey) is { } inherited && races.Add(inherited.FormKey)) race = inherited;
         foreach (var link in armor.Armature)
         {
             if (Resolve<IArmorAddonGetter>(cache, link.FormKey) is not { } addon ||
                 !races.Contains(addon.Race.FormKey) && !addon.AdditionalRaces.Any(link => races.Contains(link.FormKey))) continue;
-            var model = female ? addon.WorldModel?.Female : addon.WorldModel?.Male;
+            var useFemale = female && addon.WorldModel?.Female?.File.IsNull == false;
+            var model = useFemale ? addon.WorldModel?.Female : addon.WorldModel?.Male;
             if (model?.File.IsNull != false) continue;
-            parts.Add(ModelPart(model) with { DiffusePath = SkinDiffuse(addon, female, cache) });
+            parts.Add(new(ModelPart(model) with { DiffusePath = SkinDiffuse(addon, useFemale, cache),
+                AttachmentNode = addon.BodyTemplate?.FirstPersonFlags == BipedObjectFlag.Shield ? shieldNode : null },
+                addon.BodyTemplate?.FirstPersonFlags ?? default, female ? addon.Priority.Female : addon.Priority.Male));
         }
         return parts;
     }
