@@ -41,6 +41,14 @@ public static class ModelPreview
     private const double BitmapDpi = 96;
 
     public static ModelPreviewResult Load(ModelPreviewSource source, IAssetProvider assets, CancellationToken cancellationToken)
+        => LoadScene(source, assets, null, null, cancellationToken);
+
+    public static ModelPreviewResult Load(ModelPreviewSource target, IAssetProvider targetAssets,
+        ModelPreviewSource art, IAssetProvider artAssets, CancellationToken cancellationToken)
+        => LoadScene(target, targetAssets, art, artAssets, cancellationToken);
+
+    private static ModelPreviewResult LoadScene(ModelPreviewSource source, IAssetProvider assets,
+        ModelPreviewSource? art, IAssetProvider? artAssets, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var model = new List<ModelPreviewMesh>();
@@ -48,17 +56,47 @@ public static class ModelPreview
         var messages = new HashSet<string>();
         var budget = new PreviewBudget();
         var animation = new ModelPreviewAnimation();
+        var targetNodes = art is null ? null : new Dictionary<string, Matrix3D?>(StringComparer.OrdinalIgnoreCase);
+        if (targetNodes is not null && source.Appearance?.SkeletonPath is { } skeleton)
+        {
+            try
+            {
+                using var stream = ReadAsset(assets, AssetPath(skeleton, "meshes"), MaxModelBytes, cancellationToken);
+                var nif = new NifFile(stream);
+                if (!nif.Valid) throw new InvalidDataException("The target's attachment skeleton could not be read.");
+                AddAttachmentNodes(nif, Matrix3D.Identity, targetNodes, cancellationToken);
+            }
+            catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
+            { messages.Add($"{skeleton}: {error.Message}"); }
+        }
         foreach (var part in source.Parts)
         {
-            try { LoadPart(part, source.Appearance, assets, model, particles, budget, animation, messages, cancellationToken); }
+            try { LoadPart(part, source.Appearance, assets, model, particles, budget, art is null ? animation : null, messages,
+                cancellationToken, source.Appearance?.SkeletonPath is null ? targetNodes : null, includeParticles: art is null); }
             catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
             { messages.Add($"{part.Path}: {error.Message}"); }
+        }
+        if (art is not null)
+        {
+            if (model.Count == 0) throw new InvalidDataException("The selected item's model has no geometry to show. " + string.Join(" ", messages.Take(MaxDetailMessages)));
+            var targetMeshes = model.Count;
+            var targetParticles = particles.Count;
+            foreach (var part in art.Parts)
+            {
+                try { LoadPart(part, art.Appearance, artAssets!, model, particles, budget, animation, messages, cancellationToken,
+                    targetNodes, attachedEffect: true); }
+                catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
+                { messages.Add($"{part.Path}: {error.Message}"); }
+            }
+            if (model.Count == targetMeshes && particles.Count == targetParticles)
+                throw new InvalidDataException("This art object cannot be previewed on the selected item. " + string.Join(" ", messages.Take(MaxDetailMessages)));
         }
         cancellationToken.ThrowIfCancellationRequested();
         if (model.Count == 0 && particles.Count == 0)
             throw new InvalidDataException("No geometry could be shown. " + string.Join(" ", messages.Take(MaxDetailMessages)));
         var details = "Offline preview. Lighting and effects can differ from Skyrim.";
         if (source.Note.Length > 0) details += "\n" + source.Note;
+        if (art is not null && art.Note.Length > 0) details += "\n" + art.Note;
         if (messages.Count > 0) details += "\n" + string.Join("\n", messages.Take(MaxDetailMessages));
         if (messages.Count > MaxDetailMessages) details += $"\n{messages.Count - MaxDetailMessages} more texture or material limitations.";
         return new(model, details, animation.Clips.Count > 0 ? animation : null, budget.EnvironmentMap, particles);
@@ -163,14 +201,16 @@ public static class ModelPreview
         public int Vertices;
         public int Triangles;
         public long TextureBytes;
-        public readonly Dictionary<(string Path, bool Alpha, bool AlphaOnly, string? Detail, string? Tint), Gpu.TextureModel> Textures = [];
+        public readonly Dictionary<(IAssetProvider Assets, string Path, bool Alpha, bool AlphaOnly, string? Detail, string? Tint), Gpu.TextureModel> Textures = [];
         public string? EnvironmentPath;
+        public IAssetProvider? EnvironmentAssets;
         public Gpu.TextureModel? EnvironmentMap;
     }
 
     private static void LoadPart(ModelPreviewPart part, ModelPreviewAppearance? appearance, IAssetProvider assets,
-        List<ModelPreviewMesh> model, List<ModelPreviewParticleMesh> particles, PreviewBudget budget, ModelPreviewAnimation animation,
-        HashSet<string> messages, CancellationToken cancellationToken)
+        List<ModelPreviewMesh> model, List<ModelPreviewParticleMesh> particles, PreviewBudget budget, ModelPreviewAnimation? animation,
+        HashSet<string> messages, CancellationToken cancellationToken, Dictionary<string, Matrix3D?>? targetNodes = null,
+        bool attachedEffect = false, bool includeParticles = true)
     {
         using var stream = ReadAsset(assets, AssetPath(part.Path, "meshes"), MaxModelBytes, cancellationToken);
         var nif = new NifFile();
@@ -179,7 +219,9 @@ public static class ModelPreview
         var initialShapes = model.Count;
         var initialParticles = particles.Count;
         var bindings = new List<(INiShape Shape, int MeshIndex, Numerics.Matrix4x4 InitialWorld)>();
+        var attachmentRoots = attachedEffect ? new Dictionary<INiShape, NiAVObject>() : null;
         var attachment = AttachmentTransform(part, appearance, assets, cancellationToken);
+        if (targetNodes is not null && !attachedEffect) AddAttachmentNodes(nif, attachment, targetNodes, cancellationToken);
         var shapeIndex = 0;
         var usedReplacements = new HashSet<int>();
         foreach (var shape in SceneShapes(nif, cancellationToken))
@@ -187,9 +229,16 @@ public static class ModelPreview
             var index = shapeIndex++;
             cancellationToken.ThrowIfCancellationRequested();
             if (part.ExcludedShapes?.Contains(shape.Name.String) == true) continue;
+            NiAVObject? attachmentRoot = null;
+            var shapeAttachment = attachedEffect ? EffectAttachment(nif, shape, targetNodes!, messages, cancellationToken, out attachmentRoot) : attachment;
+            if (shapeAttachment is null) continue;
+            if (attachmentRoot is not null) attachmentRoots!.Add(shape, attachmentRoot);
+            if (attachedEffect && (shape.IsSkinned || shape.HasSkinInstance))
+            { messages.Add("Skinned effect geometry cannot yet be attached to this item."); continue; }
             if (shape is NiParticleSystem system)
             {
-                LoadParticles(nif, system, attachment, assets, particles, budget, messages, cancellationToken);
+                if (!includeParticles) continue;
+                LoadParticles(nif, system, shapeAttachment.Value, assets, particles, budget, messages, cancellationToken, attachmentRoot);
                 continue;
             }
             if (shape.IsSkinned || shape.HasSkinInstance)
@@ -205,7 +254,7 @@ public static class ModelPreview
             if (budget.Vertices > MaxVertices || budget.Triangles > MaxTriangles)
                 throw new InvalidDataException("This model exceeds the preview geometry limit.");
             var shader = nif.GetShader(shape);
-            var mesh = BuildMesh(nif, shape, vertices, part, attachment, cancellationToken);
+            var mesh = BuildMesh(nif, shape, vertices, part, shapeAttachment.Value, cancellationToken);
             if (mesh.TriangleIndices.Count == 0) continue;
             var gpu = new Gpu.MeshGeometry3D
             {
@@ -237,24 +286,25 @@ public static class ModelPreview
             var transparent = material.DiffuseColor.Alpha < 1 || shader?.HasVertexAlpha == true ||
                 alpha is not null && (alpha.Flags.AlphaBlend || alpha.Flags.AlphaTest);
             var initialWorld = ShapeTransform(nif, shape);
-            initialWorld.Append(attachment);
+            initialWorld.Append(shapeAttachment.Value);
             bindings.Add((shape, model.Count, shape.IsSkinned || shape.HasSkinInstance ? Numerics.Matrix4x4.Identity : ToNumerics(initialWorld)));
-            model.Add(new(gpu, material, shader?.DoubleSided == true, transparent, vertexColors, ShapeVisible(nif, shape)));
+            model.Add(new(gpu, material, shader?.DoubleSided == true, transparent, vertexColors, ShapeVisible(nif, shape, attachmentRoot)));
         }
         if (part.AlternateTextures.Any(x => !usedReplacements.Contains(x.Index)))
             messages.Add("Some alternate textures target geometry that is not shown.");
         if (nif.HasUnknownBlocks) messages.Add("The NIF contains unsupported blocks.");
         if (model.Count == initialShapes && particles.Count == initialParticles && part.ExcludedPartitions is not { Count: > 0 } && part.ExcludedShapes is not { Count: > 0 })
             messages.Add($"{part.Path}: no supported triangle geometry.");
-        animation.AddPart(nif, bindings, messages);
+        animation?.AddPart(nif, bindings, messages, attachmentRoots);
     }
 
     private static void LoadParticles(NifFile nif, NiParticleSystem shape, Matrix3D attachment, IAssetProvider assets,
-        List<ModelPreviewParticleMesh> particles, PreviewBudget budget, HashSet<string> messages, CancellationToken token)
+        List<ModelPreviewParticleMesh> particles, PreviewBudget budget, HashSet<string> messages, CancellationToken token,
+        NiAVObject? attachmentRoot = null)
     {
         var world = ShapeTransform(nif, shape);
         world.Append(attachment);
-        var system = ModelPreviewParticleSystem.Create(nif, shape, ToNumerics(world), messages, token);
+        var system = ModelPreviewParticleSystem.Create(nif, shape, ToNumerics(world), messages, token, attachmentRoot);
         if (system is null) return;
         var shader = (BSEffectShaderProperty)nif.GetShader(shape)!;
         var path = shader.SourceTexture?.Content;
@@ -372,7 +422,7 @@ public static class ModelPreview
         try
         {
             path = AssetPath(path, "textures");
-            var key = (path.ToUpperInvariant(), alpha, alphaOnly, faceDetail?.ToUpperInvariant(), faceTint?.ToUpperInvariant());
+            var key = (assets, path.ToUpperInvariant(), alpha, alphaOnly, faceDetail?.ToUpperInvariant(), faceTint?.ToUpperInvariant());
             if (budget.Textures.TryGetValue(key, out var cached)) return cached;
             var bitmap = ReadTexture(assets, path, alpha, ref budget.TextureBytes, token);
             var converted = new FormatConvertedBitmap(bitmap, PixelFormats.Bgra32, null, 0);
@@ -436,7 +486,7 @@ public static class ModelPreview
         path = AssetPath(path, "textures");
         if (budget.EnvironmentPath is not null)
         {
-            if (budget.EnvironmentPath.Equals(path, StringComparison.OrdinalIgnoreCase)) return true;
+            if (ReferenceEquals(budget.EnvironmentAssets, assets) && budget.EnvironmentPath.Equals(path, StringComparison.OrdinalIgnoreCase)) return true;
             messages.Add("Some surfaces use a different reflection map; their reflections are omitted."); return false;
         }
         try
@@ -451,6 +501,7 @@ public static class ModelPreview
                 stream.Position = 0;
                 budget.EnvironmentMap = new Gpu.TextureModel(stream, false);
                 budget.EnvironmentPath = path;
+                budget.EnvironmentAssets = assets;
                 return true;
             }
             catch { stream.Dispose(); throw; }
@@ -534,6 +585,64 @@ public static class ModelPreview
             foreach (var entry in partition.TrianglesCopy ?? []) { var triangle = entry; triangle.Rotate(); hidden.Add(triangle); }
         }
         return shape.Triangles.Where(entry => { var triangle = entry; triangle.Rotate(); return !hidden.Contains(triangle); });
+    }
+
+    private static void AddAttachmentNodes(NifFile nif, Matrix3D attachment, Dictionary<string, Matrix3D?> nodes, CancellationToken token)
+    {
+        foreach (var node in nif.Blocks.OfType<NiNode>())
+        {
+            token.ThrowIfCancellationRequested();
+            if (node.Name.String.Length == 0) continue;
+            var world = NodeTransform(nif, node, token);
+            world.Append(attachment);
+            if (nodes.TryGetValue(node.Name.String, out var previous) && previous != world) nodes[node.Name.String] = null;
+            else nodes[node.Name.String] = world;
+        }
+    }
+
+    private static Matrix3D? EffectAttachment(NifFile nif, INiShape shape, IReadOnlyDictionary<string, Matrix3D?> nodes,
+        HashSet<string> messages, CancellationToken token, out NiAVObject? attachmentRoot)
+    {
+        const string namedNode = "NamedNode&";
+        attachmentRoot = null;
+        var visited = new HashSet<NiAVObject>();
+        for (var node = shape as NiAVObject; node is not null; node = nif.GetParentNode(node))
+        {
+            token.ThrowIfCancellationRequested();
+            if (!visited.Add(node)) throw new InvalidDataException("The effect attachment hierarchy contains a cycle.");
+            var data = node.ExtraDataList?.GetBlocks(nif).OfType<NiStringsExtraData>().FirstOrDefault(x => x.Name.String == "AttachT");
+            if (data is null) continue;
+            var instructions = data.Data?.Select(value => value.Content).ToArray() ?? [];
+            if (instructions.Length == 1 && instructions[0].StartsWith(namedNode, StringComparison.Ordinal))
+            {
+                var name = instructions[0][namedNode.Length..];
+                if (!nodes.TryGetValue(name, out var target) || target is null)
+                { messages.Add($"The effect needs attachment node {name}, which is not available on this item."); return null; }
+                var parent = nif.GetParentNode(node);
+                var result = parent is null ? Matrix3D.Identity : NodeTransform(nif, parent, token);
+                if (!result.HasInverse) throw new InvalidDataException("The effect attachment parent has zero scale.");
+                result.Invert();
+                result.Append(target.Value);
+                attachmentRoot = node;
+                return result;
+            }
+            messages.Add("This effect's attachment technique cannot yet be reproduced on the selected item.");
+            return null;
+        }
+        return Matrix3D.Identity;
+    }
+
+    private static Matrix3D NodeTransform(NifFile nif, NiAVObject node, CancellationToken token)
+    {
+        var result = Matrix3D.Identity;
+        var visited = new HashSet<NiAVObject>();
+        for (; node is not null; node = nif.GetParentNode(node))
+        {
+            token.ThrowIfCancellationRequested();
+            if (!visited.Add(node)) throw new InvalidDataException("The attachment node hierarchy contains a cycle.");
+            result.Append(Transform(node.Rotation, node.Translation, node.Scale));
+        }
+        return result;
     }
 
     private static Matrix3D AttachmentTransform(ModelPreviewPart part, ModelPreviewAppearance? appearance, IAssetProvider assets, CancellationToken token)
@@ -668,7 +777,7 @@ public static class ModelPreview
                 foreach (var weight in data.BoneList[bone].VertexWeights) yield return (weight.Index, bone, weight.Weight);
     }
 
-    private static bool ShapeVisible(NifFile nif, INiShape shape)
+    private static bool ShapeVisible(NifFile nif, INiShape shape, NiAVObject? attachmentRoot = null)
     {
         const uint hiddenFlag = 1;
         var visited = new HashSet<NiAVObject>();
@@ -676,6 +785,7 @@ public static class ModelPreview
         {
             if (!visited.Add(node)) throw new InvalidDataException("The model contains a cycle in its node hierarchy.");
             if ((node.Flags_ui & hiddenFlag) != 0) return false;
+            if (ReferenceEquals(node, attachmentRoot)) break;
         }
         return true;
     }

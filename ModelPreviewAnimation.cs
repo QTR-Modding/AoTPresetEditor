@@ -66,17 +66,20 @@ public sealed class ModelPreviewAnimation
         public Vector2 UVScale;
     }
 
-    public void AddPart(NifFile nif, IReadOnlyList<(INiShape Shape, int MeshIndex, Matrix4x4 InitialWorld)> bindings, ISet<string> messages)
+    public void AddPart(NifFile nif, IReadOnlyList<(INiShape Shape, int MeshIndex, Matrix4x4 InitialWorld)> bindings, ISet<string> messages,
+        IReadOnlyDictionary<INiShape, NiAVObject>? attachmentRoots = null)
     {
         var part = new Part { Nif = nif };
         foreach (var (shape, index, initialWorld) in bindings)
         {
             var ancestors = new List<NiAVObject>();
             var visited = new HashSet<NiAVObject>();
+            var boundary = attachmentRoots is not null && attachmentRoots.TryGetValue(shape, out var root) ? root : null;
             for (var node = shape as NiAVObject; node is not null; node = nif.GetParentNode(node))
             {
                 if (!visited.Add(node)) throw new InvalidDataException("The animation node hierarchy contains a cycle.");
                 ancestors.Add(node);
+                if (ReferenceEquals(node, boundary)) break;
             }
             var localWorld = Matrix4x4.Identity;
             foreach (var node in ancestors) localWorld *= LocalTransform(node);

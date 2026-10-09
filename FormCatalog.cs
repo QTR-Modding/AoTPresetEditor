@@ -31,6 +31,7 @@ public sealed record FormRow(string Name, string EditorId, string Type, string P
     public IReadOnlyList<string> SoundFiles { get; init; } = [];
     public IReadOnlyList<ModelPreviewSource> Models { get; init; } = [];
     public IReadOnlyList<TexturePreviewSource> Textures { get; init; } = [];
+    public IEffectShaderGetter? EffectShader { get; init; }
     public IComparable IdentifierSortKey => PresetPresentation.IdentifierSortKey(Identifier);
 }
 
@@ -165,7 +166,8 @@ public static class FormCatalog
                 $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter, boundObject)
             {
                 SoundFiles = record is ISoundDescriptorGetter sound ? sound.SoundFiles.Select(file => file.DataRelativePath.Path).ToArray() : [],
-                Textures = GetTextures(record)
+                Textures = GetTextures(record),
+                EffectShader = record is IEffectShaderGetter shader ? shader.DeepCopy() : null
             };
         }
     }
@@ -288,7 +290,7 @@ public static class FormCatalog
             forms[key] = form with
             {
                 Models = resolved, SoundFiles = sounds,
-                Assets = form.Type is "SoundDescriptor" or "SoundMarker" || models.Count != 0 || form.Textures.Count != 0 ? assets : null
+                Assets = form.Type is "SoundDescriptor" or "SoundMarker" || models.Count != 0 || form.Textures.Count != 0 || form.EffectShader is not null ? assets : null
             };
         }
     }

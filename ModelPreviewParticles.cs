@@ -73,7 +73,7 @@ public sealed class ModelPreviewParticleSystem
     }
 
     public static ModelPreviewParticleSystem? Create(NifFile nif, NiParticleSystem shape, Matrix4x4 initialWorld,
-        ISet<string> messages, CancellationToken token = default)
+        ISet<string> messages, CancellationToken token = default, NiAVObject? attachmentRoot = null)
     {
         try
         {
@@ -99,7 +99,8 @@ public sealed class ModelPreviewParticleSystem
                 throw new NotSupportedException("The particle color modifier needs three colors.");
             var result = new ModelPreviewParticleSystem(nif, shape, (NiPSysVolumeEmitter)emitters[0], initialWorld, shader);
             result.ValidateEmitterMotion();
-            result.animation.AddPart(nif, [(shape, 0, initialWorld)], messages);
+            result.animation.AddPart(nif, [(shape, 0, initialWorld)], messages,
+                attachmentRoot is null ? null : new Dictionary<INiShape, NiAVObject> { [shape] = attachmentRoot });
             result.BuildClips(token);
             if (result.clips.Count == 0) throw new NotSupportedException("The emitter has no supported birth-rate animation.");
             result.Clips = result.clips.Select(clip => clip.Description).ToArray();
@@ -224,16 +225,13 @@ public sealed class ModelPreviewParticleSystem
         BoundsRadius = Math.Max(BoundsRadius, localRadius);
         clips.Add(new(new(name, timing.Duration, timing.Cycle), timing, tracks, emission, maxLife));
         var animationIndex = animation.Clips.ToList().FindIndex(item => item.Name == name);
-        if (animationIndex >= 0)
+        for (var time = 0.0; time <= timing.Duration; time += SampleStep)
         {
-            for (var time = 0.0; time <= timing.Duration; time += SampleStep)
-            {
-                token.ThrowIfCancellationRequested();
-                var frame = animation.Evaluate(animationIndex, time).Single();
-                var radiusScale = new Vector3(frame.Transform.M11, frame.Transform.M12, frame.Transform.M13).Length();
-                BoundsRadius = Math.Max(BoundsRadius,
-                    Vector3.Distance(BoundsCenter, Vector3.Transform(BoundsCenter, frame.Transform)) + localRadius * radiusScale);
-            }
+            token.ThrowIfCancellationRequested();
+            var frame = animation.Evaluate(animationIndex >= 0 ? animationIndex : null, time).Single();
+            var radiusScale = new Vector3(frame.Transform.M11, frame.Transform.M12, frame.Transform.M13).Length();
+            BoundsRadius = Math.Max(BoundsRadius,
+                Vector3.Distance(BoundsCenter, Vector3.Transform(BoundsCenter, frame.Transform)) + localRadius * radiusScale);
         }
     }
 
@@ -272,15 +270,15 @@ public sealed class ModelPreviewParticleSystem
             _ => seconds % duration
         };
         var animationIndex = animation.Clips.ToList().FindIndex(item => item.Name == clipName);
-        var material = animationIndex < 0 ? null : animation.Evaluate(animationIndex, seconds).Single();
-        if (material?.Visible == false) return [];
-        var tint = material?.EmissiveColor ?? new Vector3(shader.BaseColor.R, shader.BaseColor.G, shader.BaseColor.B);
-        tint *= material?.EmissiveMultiplier ?? shader.BaseColorScale;
-        var alpha = material?.Alpha ?? shader.BaseColor.A;
-        var delta = material?.Transform ?? Matrix4x4.Identity;
+        var material = animation.Evaluate(animationIndex >= 0 ? animationIndex : null, seconds).Single();
+        if (!material.Visible) return [];
+        var tint = material.EmissiveColor ?? new Vector3(shader.BaseColor.R, shader.BaseColor.G, shader.BaseColor.B);
+        tint *= material.EmissiveMultiplier ?? shader.BaseColorScale;
+        var alpha = material.Alpha ?? shader.BaseColor.A;
+        var delta = material.Transform;
         var radiusScale = new Vector3(delta.M11, delta.M12, delta.M13).Length();
-        var uvScale = material?.UVScale ?? new Vector2(shader.UVScale.U, shader.UVScale.V);
-        var uvOffset = material?.UVOffset ?? new Vector2(shader.UVOffset.U, shader.UVOffset.V);
+        var uvScale = material.UVScale ?? new Vector2(shader.UVScale.U, shader.UVScale.V);
+        var uvOffset = material.UVOffset ?? new Vector2(shader.UVOffset.U, shader.UVOffset.V);
         var particles = new List<ModelPreviewParticle>();
         var physicalTime = clip.Timing.Cycle == CycleType.CYCLE_LOOP ? seconds : time;
         var total = IntegratedEmission(clip, physicalTime);

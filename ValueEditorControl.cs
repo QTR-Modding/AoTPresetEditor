@@ -24,6 +24,8 @@ public sealed class ValueEditorControl : UserControl
     private const string AllItemsPrecedence = "If another preset defines stages for a particular item, that item uses those stages instead.";
     private IReadOnlyList<FormRow>? sourceForms;
     private readonly Func<IEnumerable<FormRow>>? otherStageForms;
+    private readonly Func<IReadOnlyList<string>, IReadOnlyList<FormRow>>? effectPreviewTargets;
+    private FormRow? previewItem;
     private readonly string context;
     private readonly string title;
     private readonly PresetField? field;
@@ -40,6 +42,7 @@ public sealed class ValueEditorControl : UserControl
     private Expander? resolvedSection;
     private Button? independentCopy;
     private Action refreshSummary = () => { };
+    private Action refreshEffectPreview = () => { };
     private ListBox? entryList;
     private Action? revealEntry;
     private WrapPanel? valueOptions;
@@ -55,14 +58,16 @@ public sealed class ValueEditorControl : UserControl
         string context, string title, bool parametersAllowed = false, PresetField? field = null, string? blockName = null,
         IReadOnlyList<string>? issues = null, IReadOnlyList<FormGroupDefinition>? groups = null, bool behaviorMode = false, bool allowVariations = true,
         IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null,
-        Action<bool>? changeAppliesTo = null, Func<IEnumerable<FormRow>>? otherStageForms = null)
-        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms, showHeading, editSections, changeAppliesTo, otherStageForms) { }
+        Action<bool>? changeAppliesTo = null, Func<IEnumerable<FormRow>>? otherStageForms = null,
+        Func<IReadOnlyList<string>, IReadOnlyList<FormRow>>? effectPreviewTargets = null)
+        : this(document, forms, value, context, title, parametersAllowed, field, blockName, groups ?? [], null, null, behaviorMode, allowVariations, sourceForms, showHeading, editSections, changeAppliesTo, otherStageForms, effectPreviewTargets) { }
 
     private ValueEditorControl(PresetDocument document, IReadOnlyList<FormRow> forms, PresetValue value,
         string context, string title, bool parametersAllowed, PresetField? field, string? blockName,
         IReadOnlyList<FormGroupDefinition> groups, ValueEditorControl? parent, Action<PresetValue>? replace, bool behaviorMode = false, bool allowVariations = true,
         IReadOnlyList<FormRow>? sourceForms = null, bool showHeading = true, Action<string, bool>? editSections = null,
-        Action<bool>? changeAppliesTo = null, Func<IEnumerable<FormRow>>? otherStageForms = null)
+        Action<bool>? changeAppliesTo = null, Func<IEnumerable<FormRow>>? otherStageForms = null,
+        Func<IReadOnlyList<string>, IReadOnlyList<FormRow>>? effectPreviewTargets = null)
     {
         this.parent = parent;
         root = parent?.root ?? this;
@@ -72,6 +77,7 @@ public sealed class ValueEditorControl : UserControl
         this.changeAppliesTo = parent is null ? changeAppliesTo : null;
         this.sourceForms = parent?.sourceForms ?? sourceForms;
         this.otherStageForms = otherStageForms;
+        this.effectPreviewTargets = effectPreviewTargets;
         blockId = parent is null ? document.Blocks.FirstOrDefault(block => ReferenceEquals(block.Value, value))?.Id : root.blockId;
         this.document = parent is null ? document.Clone() : root.document;
         this.forms = forms; this.groups = groups; this.context = context; this.title = title;
@@ -114,7 +120,10 @@ public sealed class ValueEditorControl : UserControl
         foreach (var child in children) child.Editor.Capture();
     }
 
-    public void UpdateSourceForms(IReadOnlyList<FormRow>? sourceForms) => root.sourceForms = sourceForms;
+    public void UpdateSourceForms(IReadOnlyList<FormRow>? sourceForms)
+    {
+        root.sourceForms = sourceForms; root.RefreshEffectPreviews();
+    }
 
     public void UpdatePresentation(PresetPresentation updated, PresetValue? effectiveRoot = null)
     {
@@ -129,6 +138,7 @@ public sealed class ValueEditorControl : UserControl
             if (effective is not null) DescribeResolved(effective, context, resolvedDetails);
         }
         refreshSummary();
+        refreshEffectPreview();
         foreach (var child in children) child.Editor.UpdatePresentation(updated, child.Resolve(effective));
     }
 
@@ -281,7 +291,7 @@ public sealed class ValueEditorControl : UserControl
 
     private void Render()
     {
-        refreshing = true; capture = () => { }; refreshSummary = () => { }; children.Clear(); fields.Clear(); content.Children.Clear(); resolvedPreview = null; resolvedDetails = null; resolvedSection = null; independentCopy = null; entryList = null; revealEntry = null; valueOptions = null;
+        refreshing = true; capture = () => { }; refreshSummary = () => { }; refreshEffectPreview = () => { }; children.Clear(); fields.Clear(); content.Children.Clear(); resolvedPreview = null; resolvedDetails = null; resolvedSection = null; independentCopy = null; entryList = null; revealEntry = null; valueOptions = null;
         if (parametersAllowed && name is not null && !behaviorMode)
         {
             var parameters = TemplateCall.FindParameters(Value, Document);
@@ -948,6 +958,8 @@ public sealed class ValueEditorControl : UserControl
                 texturePreview.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
             }
             UpdateTexturePreview(); entry.TextChanged += (_, _) => UpdateTexturePreview(); choices.Children.Add(texturePreview);
+            if (field.FormTypes is { Length: 1 } types && types[0] is "ArtObject" or "EffectShader")
+                AddEffectPreview(choices, () => presentation.ResolveForm(entry.Text));
         }
         if (parent == root) root.AddAllItemsChoice(choices, field);
         if (field?.AllowsGroups == true) choices.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group => entry.Text = group.Name)));
@@ -995,6 +1007,109 @@ public sealed class ValueEditorControl : UserControl
             Grid.SetColumnSpan(entry, inline ? 1 : 2);
         };
         return row;
+    }
+
+    private void AddEffectPreview(Panel choices, Func<FormRow?> selectedEffect)
+    {
+        var preview = EditorControls.Button("Preview on item...", () =>
+        {
+            root.Capture();
+            var effect = selectedEffect();
+            var targets = PreviewTargets().Where(ModelPreviewWindow.CanPreview).ToArray();
+            if (effect is null || targets.Length == 0) return;
+            var target = targets.Length == 1 ? targets[0] : ChoosePreviewItem(targets);
+            if (target is not null) new ModelPreviewWindow(target, effect) { Owner = Window.GetWindow(this) }.ShowDialog();
+        });
+        var choose = EditorControls.Button("Choose preview item...", () =>
+        {
+            var candidates = forms.Where(form => new FormSelection(Category: Document.Category).Matches(form) &&
+                ModelPreviewWindow.CanPreview(form)).ToArray();
+            if (ChoosePreviewItem(candidates) is { } item) { root.previewItem = item; root.RefreshEffectPreviews(); }
+        });
+        choices.Children.Add(choose); choices.Children.Add(preview);
+        ToolTipService.SetShowOnDisabled(preview, true);
+        refreshEffectPreview = () =>
+        {
+            var targets = PreviewTargets();
+            var effect = selectedEffect();
+            preview.IsEnabled = targets.Any(ModelPreviewWindow.CanPreview) && ModelPreviewWindow.CanPreviewEffect(effect);
+            preview.ToolTip = targets.Count == 0 ? "Select an item to preview this effect."
+                : !targets.Any(ModelPreviewWindow.CanPreview) ? "The selected item has no model to preview."
+                : effect is null ? "Select an effect to preview."
+                : effect.Type == "ArtObject" && !ModelPreviewWindow.CanPreview(effect) ? "The selected art object has no model to preview."
+                : !ModelPreviewWindow.CanPreviewEffect(effect) ? "The selected effect shader has no preview data."
+                : targets.Count > 1 ? "Choose which affected item to preview this effect on."
+                : "Preview this effect on " + presentation.FormLabel(targets[0].Identifier) + ".";
+            choose.Visibility = CanChoosePreviewItem() && EffectTargets().Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        };
+        refreshEffectPreview();
+    }
+
+    private FormRow? ChoosePreviewItem(IReadOnlyList<FormRow> candidates)
+    {
+        var picker = new FormPickerWindow(candidates, purpose: "Choose an item to preview this effect on") { Owner = Window.GetWindow(this) };
+        return picker.ShowDialog() == true ? picker.SelectedForms.FirstOrDefault() : null;
+    }
+
+    private IReadOnlyList<FormRow> PreviewTargets()
+    {
+        if (root.previewItem is { } selected && (Document.Kind != PresetKind.Default || (root.sourceForms?.Count ?? 0) > 0 ||
+            !forms.Contains(selected) || !new FormSelection(Category: Document.Category).Matches(selected) || !ModelPreviewWindow.CanPreview(selected)))
+            root.previewItem = null;
+        var targets = EffectTargets();
+        if (targets.Count > 0) return targets;
+        return CanChoosePreviewItem() && root.previewItem is { } item ? [item] : [];
+    }
+
+    private bool CanChoosePreviewItem()
+    {
+        if (Document.Kind != PresetKind.Default || (root.sourceForms?.Count ?? 0) > 0) return false;
+        for (var ancestor = this; ancestor is not null; ancestor = ancestor.parent)
+            if (PresetSchema.NormalizeContext(ancestor.context) == "stage" &&
+                EffectPreviewTargets.StageItem(Document, ancestor.Value) is { } resolved && !resolved.IsNull &&
+                (resolved.Kind != ValueKind.Scalar || !string.IsNullOrWhiteSpace(resolved.Text))) return false;
+        if (root.effectPreviewTargets is not null && root.field is { } variable)
+            return Document.Blocks.Where(block => block.Kind == BlockKind.Rule &&
+                    BehaviorFamily.Find(Document, block.Id)?.Parameters.Contains(variable.Key) == true)
+                .Any(row => EffectPathsFromRoot().Any(path => EffectPreviewTargets.CanChooseForParameter(Document, row.Id, variable.Key, path)));
+        return true;
+    }
+
+    private IEnumerable<IReadOnlyList<string>> EffectPathsFromRoot()
+    {
+        var path = new List<string>();
+        if (FindPath(root.Value, Value, path)) return [path];
+        if (root.field?.Kind == FieldKind.Form && root.EditsPath([], this)) return [[]];
+        return EffectPreviewTargets.Paths(Document, root.Value, root.context).Where(candidate => root.EditsPath(candidate, this));
+    }
+
+    private IReadOnlyList<FormRow> EffectTargets()
+    {
+        if (root.effectPreviewTargets is { } resolve)
+            return EffectPathsFromRoot().SelectMany(resolve).Distinct().ToArray();
+        var sources = root.sourceForms ?? [];
+        for (var ancestor = this; ancestor is not null; ancestor = ancestor.parent)
+        {
+            if (PresetSchema.NormalizeContext(ancestor.context) == "stage")
+            {
+                if (sources.Count == 0)
+                    for (var rule = ancestor.parent; rule is not null; rule = rule.parent)
+                        if (PresetSchema.NormalizeContext(rule.context) == "rule")
+                        { sources = EffectPreviewTargets.ForPath(Document, presentation, rule.Value, [], forms); break; }
+                return EffectPreviewTargets.StageForms(Document, presentation, ancestor.Value, sources);
+            }
+            if (PresetSchema.NormalizeContext(ancestor.context) != "rule") continue;
+            var matching = EffectPreviewTargets.Paths(Document, ancestor.Value, ancestor.context)
+                .Where(candidate => ancestor.EditsPath(candidate, this)).ToArray();
+            return matching.SelectMany(candidate => EffectPreviewTargets.ForPath(Document, presentation, ancestor.Value, candidate, forms)).Distinct().ToArray();
+        }
+        return sources;
+    }
+
+    private void RefreshEffectPreviews()
+    {
+        refreshEffectPreview();
+        foreach (var child in children) child.Editor.RefreshEffectPreviews();
     }
 
     private FormSelection FormSelection()

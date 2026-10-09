@@ -227,7 +227,8 @@ public sealed class BehaviorEditorControl : UserControl
         commonEditor = new ValueEditorControl(document, forms, definition.Value, definition.Context,
             "Settings", parametersAllowed: family?.IsTemplate == true,
             groups: groups, behaviorMode: true, allowVariations: family is not null, sourceForms: CommonSources(), showHeading: false,
-            editSections: family is null ? null : ChangeSection, changeAppliesTo: family is null ? null : ChangeAppliesTo);
+            editSections: family is null ? null : ChangeSection, changeAppliesTo: family is null ? null : ChangeAppliesTo,
+            effectPreviewTargets: CommonEffectTargets);
         document = commonEditor.Document;
         commonEditor.Changed += (_, _) => { if (!refreshing) NotifyChanged(); };
         commonEditor.VariableChangeRequested += ChangeVariable;
@@ -531,7 +532,8 @@ public sealed class BehaviorEditorControl : UserControl
             ? ValueEditorControl.NewValue(column.Field.ChildContext, column.Field) : argument;
         cellEditor = new ValueEditorControl(document, forms, value, column.Field?.ChildContext ?? "Value",
             column.Label, field: column.Field, groups: groups, behaviorMode: true, allowVariations: false, sourceForms: Sources(row.Id), showHeading: false,
-            otherStageForms: () => OtherStageForms(row.Id, column.Parameter));
+            otherStageForms: () => OtherStageForms(row.Id, column.Parameter),
+            effectPreviewTargets: path => EffectPreviewTargets.ForParameter(document, presentation, row.Id, column.Parameter, path, forms));
         cellEditor.Changed += (_, _) => { cellDirty = true; NotifyChanged(); RefreshSummaries(); };
         var panel = new StackPanel();
         var heading = new StackPanel { Orientation = Orientation.Horizontal };
@@ -561,6 +563,13 @@ public sealed class BehaviorEditorControl : UserControl
 
     private IReadOnlyList<FormRow> Sources(string rowId) => ValueEditorControl.RuleSourceForms(document, presentation,
         document.Blocks.First(block => block.Id == rowId).Value);
+
+    private IReadOnlyList<FormRow> CommonEffectTargets(IReadOnlyList<string> path)
+    {
+        var family = BehaviorFamily.Find(document, RuleId);
+        return (family is { Rows.Count: > 0 } ? family.Rows : [family?.Definition ?? Rule()])
+            .SelectMany(row => EffectPreviewTargets.ForPath(document, presentation, row.Value, path, forms)).Distinct().ToArray();
+    }
     private void UpdateActions()
     {
         var selected = SelectedRows(); var column = SelectedColumn;

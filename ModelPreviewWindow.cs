@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -18,7 +19,9 @@ public sealed class ModelPreviewWindow : Window
 {
     private const int AnimationFramesPerSecond = 30;
     private const float CameraFitPadding = 1.1f;
+    private const int EffectSurfaceDepthBias = -1;
     private readonly FormRow form;
+    private readonly FormRow? appliedEffect;
     private readonly Viewport3DX view = new()
     {
         BackgroundColor = Color.FromRgb(32, 35, 40), IsInertiaEnabled = false,
@@ -27,6 +30,7 @@ public sealed class ModelPreviewWindow : Window
     };
     private readonly TextBlock status = new() { Text = "Loading model...", TextWrapping = TextWrapping.Wrap };
     private readonly ComboBox models = new() { DisplayMemberPath = nameof(ModelPreviewSource.Label) };
+    private readonly ComboBox effectModels = new() { DisplayMemberPath = nameof(ModelPreviewSource.Label) };
     private readonly Button reset = new() { Content = "Reset view", IsEnabled = false };
     private readonly CheckBox geometry = new() { Content = "Show geometry", IsEnabled = false,
         VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0),
@@ -42,10 +46,19 @@ public sealed class ModelPreviewWindow : Window
     private readonly List<ShownParticle> particles = [];
     private DefaultEffectsManager? effects;
     private ModelPreviewResult? model;
+    private ShaderDisplay? shader;
     private CancellationTokenSource? loading;
 
     private sealed record ShownMesh(ModelPreviewMesh Source, MeshGeometryModel3D Visual, PhongMaterial Material);
     private sealed record ShownParticle(ModelPreviewParticleMesh Source, BillboardTextModel3D Visual, ModelPreviewParticleBillboards Geometry);
+    private sealed record ShownShaderMesh(EffectShaderOverlay Source, MeshGeometryModel3D Visual);
+    private sealed class ShaderDisplay(EffectShaderPreview source)
+    {
+        public readonly EffectShaderPreview Source = source;
+        public readonly List<ShownShaderMesh> Meshes = [];
+        public ModelPreviewParticleBillboards? Geometry;
+        public BillboardTextModel3D? Particles;
+    }
     private sealed class PlaybackState
     {
         public readonly Stopwatch Clock = new();
@@ -53,11 +66,14 @@ public sealed class ModelPreviewWindow : Window
         public bool UpdatingSlider;
     }
 
-    public ModelPreviewWindow(FormRow form)
+    public ModelPreviewWindow(FormRow form, FormRow? appliedEffect = null)
     {
         this.form = form;
+        this.appliedEffect = appliedEffect;
         var name = form.Name.Length != 0 ? form.Name : form.EditorId.Length != 0 ? form.EditorId : form.Identifier;
-        Title = "Model preview - " + name;
+        var effectName = appliedEffect is null ? "" : appliedEffect.Name.Length != 0 ? appliedEffect.Name
+            : appliedEffect.EditorId.Length != 0 ? appliedEffect.EditorId : appliedEffect.Identifier;
+        Title = appliedEffect is null ? "Model preview - " + name : "Effect preview - " + effectName + " on " + name;
         Width = 900; Height = 700; MinWidth = 340; MinHeight = 280;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(StyleProperty, typeof(Window));
@@ -71,9 +87,15 @@ public sealed class ModelPreviewWindow : Window
         models.ToolTip = "Choose which model to preview.";
         models.Margin = new Thickness(0, 0, 0, 8);
         models.Visibility = form.Models.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
-        layout.Children.Add(models);
+        var selectors = new StackPanel(); selectors.Children.Add(models);
+        effectModels.ItemsSource = appliedEffect?.Type == "ArtObject" ? appliedEffect.Models : null;
+        effectModels.SelectedIndex = 0; effectModels.Margin = new Thickness(0, 0, 0, 8);
+        effectModels.Visibility = appliedEffect?.Type == "ArtObject" && appliedEffect.Models.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties.SetName(effectModels, "Effect model"); effectModels.ToolTip = "Choose which art-object model to preview on the item.";
+        selectors.Children.Add(effectModels); layout.Children.Add(selectors);
         view.InputBindings.Add(new MouseBinding(ViewportCommands.Rotate, new MouseGesture(MouseAction.LeftClick)));
         view.RenderExceptionOccurred += (_, args) => { args.Handled = true; PreviewFailed(args.Exception); };
+        view.CameraChanged += (_, _) => UpdateShader(playback.StartPosition + playback.Clock.Elapsed.TotalSeconds);
         Grid.SetRow(view, 1); layout.Children.Add(view);
         AutomationProperties.SetName(view, "Model. Drag to rotate and scroll to zoom.");
         BuildAnimationControls();
@@ -98,7 +120,8 @@ public sealed class ModelPreviewWindow : Window
         Content = layout;
         Loaded += LoadModel;
         models.SelectionChanged += (_, _) => { if (IsLoaded) LoadModel(this, new RoutedEventArgs()); };
-        Closed += (_, _) => { loading?.Cancel(); StopPlayback(); model = null; meshes.Clear(); particles.Clear(); view.Dispose(); effects?.Dispose(); };
+        effectModels.SelectionChanged += (_, _) => { if (IsLoaded) LoadModel(this, new RoutedEventArgs()); };
+        Closed += (_, _) => { loading?.Cancel(); StopPlayback(); model = null; shader = null; meshes.Clear(); particles.Clear(); view.Dispose(); effects?.Dispose(); };
     }
 
     private void BuildAnimationControls()
@@ -118,11 +141,7 @@ public sealed class ModelPreviewWindow : Window
         play.Click += (_, _) =>
         {
             if (playback.Clock.IsRunning) StopPlayback();
-            else
-            {
-                if (clips.SelectedItem is ModelPreviewAnimationClip { Cycle: CycleType.CYCLE_CLAMP } && playback.StartPosition >= position.Maximum) playback.StartPosition = 0;
-                playback.Clock.Restart(); timer.Start(); play.Content = "Pause";
-            }
+            else StartPlayback();
         };
         clips.SelectionChanged += (_, _) =>
         {
@@ -160,32 +179,87 @@ public sealed class ModelPreviewWindow : Window
         };
     }
 
+    private void StartPlayback()
+    {
+        if (!play.IsEnabled || clips.SelectedItem is not ModelPreviewAnimationClip) return;
+        if (clips.SelectedItem is ModelPreviewAnimationClip { Cycle: CycleType.CYCLE_CLAMP } && playback.StartPosition >= position.Maximum) playback.StartPosition = 0;
+        playback.Clock.Restart(); timer.Start(); play.Content = "Pause";
+    }
+
     private async void LoadModel(object sender, RoutedEventArgs args)
     {
         Loaded -= LoadModel; loading?.Cancel(); StopPlayback();
         using var request = new CancellationTokenSource(); loading = request;
-        model = null; meshes.Clear(); particles.Clear(); view.Items.Clear(); animationControls.Visibility = Visibility.Collapsed;
+        model = null; shader = null; meshes.Clear(); particles.Clear(); view.Items.Clear(); animationControls.Visibility = Visibility.Collapsed;
         clips.ItemsSource = null; reset.IsEnabled = geometry.IsEnabled = false; status.Text = "Loading model...";
         try
         {
             if (models.SelectedItem is not ModelPreviewSource source || form.Assets is null) return;
-            var result = await Task.Run(() => ModelPreview.Load(source, form.Assets, request.Token), request.Token);
+            var artSource = effectModels.SelectedItem as ModelPreviewSource;
+            var result = await Task.Run(() => appliedEffect?.Type == "ArtObject"
+                ? ModelPreview.Load(source, form.Assets, artSource
+                    ?? throw new InvalidDataException("The art object has no model."), appliedEffect.Assets
+                    ?? throw new InvalidDataException("The art object's assets are unavailable."), request.Token)
+                : ModelPreview.Load(source, form.Assets, request.Token), request.Token);
+            var shaderPreview = appliedEffect?.Type == "EffectShader" ? await Task.Run(() => EffectShaderPreview.Load(
+                appliedEffect.EffectShader ?? throw new InvalidDataException("The effect shader is unavailable."), result,
+                appliedEffect.Assets ?? throw new InvalidDataException("The shader's assets are unavailable."), request.Token), request.Token) : null;
             if (request.IsCancellationRequested) return;
             effects ??= new DefaultEffectsManager(); view.EffectsManager = effects;
             model = result; ShowModel(); status.Text = result.Details;
+            if (shaderPreview is not null) { ShowShader(shaderPreview); status.Text += "\n" + shaderPreview.Details; }
             reset.IsEnabled = geometry.IsEnabled = true;
-            var animations = result.Clips;
+            var animations = shaderPreview is null ? result.Clips : [new ModelPreviewAnimationClip("Effect", shaderPreview.Duration, shaderPreview.Cycle)];
             if (animations.Count > 0)
             {
                 animationControls.Visibility = Visibility.Visible;
                 clips.Visibility = animations.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
-                clips.ItemsSource = animations; clips.SelectedIndex = 0;
+                clips.ItemsSource = animations;
+                var looping = animations.ToList().FindIndex(clip => clip.Cycle == CycleType.CYCLE_LOOP);
+                clips.SelectedIndex = appliedEffect is not null || form.Type == "ArtObject" ? Math.Max(0, looping) : 0;
             }
             ResetView();
+            if (appliedEffect is not null || form.Type == "ArtObject") StartPlayback();
         }
         catch (OperationCanceledException) { }
         catch (Exception error) { if (!request.IsCancellationRequested) PreviewFailed(error); }
         finally { if (ReferenceEquals(loading, request)) loading = null; }
+    }
+
+    private void ShowShader(EffectShaderPreview preview)
+    {
+        shader = new ShaderDisplay(preview);
+        foreach (var overlay in preview.Overlays)
+        {
+            var target = meshes[overlay.TargetMeshIndex];
+            var visual = new MeshGeometryModel3D
+            {
+                Geometry = overlay.Geometry, Material = new HelixToolkit.Wpf.SharpDX.DiffuseMaterial(overlay.Material), IsTransparent = true,
+                CullMode = target.Source.DoubleSided ? CullMode.None : CullMode.Back, DepthBias = EffectSurfaceDepthBias,
+                Visibility = target.Visual.Visibility
+            };
+            shader.Meshes.Add(new(overlay, visual)); view.Items.Add(visual);
+        }
+        if (preview.ParticleTexture is { } texture)
+        {
+            shader.Geometry = new ModelPreviewParticleBillboards(texture);
+            shader.Particles = new BillboardTextModel3D { Geometry = shader.Geometry, FixedSize = false, IsTransparent = true };
+            view.Items.Add(shader.Particles);
+        }
+        ShowGeometry();
+    }
+
+    private void UpdateShader(double seconds)
+    {
+        if (shader is null || view.Camera is null) return;
+        shader.Source.Evaluate(seconds, view.Camera.Position.ToVector3());
+        foreach (var overlay in shader.Meshes)
+        {
+            var target = meshes[overlay.Source.TargetMeshIndex].Visual;
+            overlay.Visual.Transform = target.Transform;
+            overlay.Visual.Visibility = geometry.IsChecked == true ? Visibility.Hidden : target.Visibility;
+        }
+        shader.Geometry?.Update(shader.Source.EvaluateParticles(seconds));
     }
 
     private void PreviewFailed(Exception error)
@@ -232,17 +306,23 @@ public sealed class ModelPreviewWindow : Window
             mesh.Visual.CullMode = plain || mesh.Source.DoubleSided ? CullMode.None : CullMode.Back;
         }
         foreach (var particle in particles) particle.Visual.Visibility = plain ? Visibility.Hidden : Visibility.Visible;
+        if (shader is not null)
+        {
+            foreach (var overlay in shader.Meshes) overlay.Visual.Visibility = plain ? Visibility.Hidden : meshes[overlay.Source.TargetMeshIndex].Visual.Visibility;
+            if (shader.Particles is not null) shader.Particles.Visibility = plain ? Visibility.Hidden : Visibility.Visible;
+        }
     }
 
     private void ApplyAnimation(double seconds)
     {
         if (clips.SelectedItem is not ModelPreviewAnimationClip clip) return;
-        if (model?.Animation is { } animation)
+        if (shader is null && model?.Animation is { } animation)
         {
             var index = animation.Clips.ToList().FindIndex(candidate => candidate.Name == clip.Name);
             ApplyMeshAnimation(animation, index >= 0 ? index : null, seconds);
         }
         foreach (var particle in particles) particle.Geometry.Update(particle.Source.System.Evaluate(clip.Name, seconds));
+        UpdateShader(seconds);
         time.Text = $"{position.Value:0.0} / {position.Maximum:0.0} s";
     }
 
@@ -316,22 +396,37 @@ public sealed class ModelPreviewWindow : Window
             if (currentPose)
             {
                 if (particle.Visual.Visibility != Visibility.Visible) continue;
-                foreach (var image in particle.Geometry.ImageInfos)
-                {
-                    var point = image.Position; var reach = Math.Sqrt(image.Width * image.Width + image.Height * image.Height) / 2;
-                    bounds.Union(new Rect3D(point.X - reach, point.Y - reach, point.Z - reach, reach * 2, reach * 2, reach * 2));
-                }
+                AddBillboardBounds(particle.Geometry, ref bounds);
             }
-            else
+            if (!currentPose || appliedEffect is not null)
             {
                 var point = particle.Source.System.BoundsCenter; var reach = particle.Source.System.BoundsRadius;
                 bounds.Union(new Rect3D(point.X - reach, point.Y - reach, point.Z - reach, reach * 2, reach * 2, reach * 2));
             }
         }
+        if (shader?.Geometry is { } billboards && shader.Particles?.Visibility == Visibility.Visible)
+        {
+            AddBillboardBounds(billboards, ref bounds);
+            var box = shader.Source.Bounds;
+            bounds.Union(new Rect3D(box.Minimum.X, box.Minimum.Y, box.Minimum.Z,
+                box.Maximum.X - box.Minimum.X, box.Maximum.Y - box.Minimum.Y, box.Maximum.Z - box.Minimum.Z));
+        }
         return bounds;
     }
 
+    private static void AddBillboardBounds(ModelPreviewParticleBillboards geometry, ref Rect3D bounds)
+    {
+        foreach (var image in geometry.ImageInfos)
+        {
+            var point = image.Position; var reach = Math.Sqrt(image.Width * image.Width + image.Height * image.Height) / 2;
+            bounds.Union(new Rect3D(point.X - reach, point.Y - reach, point.Z - reach, reach * 2, reach * 2, reach * 2));
+        }
+    }
+
     public static bool CanPreview(FormRow? form) => form is { Assets: not null, Models.Count: > 0 };
+
+    public static bool CanPreviewEffect(FormRow? effect) => effect is { Assets: not null } &&
+        (effect.Type == "ArtObject" && effect.Models.Count > 0 || effect.Type == "EffectShader" && effect.EffectShader is not null);
 
     public static Button CreateButton(Func<FormRow?> currentForm)
     {

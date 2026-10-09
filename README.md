@@ -63,6 +63,10 @@ The preview uses the active profile's winning models and textures, including sup
 
 Models with supported animation offer **Play/Pause**, a position slider, and a clip selector when several animations are available. These include opening containers and art-object movement, fades, and moving textures. Supported particle emitters can also play. Lighting and effects can differ from Skyrim; unsupported animation, particle physics, and material features are identified in the preview.
 
+Art objects and effect shaders offer **Preview on item...** in their preset fields. The preview uses the stage item when specified, otherwise an affected item. When several items apply, choose one for the preview. Behaviors covering a whole item type offer **Choose preview item...**; this selection is only for viewing and does not change the preset. The preview button stays disabled until an item with a model is selected.
+
+Applied effects and standalone art objects start playing automatically. Art objects play supported model animation and particles alongside the item; effects that require missing attachment nodes explain that limitation. Effect shaders show animated surface colors, textures, fades, and particles. These are offline approximations: Skyrim's blending, per-pixel rim lighting, and dissolve effects are not reproduced exactly. The preview reports unsupported features.
+
 **Preview textures...** shows the source images used by effect shaders and texture sets. Cube maps appear as six faces in a cross. These images help identify the selected effect; they do not play the effect as it appears in Skyrim.
 
 ## Use form groups
