@@ -7,6 +7,7 @@ using Mutagen.Bethesda.Environments;
 using Mutagen.Bethesda.Assets.DI;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Aspects;
+using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
@@ -26,8 +27,12 @@ public sealed record FormRow(string Name, string EditorId, string Type, string P
 {
     public IAssetProvider? Assets { get; init; }
     public IReadOnlyList<string> SoundFiles { get; init; } = [];
+    public string ModelPath { get; init; } = "";
+    public IReadOnlyList<ModelTextureReplacement> ModelAlternateTextures { get; init; } = [];
     public IComparable IdentifierSortKey => PresetPresentation.IdentifierSortKey(Identifier);
 }
+
+public sealed record ModelTextureReplacement(string Name, int Index, FormKey TextureSet, string? DiffusePath = null);
 
 public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, string? Category = null, bool TriggerOnly = false,
     bool BoundObjectOnly = false, IReadOnlyCollection<FormRow>? ExcludedForms = null, bool RequiresEditorId = false,
@@ -101,9 +106,10 @@ public static class FormCatalog
         }
 
         AssignRuntimeIds(forms, environment.LoadOrder.ListedOrder.Select(listing => listing.Mod!));
+        ResolveModelTextures(forms, environment.LinkCache);
         var assets = GameAssets.FromLoadOrder(dataFolder, environment.LoadOrder.ListedOrder.Select(listing => listing.ModKey));
         return new CatalogResult(forms.Values
-            .Select(form => form.Type == "SoundDescriptor" ? form with { Assets = assets } : form)
+            .Select(form => form.Type == "SoundDescriptor" || form.ModelPath.Length != 0 ? form with { Assets = assets } : form)
             .OrderBy(form => form.Type, StringComparer.OrdinalIgnoreCase)
             .ThenBy(form => form.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(form => form.EditorId, StringComparer.OrdinalIgnoreCase)
@@ -149,11 +155,40 @@ public static class FormCatalog
             };
             string origin = record.FormKey.ModKey.FileName.String;
             var boundObject = IsBoundObject(record);
+            var model = GetItemModel(record);
             forms[record.FormKey] = new FormRow(name, record.EditorID ?? "", record.Registration.Name, origin, winner,
                 $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter, boundObject)
             {
-                SoundFiles = record is ISoundDescriptorGetter sound ? sound.SoundFiles.Select(file => file.DataRelativePath.Path).ToArray() : []
+                SoundFiles = record is ISoundDescriptorGetter sound ? sound.SoundFiles.Select(file => file.DataRelativePath.Path).ToArray() : [],
+                ModelPath = model?.File.DataRelativePath.Path ?? "",
+                ModelAlternateTextures = model?.AlternateTextures?.Select(texture =>
+                    new ModelTextureReplacement(texture.Name, texture.Index, texture.NewTexture.FormKey)).ToArray() ?? []
             };
+        }
+    }
+
+    private static IModelGetter? GetItemModel(IMajorRecordGetter record)
+    {
+        var model = record switch
+        {
+            IArmorGetter armor => armor.WorldModel?.Male?.Model is { File.IsNull: false } male
+                ? male : armor.WorldModel?.Female?.Model,
+            IModeledGetter modeled when record is IIngestibleGetter or IIngredientGetter or IWeaponGetter or IScrollGetter or
+                IBookGetter or ISoulGemGetter or IMiscItemGetter or IAmmunitionGetter or IKeyGetter or IAlchemicalApparatusGetter => modeled.Model,
+            _ => null
+        };
+        return model?.File.IsNull == false ? model : null;
+    }
+
+    private static void ResolveModelTextures(Dictionary<FormKey, FormRow> forms, ILinkCache cache)
+    {
+        foreach (var (key, form) in forms.Where(pair => pair.Value.ModelAlternateTextures.Count != 0).ToArray())
+        {
+            var replacements = form.ModelAlternateTextures.Select(replacement =>
+                cache.TryResolve<ITextureSetGetter>(replacement.TextureSet, out var texture) && !texture.IsDeleted
+                    ? replacement with { DiffusePath = texture.Diffuse?.DataRelativePath.Path ?? "" }
+                    : replacement).ToArray();
+            forms[key] = form with { ModelAlternateTextures = replacements };
         }
     }
 

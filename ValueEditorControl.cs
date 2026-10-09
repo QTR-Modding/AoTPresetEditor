@@ -894,6 +894,17 @@ public sealed class ValueEditorControl : UserControl
             var picker = new FormPickerWindow(forms, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
             if (picker.ShowDialog() == true && picker.SelectedForms.FirstOrDefault() is { } form) entry.Text = form.Identifier;
         }));
+        if (field?.Kind is FieldKind.Form or FieldKind.FormList)
+        {
+            var modelPreview = ModelPreviewWindow.CreateButton(() => presentation.ResolveForm(entry.Text));
+            void UpdateModelPreview()
+            {
+                var available = ModelPreviewWindow.CanPreview(presentation.ResolveForm(entry.Text));
+                modelPreview.IsEnabled = available;
+                modelPreview.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
+            }
+            UpdateModelPreview(); entry.TextChanged += (_, _) => UpdateModelPreview(); choices.Children.Add(modelPreview);
+        }
         if (parent == root) root.AddAllItemsChoice(choices, field);
         if (field?.AllowsGroups == true) choices.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group => entry.Text = group.Name)));
         content.Children.Add(choices.Children.Count == 0 ? entry : FormEntryRow(entry, choices));

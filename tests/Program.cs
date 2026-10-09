@@ -49,6 +49,7 @@ internal static class Program
             Check("Form applicability", FormSelectionChecks.Run);
             Check("Tint picker and color encoding", TintPickerChecks.Run);
             Check("Sound playback controls and asset selection", SoundPreviewChecks.Run);
+            Check("Item model metadata and preview controls", ModelPreviewChecks.Run);
             Check("Preset and companion export rollback", PresetExportChecks.Run);
             Check("Mixed behavior projects and export rollback", PresetProjectChecks.Run);
             Check("Folder and multiple preset opening", PresetOpenChecks.Run);

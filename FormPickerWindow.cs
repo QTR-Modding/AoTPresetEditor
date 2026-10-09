@@ -25,6 +25,7 @@ public sealed class FormPickerWindow : Window
     private readonly TextBlock selection = new() { TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly DataGrid results = new();
     private readonly SoundPreview soundPreview = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 0) };
+    private readonly Button modelPreview;
     private readonly Button choose = new() { Content = "Choose", IsDefault = true, Visibility = Visibility.Collapsed };
     private readonly Button clear = new() { Content = "Clear selection", Visibility = Visibility.Collapsed };
     private readonly HashSet<FormRow> selected = [];
@@ -49,6 +50,8 @@ public sealed class FormPickerWindow : Window
         EditorControls.FitToOwner(this);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(StyleProperty, typeof(Window));
+        modelPreview = ModelPreviewWindow.CreateButton(() => results.SelectedItem as FormRow);
+        modelPreview.Visibility = this.forms.Any(ModelPreviewWindow.CanPreview) ? Visibility.Visible : Visibility.Collapsed;
         Content = BuildContent();
 
         types.ItemsSource = new[] { AllTypes }.Concat(this.forms.Select(form => form.Type)
@@ -78,7 +81,11 @@ public sealed class FormPickerWindow : Window
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(soundPreview, 3); layout.Children.Add(soundPreview);
+        var previews = new StackPanel();
+        modelPreview.HorizontalAlignment = HorizontalAlignment.Left;
+        modelPreview.Margin = new Thickness(0, 8, 0, 0);
+        previews.Children.Add(modelPreview); previews.Children.Add(soundPreview);
+        Grid.SetRow(previews, 3); layout.Children.Add(previews);
 
         var header = new TextBlock { Text = purpose, FontSize = 16, FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(0, 0, 0, 8), TextWrapping = TextWrapping.Wrap,
@@ -242,6 +249,7 @@ public sealed class FormPickerWindow : Window
     private void UpdateSelection()
     {
         var current = results.SelectedItem as FormRow;
+        modelPreview.IsEnabled = ModelPreviewWindow.CanPreview(current);
         soundPreview.Visibility = current?.Type == "SoundDescriptor" ? Visibility.Visible : Visibility.Collapsed;
         soundPreview.SetSamples(current?.Assets, current?.SoundFiles ?? []);
         choose.IsEnabled = selected.Count > 0;

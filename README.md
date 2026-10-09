@@ -55,6 +55,12 @@ Transformations and time modifiers need stages, which can come from another pres
 
 The tint picker writes quoted `#RRGGBB` or `#RRGGBBAA` values and requires an AoT build with [the tint encoding update](https://github.com/QTR-Modding/AlchemyOfTime/pull/55). Older color values keep their existing meaning. Sound previews play the audio file directly; Skyrim's positional audio and other sound settings are not simulated.
 
+## Preview item models
+
+Choose **Preview model...** beside a selected item or in a form picker to inspect its model and textures without running Skyrim. Drag to rotate, scroll to zoom, and use **Reset view** to fit the item again. Armor previews show the dropped item, not the armor worn by a character.
+
+The preview uses the active profile's winning model and diffuse textures. Skyrim lighting, animations, particles, and effects are not reproduced. Missing assets or unsupported parts are identified in the preview.
+
 ## Use form groups
 
 A form group is a named list of forms. For example, select Raw Beef and Venison in **Applies to**, then choose **Create group from list...**. The group editor opens with those items filled in. Name the group `RawMeat` and choose **Create group**. **Applies to** now uses `RawMeat` instead of listing both items. You can change the members before creating the group; canceling keeps the original list.
@@ -83,3 +89,7 @@ Plugin records are read-only.
 ## Checks
 
 After building, run `dotnet run --project tests -- dist/AoTYaml.exe`. Add a preset directory as the last argument to check that importing and exporting those files preserves their expanded settings.
+
+## License
+
+AoT Preset Editor is licensed under the [GNU General Public License, version 3](LICENSE) (GPL-3.0-only). Third-party license texts and notices are included in `licenses`.
