@@ -39,6 +39,10 @@ internal static class FormSelectionChecks
         var dualCast = mod.DualCastData.AddNew(); dualCast.EditorID = "DualCast";
         var acoustic = mod.AcousticSpaces.AddNew(); acoustic.EditorID = "AcousticSpace";
         var texture = mod.TextureSets.AddNew(); texture.EditorID = "TextureSet";
+        var grass = mod.Grasses.AddNew(); grass.EditorID = "Grass";
+        var leveledNpc = mod.LeveledNpcs.AddNew(); leveledNpc.EditorID = "LeveledNpc";
+        var explosion = mod.Explosions.AddNew(); explosion.EditorID = "Explosion";
+        var hazard = mod.Hazards.AddNew(); hazard.EditorID = "Hazard";
         var armorAddon = mod.ArmorAddons.AddNew(); armorAddon.EditorID = "ArmorAddon";
         var location = mod.Locations.AddNew(); location.EditorID = "Location";
         var perk = mod.Perks.AddNew(); perk.EditorID = "Perk";
@@ -64,7 +68,7 @@ internal static class FormSelectionChecks
         Require(Row("Armor").Categories == ItemCategories.ARMO && Row("Misc").Categories == ItemCategories.MISC,
             "Equipment and miscellaneous item categories must come from record type.");
         Require(Row("Key").Categories == ItemCategories.None, "Keys must not inherit the MISC category from the engine class hierarchy.");
-        foreach (var id in new[] { "Food", "FoodIngredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Location", "Perk", "Fire" })
+        foreach (var id in new[] { "Food", "FoodIngredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Location", "Perk", "Fire", "Grass", "LeveledNpc", "Explosion", "Hazard" })
             Require(Row(id).IsTrigger, $"{id} must pass AoT's native trigger type check.");
         foreach (var id in new[] { "Keyword", "FormList", "Sound", "MagicEffect", "ArmorAddon" })
             Require(!Row(id).IsTrigger, $"{id} must fail AoT's native trigger type check.");
@@ -118,6 +122,11 @@ internal static class FormSelectionChecks
             Require(new FormSelection(TriggerOnly: true).Matches(form) && new FormSelection(BoundObjectOnly: true).Matches(form),
                 "Hiding magic definitions from suggestions must preserve AoT-compatible manual/imported identifiers.");
 
+        foreach (var form in forms.Where(form => form.Type is "Grass" or "LeveledNpc"))
+            Require(new FormSelection(TriggerOnly: true).Matches(form) &&
+                new FormSelection(BoundObjectOnly: true).IsPickerChoice(form) && new FormSelection().IsPickerChoice(form),
+                "Omitting grass and leveled NPCs from Trigger suggestions must preserve manual identifiers, result choices, and general browsing.");
+
         foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon })
         foreach (var context in new[] { "rule", "stage", "transformer", "modulator", "effect" })
         foreach (var descriptor in PresetSchema.GetFields(context, kind).Where(field => field.Kind is FieldKind.Form or FieldKind.FormList))
@@ -134,7 +143,7 @@ internal static class FormSelectionChecks
                 "finalFormEditorID" => form.IsBoundObject && form.Type != "AcousticSpace" && !magicDefinitions.Contains(form.Type),
                 "FormEditorID" when context == "stage" => form.Type == "Ingestible" && (form.Categories & ItemCategories.FOOD) != 0 && form != source,
                 "FormEditorID" when context == "effect" => form.Type == "MagicEffect",
-                "FormEditorID" => form.IsTrigger && !magicDefinitions.Contains(form.Type),
+                "FormEditorID" => form.IsTrigger && !magicDefinitions.Contains(form.Type) && form.Type is not ("Grass" or "LeveledNpc"),
                 _ => throw new InvalidOperationException("Unreviewed form field: " + context + "." + descriptor.Key)
             }).ToHashSet();
             var scalar = new ValueEditorControl(document, forms, PresetValue.Scalar(""), "Value", descriptor.Label,
@@ -147,7 +156,30 @@ internal static class FormSelectionChecks
             CheckPicker(list, "Choose forms...", expected, kind + "/" + context + "/" + descriptor.Key + " list");
             var entry = Descendants<ValueEditorControl>(list).Single();
             CheckPicker(entry, "Choose form...", expected, kind + "/" + context + "/" + descriptor.Key + " entry");
+            if (descriptor.TriggerOnly && kind == PresetKind.Addon)
+                CheckTriggerVariable(forms, context, expected);
         }
+    }
+
+    private static void CheckTriggerVariable(IReadOnlyList<FormRow> forms, string context, HashSet<FormRow> expected)
+    {
+        var section = context == "transformer" ? "transformers" : "timeModulators";
+        var document = PresetDocument.Parse($"""
+            templates:
+              behavior:
+                forms: Food
+                {section}:
+                - FormEditorID: $trigger
+            formsLists:
+            - behavior(Fire)
+            """, "FOOD", PresetKind.Addon);
+        var rule = document.Blocks.Single(block => block.Kind == BlockKind.Rule);
+        var behavior = new BehaviorEditorControl(document, forms, rule.Id);
+        Field<TabControl>(behavior, "tabs").SelectedIndex = 1;
+        var table = Field<DataGrid>(behavior, "table");
+        table.SelectedItem = table.Items[0];
+        table.CurrentCell = new DataGridCellInfo(table.Items[0], table.Columns.Single(column => Equals(column.Header, "trigger")));
+        CheckPicker(Field<ValueEditorControl>(behavior, "cellEditor"), "Choose form...", expected, context + " Trigger variable");
     }
 
     private static void CheckPicker(ValueEditorControl editor, string action, HashSet<FormRow> expected, string route)

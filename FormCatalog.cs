@@ -61,6 +61,7 @@ public sealed class FormSelection(IReadOnlyCollection<string>? Types = null, str
     // These magic definitions pass the native bound-object check but are not ordinary inventory or placed objects.
     public bool IsPickerChoice(FormRow form) => Matches(form) &&
         (!(TriggerOnly || BoundObjectOnly) || form.Type is not ("DualCastData" or "ObjectEffect" or "LeveledSpell" or "Spell")) &&
+        (!TriggerOnly || form.Type is not ("Grass" or "LeveledNpc")) &&
         (!BoundObjectOnly || !form.Type.Equals("AcousticSpace", StringComparison.OrdinalIgnoreCase)) &&
         (!InventoryOwnerOnly || form.Type is "Npc" or "Container");
 }
