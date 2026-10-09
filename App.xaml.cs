@@ -5,8 +5,21 @@ using System.Windows.Media;
 
 namespace AoTPresetEditor;
 
-public partial class App : Application
+public partial class App : Application, INotifyPropertyChanged
 {
+    private double previewVolume = 1;
+    public double PreviewVolume
+    {
+        get => previewVolume;
+        set
+        {
+            if (previewVolume == value) return;
+            previewVolume = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PreviewVolume)));
+        }
+    }
+    public event PropertyChangedEventHandler? PropertyChanged;
+
     public AppearanceSettings Appearance { get; private set; } = new();
     private static readonly string[] AccentButtonKeys =
     [

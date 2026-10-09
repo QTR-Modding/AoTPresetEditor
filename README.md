@@ -51,7 +51,7 @@ Transformations and time modifiers need stages, which can come from another pres
 ## Preview world effects
 
 1. Under **World effects**, click the color swatch beside **Tint**. Choose a color and opacity, then **Apply**. **Cancel** keeps the original value; **No tint** explicitly removes an inherited tint. The hexadecimal field remains editable.
-2. Select a **Sound** and press **Play** to hear its audio sample. **Stop** ends playback. Sounds with several samples have a sample selector. These controls are also available when selecting sounds in a form picker or the form browser. Changing the selection or leaving the preview stops playback.
+2. Select a **Sound** and press **Play** to hear its audio sample. **Stop** ends playback. **Volume** adjusts playback immediately and stays shared between previews during the session; zero mutes it. Sounds with several samples have a sample selector. These controls are also available when selecting sounds in a form picker or the form browser. Changing the selection or leaving the preview stops playback.
 
 The tint picker writes quoted `#RRGGBB` or `#RRGGBBAA` values and requires an AoT build with [the tint encoding update](https://github.com/QTR-Modding/AlchemyOfTime/pull/55). Older color values keep their existing meaning. Sound previews play the audio file directly; Skyrim's positional audio and other sound settings are not simulated.
 

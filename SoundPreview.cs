@@ -1,6 +1,8 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
+using System.Windows.Data;
 using Mutagen.Bethesda.Assets;
 using Mutagen.Bethesda.Assets.DI;
 using Vortice.Multimedia;
@@ -44,9 +46,11 @@ public sealed class SoundPlayback : IDisposable
 
     public void Play(float volume = 1)
     {
-        output!.SetVolume(volume);
+        SetVolume(volume);
         voice!.Start().CheckError();
     }
+
+    public void SetVolume(float volume) => output?.SetVolume(volume);
 
     private void OnEnded() => Ended?.Invoke();
     private void OnVoiceError(IXAudio2SourceVoice.VoiceErrorArgs error) => Failed?.Invoke(error.Result.ToString());
@@ -69,6 +73,8 @@ public sealed class SoundPlayback : IDisposable
 
 public sealed class SoundPreview : UserControl
 {
+    private readonly Slider volume = new() { Minimum = 0, Maximum = 1, Value = 1, SmallChange = 0.01, LargeChange = 0.1,
+        Width = 110, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 6, 0) };
     private readonly ComboBox samples = new() { MinWidth = 160, MaxWidth = 460, Margin = new Thickness(0, 0, 6, 0) };
     private readonly Button play = new() { Content = "Play", ToolTip = "Play the selected sound sample", Margin = new Thickness(0, 0, 6, 0) };
     private readonly Button stop = new() { Content = "Stop", IsEnabled = false };
@@ -81,6 +87,16 @@ public sealed class SoundPreview : UserControl
     {
         var buttons = new WrapPanel();
         buttons.Children.Add(samples); buttons.Children.Add(play); buttons.Children.Add(stop);
+        var volumeControls = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
+        volumeControls.Children.Add(new TextBlock { Text = "Volume", VerticalAlignment = VerticalAlignment.Center });
+        volumeControls.Children.Add(volume);
+        var percentage = new TextBlock { MinWidth = 38, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+        percentage.SetBinding(TextBlock.TextProperty, new Binding(nameof(Slider.Value)) { Source = volume, StringFormat = "{0:P0}" });
+        volumeControls.Children.Add(percentage); buttons.Children.Add(volumeControls);
+        AutomationProperties.SetName(volume, "Preview volume");
+        if (Application.Current is App app)
+            volume.SetBinding(Slider.ValueProperty, new Binding(nameof(App.PreviewVolume)) { Source = app, Mode = BindingMode.TwoWay });
+        volume.ValueChanged += (_, args) => playback?.SetVolume((float)args.NewValue);
         var panel = new StackPanel(); panel.Children.Add(buttons); panel.Children.Add(status); Content = panel;
         play.Click += async (_, _) => await PlaySelected();
         stop.Click += (_, _) => Stop();
@@ -146,7 +162,7 @@ public sealed class SoundPreview : UserControl
                 Stop();
                 status.Text = $"Cannot decode {path}: {message}";
             });
-            loaded.Play();
+            loaded.Play((float)volume.Value);
             status.Text = "";
         }
         catch (OperationCanceledException) { loaded?.Dispose(); }
