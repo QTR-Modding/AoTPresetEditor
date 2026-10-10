@@ -158,6 +158,28 @@ public sealed class PresetProject
         return clone;
     }
 
+    public string? GetSaveFolder()
+    {
+        var folders = Entries.Select(entry => entry.OpenedPath).OfType<string>()
+            .Select(PresetCatalog.GetModFolder).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return folders.Length == 1 ? folders[0] : null;
+    }
+
+    public string GetSavePath(PresetProjectEntry entry, string modFolder)
+    {
+        if (entry.OpenedPath is { } opened)
+        {
+            var path = Path.GetFullPath(opened);
+            var root = Path.GetFullPath(modFolder);
+            var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
+            var source = PresetCatalog.DescribeFile(path, [entry.Document.Category]);
+            if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                (source.Kind == PresetKind.Other || source.Kind == entry.Document.Kind &&
+                    source.Category.Equals(entry.Document.Category, StringComparison.OrdinalIgnoreCase))) return path;
+        }
+        return GetExportPath(entry, modFolder);
+    }
+
     public string GetExportPath(PresetProjectEntry entry, string modFolder)
     {
         var document = entry.Document;

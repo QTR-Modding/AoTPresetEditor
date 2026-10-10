@@ -37,6 +37,7 @@ public sealed class PresetWorkspace : UserControl
     private readonly Button up;
     private readonly Button down;
     private readonly MenuItem fileDraft = new() { Header = "Save draft..." };
+    private readonly MenuItem fileSaveAs = new() { Header = "Save to mod as..." };
     private readonly Button draftSave;
     private readonly Button reset;
     private readonly ContentControl details = new();
@@ -94,6 +95,7 @@ public sealed class PresetWorkspace : UserControl
             var item = new MenuItem { Header = label }; item.Click += (_, _) => action(); file.Items.Add(item);
         }
         fileDraft.Click += (_, _) => SaveDraft(); file.Items.Add(fileDraft);
+        fileSaveAs.Click += (_, _) => Save(true); file.Items.Add(fileSaveAs);
         fileMenu.Items.Add(file); DockPanel.SetDock(fileMenu, Dock.Left); toolbar.Children.Add(fileMenu);
         var saveActions = new StackPanel { Orientation = Orientation.Horizontal };
         draftSave = EditorControls.Button("Save draft...", () => SaveDraft());
@@ -873,6 +875,7 @@ public sealed class PresetWorkspace : UserControl
         CommandManager.InvalidateRequerySuggested();
         yaml.Visibility = Ready && project!.Entries.Any(entry => !entry.IsInactive) ? Visibility.Visible : Visibility.Collapsed;
         fileDraft.Visibility = project is not null ? Visibility.Visible : Visibility.Collapsed;
+        fileSaveAs.IsEnabled = Ready;
         draftSave.Visibility = project is not null && !Ready ? Visibility.Visible : Visibility.Collapsed;
         reset.Visibility = project is { Entries.Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
         var selected = document?.Blocks.FirstOrDefault(block => block.Id == SelectedId);
@@ -932,22 +935,30 @@ public sealed class PresetWorkspace : UserControl
         catch (Exception error) { MessageBox.Show(Host, error.Message, "Cannot save draft", MessageBoxButton.OK, MessageBoxImage.Error); return false; }
     }
 
-    private void Save()
+    private void Save(bool chooseDestination = false)
     {
         if (!CommitEditor() || !Ready || project is null) return;
-        var picker = new OpenFolderDialog { Title = "Choose the destination mod folder" };
-        if (exportRoot is not null && Directory.Exists(exportRoot)) picker.InitialDirectory = exportRoot;
-        if (picker.ShowDialog(Host) != true) return;
         try
         {
+            var modFolder = project.GetSaveFolder() ?? exportRoot;
+            if (chooseDestination || modFolder is null)
+            {
+                var picker = new OpenFolderDialog { Title = "Choose the destination mod folder" };
+                if (modFolder is not null && Directory.Exists(modFolder)) picker.InitialDirectory = modFolder;
+                if (picker.ShowDialog(Host) != true) return;
+                modFolder = picker.FolderName;
+            }
             foreach (var entry in project.Entries)
                 if (entry.OpenedPath is not null && File.Exists(entry.OpenedPath) && entry.OpenedHash != Hash(Encoding.UTF8.GetBytes(File.ReadAllText(entry.OpenedPath))))
                     throw new IOException("A source file changed after you opened it: " + entry.OpenedPath);
             var changes = project.Entries.Where(entry => !entry.IsInactive).Select(entry => (Entry: entry,
-                Output: new PresetOutput(project.GetExportPath(entry, picker.FolderName), validations[entry.Id].Source))).ToArray();
+                Output: new PresetOutput(chooseDestination ? project.GetExportPath(entry, modFolder) : project.GetSavePath(entry, modFolder), validations[entry.Id].Source))).ToArray();
             var outputs = changes.Select(change => change.Output).ToArray();
-            var existing = outputs.Where(output => File.Exists(output.Path)).ToArray();
-            var destination = Path.TrimEndingDirectorySeparator(Path.GetFullPath(picker.FolderName)) + Path.DirectorySeparatorChar;
+            var existing = outputs.Where(output => File.Exists(output.Path) && (chooseDestination ||
+                !project.Entries.Any(entry => entry.OpenedPath is { } path &&
+                    Path.GetFullPath(path).Equals(Path.GetFullPath(output.Path), StringComparison.OrdinalIgnoreCase)))).ToArray();
+            var destination = Path.GetFullPath(modFolder);
+            if (!Path.EndsInDirectorySeparator(destination)) destination += Path.DirectorySeparatorChar;
             var retired = project.Entries.Select(entry => entry.OpenedPath).OfType<string>()
                 .Where(path => Path.GetFullPath(path).StartsWith(destination, StringComparison.OrdinalIgnoreCase) &&
                     !outputs.Any(output => Path.GetFullPath(output.Path).Equals(Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase)))
@@ -973,14 +984,14 @@ public sealed class PresetWorkspace : UserControl
                 if (group.Any(value => FormGroupCatalog.Serialize(value) != FormGroupCatalog.Serialize(first))) throw new IOException("Different form groups share the name: " + group.Key);
                 return first;
             }).ToArray();
-            PresetExport.Save(outputs, pending, picker.FolderName, retired);
+            PresetExport.Save(outputs, pending, modFolder, retired);
             foreach (var entry in project.Entries.Where(entry => entry.IsInactive && entry.OpenedPath is not null))
                 if (retired.Concat(outputs.Select(output => output.Path)).Any(path =>
                     Path.GetFullPath(path).Equals(Path.GetFullPath(entry.OpenedPath!), StringComparison.OrdinalIgnoreCase)))
                 { entry.OpenedPath = null; entry.OpenedHash = null; entry.PendingRemoval = false; }
             foreach (var change in changes)
             { change.Entry.OpenedPath = change.Output.Path; change.Entry.OpenedHash = Hash(Encoding.UTF8.GetBytes(change.Output.Source)); }
-            exportRoot = picker.FolderName; dirty = project.Entries.Any(entry => entry.PendingRemoval); location.Text = "Saved to: " + exportRoot;
+            exportRoot = modFolder; dirty = project.Entries.Any(entry => entry.PendingRemoval); location.Text = "Saved to: " + exportRoot;
             title.Text = filename; state.Text = "✓ Saved to mod";
             _ = Refresh(editingId);
         }

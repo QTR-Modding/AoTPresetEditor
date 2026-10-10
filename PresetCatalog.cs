@@ -85,7 +85,7 @@ public static class PresetCatalog
     private static bool IsYaml(string path) => Path.GetExtension(path).Equals(".yml", StringComparison.OrdinalIgnoreCase)
         || Path.GetExtension(path).Equals(".yaml", StringComparison.OrdinalIgnoreCase);
 
-    private static PresetFile DescribeFile(string path, IReadOnlyList<string> categories)
+    internal static PresetFile DescribeFile(string path, IReadOnlyList<string> categories)
     {
         var marker = Path.DirectorySeparatorChar + "AlchemyOfTime" + Path.DirectorySeparatorChar;
         var start = path.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
@@ -109,6 +109,18 @@ public static class PresetCatalog
         return new PresetFile(path, defaultCategory is null ? Path.GetFileName(path)
             : Path.Combine(defaultCategory, Path.GetFileName(path)));
     }
+
+    public static string GetModFolder(string presetPath)
+    {
+        var path = Path.GetFullPath(presetPath);
+        for (var parent = Directory.GetParent(path); parent is not null; parent = parent.Parent)
+            if (parent.Name.Equals("AlchemyOfTime", StringComparison.OrdinalIgnoreCase) &&
+                parent.Parent is { } plugins && plugins.Name.Equals("Plugins", StringComparison.OrdinalIgnoreCase) &&
+                plugins.Parent is { } skse && skse.Name.Equals("SKSE", StringComparison.OrdinalIgnoreCase) &&
+                skse.Parent is { } root) return root.FullName;
+        return Path.GetDirectoryName(path)!;
+    }
+
     public static async Task<string> Expand(string yaml, CancellationToken cancellationToken)
     {
         var start = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "AoTYaml.exe"))
