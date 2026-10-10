@@ -166,7 +166,12 @@ internal static class SaveShortcutChecks
             Require(entry.OpenedPath == source && File.ReadAllText(source).Contains("Saved to original") &&
                 Directory.EnumerateFiles(root, "*.yml", SearchOption.AllDirectories).SequenceEqual([source]),
                 "Ctrl+S must update the original nested preset without creating a second canonical-path copy.");
+            Require(Field<TextBlock>(workspace, "state").Text.StartsWith("✓ Saved to mod") &&
+                Field<TextBlock>(workspace, "state").Text.Contains("1 warning"),
+                "The completed save must retain its success feedback after refreshing the editor: " + Field<TextBlock>(workspace, "state").Text);
             SetBehaviorName(workspace, entry, "Saved again");
+            Require(Field<TextBlock>(workspace, "state").Text.Contains("Unsaved changes"),
+                "Editing after a successful save must replace the success feedback with unsaved state.");
             SaveWithoutDialog(main, workspace);
             Require(entry.OpenedPath == source && File.ReadAllText(source).Contains("Saved again") &&
                 !Directory.EnumerateFiles(root, "*.aot-*", SearchOption.AllDirectories).Any(),

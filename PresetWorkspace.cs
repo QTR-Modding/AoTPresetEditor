@@ -226,12 +226,12 @@ public sealed class PresetWorkspace : UserControl
         return index < 0 ? category : CategoryNames[index];
     }
 
-    private string StatusText()
+    private string StatusText(bool saved = false)
     {
         var count = validations.Values.Sum(result => result.FileErrors.Count + result.Errors.Values.Sum(errors => errors.Count));
         var warningCount = warnings.Values.Sum(items => items.Count);
         var removals = project?.Entries.Count(entry => entry.IsInactive && entry.OpenedPath is not null) ?? 0;
-        return (Ready ? "✓ Ready to save to a mod" : count > 0 ? $"{count} {(count == 1 ? "issue" : "issues")}" : "Add or complete a behavior")
+        return (Ready ? saved && !dirty ? "✓ Saved to mod" : "✓ Ready to save to a mod" : count > 0 ? $"{count} {(count == 1 ? "issue" : "issues")}" : "Add or complete a behavior")
             + (warningCount > 0 ? $" · {warningCount} {(warningCount == 1 ? "warning" : "warnings")}" : "")
             + (removals > 0 ? $" · {removals} {(removals == 1 ? "file" : "files")} to remove on save" : "")
             + (dirty ? " · Unsaved changes" : "");
@@ -935,7 +935,7 @@ public sealed class PresetWorkspace : UserControl
         catch (Exception error) { MessageBox.Show(Host, error.Message, "Cannot save draft", MessageBoxButton.OK, MessageBoxImage.Error); return false; }
     }
 
-    private void Save(bool chooseDestination = false)
+    private async void Save(bool chooseDestination = false)
     {
         if (!CommitEditor() || !Ready || project is null) return;
         try
@@ -992,8 +992,9 @@ public sealed class PresetWorkspace : UserControl
             foreach (var change in changes)
             { change.Entry.OpenedPath = change.Output.Path; change.Entry.OpenedHash = Hash(Encoding.UTF8.GetBytes(change.Output.Source)); }
             exportRoot = modFolder; dirty = project.Entries.Any(entry => entry.PendingRemoval); location.Text = "Saved to: " + exportRoot;
-            title.Text = filename; state.Text = "✓ Saved to mod";
-            _ = Refresh(editingId);
+            title.Text = filename;
+            await Refresh(editingId);
+            state.Text = StatusText(saved: true);
         }
         catch (Exception error) { MessageBox.Show(Host, error.Message, "Cannot save preset", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
