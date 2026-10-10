@@ -287,7 +287,7 @@ public sealed class ModelPreviewAnimation
         return time => keys[KeyIndex(keys.Count, index => keys[index].Time, time)].Value != 0;
     }
 
-    private static Func<float, Matrix4x4> TransformSampler(NifFile nif, NiInterpolator interpolator, NiAVObject node)
+    internal static Func<float, Matrix4x4> TransformSampler(NifFile nif, NiInterpolator interpolator, NiAVObject node)
     {
         if (interpolator is not NiTransformInterpolator value) throw Unsupported(interpolator);
         var data = nif.GetBlock(value.Data);

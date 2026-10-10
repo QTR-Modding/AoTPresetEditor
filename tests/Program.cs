@@ -53,6 +53,7 @@ internal static class Program
             Check("Authored model animation", ModelAnimationChecks.Run);
             Check("Model material maps and vertex colors", ModelMaterialChecks.Run);
             Check("Authored particle preview", ModelParticleChecks.Run);
+            Check("Particle palette textures", ParticlePaletteChecks.Run);
             Check("Art effects on selected items", ArtEffectPreviewChecks.Run);
             Check("Effect shader playback", EffectShaderPreviewChecks.Run);
             Check("Effect preview target selection", EffectPreviewTargetChecks.Run);

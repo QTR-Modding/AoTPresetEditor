@@ -205,7 +205,7 @@ public sealed class ModelPreviewWindow : Window
                 appliedEffect.EffectShader ?? throw new InvalidDataException("The effect shader is unavailable."), result,
                 appliedEffect.Assets ?? throw new InvalidDataException("The shader's assets are unavailable."), request.Token), request.Token) : null;
             if (request.IsCancellationRequested) return;
-            effects ??= new DefaultEffectsManager(); view.EffectsManager = effects;
+            effects ??= ModelPreviewParticleShader.CreateEffectsManager(); view.EffectsManager = effects;
             model = result; ShowModel(); status.Text = result.Details;
             if (shaderPreview is not null) { ShowShader(shaderPreview); status.Text += "\n" + shaderPreview.Details; }
             reset.IsEnabled = geometry.IsEnabled = true;
@@ -288,7 +288,8 @@ public sealed class ModelPreviewWindow : Window
         }
         foreach (var source in model.Particles ?? [])
         {
-            var billboards = new ModelPreviewParticleBillboards(source.Texture);
+            var billboards = new ModelPreviewParticleBillboards(source.Texture, source.PaletteColor,
+                source.PaletteAlpha, source.TextureClampMode);
             var visual = new BillboardTextModel3D { Geometry = billboards, FixedSize = false, IsTransparent = true };
             particles.Add(new(source, visual, billboards)); view.Items.Add(visual);
         }

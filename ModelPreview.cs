@@ -18,7 +18,9 @@ namespace AoTPresetEditor;
 
 public sealed record ModelPreviewMesh(Gpu.MeshGeometry3D Geometry, PhongMaterialCore Material, bool DoubleSided, bool Transparent,
     IReadOnlyList<GpuColor>? VertexColors = null, bool Visible = true);
-public sealed record ModelPreviewParticleMesh(ModelPreviewParticleSystem System, Gpu.TextureModel Texture);
+public sealed record ModelPreviewParticleMesh(ModelPreviewParticleSystem System, Gpu.TextureModel Texture,
+    bool PaletteColor = false, bool PaletteAlpha = false,
+    byte TextureClampMode = (byte)NiflySharp.Enums.TexClampMode.WRAP_S_WRAP_T);
 public sealed record ModelPreviewResult(IReadOnlyList<ModelPreviewMesh> Meshes, string Details,
     ModelPreviewAnimation? Animation = null, Gpu.TextureModel? EnvironmentMap = null,
     IReadOnlyList<ModelPreviewParticleMesh>? Particles = null)
@@ -309,14 +311,33 @@ public static class ModelPreview
         var shader = (BSEffectShaderProperty)nif.GetShader(shape)!;
         var path = shader.SourceTexture?.Content;
         if (string.IsNullOrWhiteSpace(path)) { messages.Add($"{system.Name}: the particle texture is missing."); return; }
-        var texture = SurfaceTexture(assets, path, true, budget, messages, token);
+        Gpu.TextureModel? texture;
+        if (shader.HasGreyscaleToPaletteColor || shader.HasGreyscaleToPaletteAlpha)
+        {
+            var palettePath = shader.GreyscaleTexture?.Content;
+            if (string.IsNullOrWhiteSpace(palettePath)) { messages.Add($"{system.Name}: the particle palette texture is missing."); return; }
+            try
+            {
+                var sourceBitmap = ReadTexture(assets, AssetPath(path, "textures"), true, ref budget.TextureBytes, token);
+                var paletteBitmap = ReadTexture(assets, AssetPath(palettePath, "textures"), true, ref budget.TextureBytes, token);
+                var packed = ModelPreviewParticleShader.PackPalette(sourceBitmap, paletteBitmap,
+                    MaxDecodedTextureBytes - budget.TextureBytes, token);
+                texture = packed.Texture;
+                budget.TextureBytes = checked(budget.TextureBytes + packed.Bytes);
+                if (packed.Reduced) messages.Add("Particle palette textures are sampled at reduced resolution.");
+            }
+            catch (Exception error) when (error is not OperationCanceledException and not OutOfMemoryException)
+            { messages.Add($"{system.Name}: {error.Message}"); return; }
+        }
+        else texture = SurfaceTexture(assets, path, true, budget, messages, token);
         if (texture is null) return;
         const int verticesPerParticle = 4, trianglesPerParticle = 2;
         budget.Vertices = checked(budget.Vertices + system.MaximumParticleCount * verticesPerParticle);
         budget.Triangles = checked(budget.Triangles + system.MaximumParticleCount * trianglesPerParticle);
         if (budget.Vertices > MaxVertices || budget.Triangles > MaxTriangles)
             throw new InvalidDataException("This model exceeds the preview geometry limit.");
-        particles.Add(new(system, texture));
+        particles.Add(new(system, texture, shader.HasGreyscaleToPaletteColor, shader.HasGreyscaleToPaletteAlpha,
+            shader.TextureClampMode));
     }
 
     private enum TextureSlot { Diffuse, Normal, Glow, Detail, Environment, EnvironmentMask, FaceTint, Specular }
