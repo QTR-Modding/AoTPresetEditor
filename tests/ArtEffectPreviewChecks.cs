@@ -68,7 +68,29 @@ internal static class ArtEffectPreviewChecks
 
             branch.ExtraDataList.AddBlockRef(art.AddBlock(new NiStringsExtraData { Name = new("AttachT"), Data = [new("NamedNode&Missing")] }));
             Save(art, artFolder);
-            Unavailable(() => ModelPreview.Load(targetSource, targetAssets, artSource, artAssets, CancellationToken.None), "Missing");
+            var atRoot = ModelPreview.Load(targetSource, targetAssets, artSource, artAssets, CancellationToken.None);
+            Require(atRoot.Meshes[1].Geometry.Positions![0] == new Vector3(12, 0, 0),
+                "A missing named node must use the target's actual root transform and preserve the attached branch's local transform.");
+            frame = atRoot.Animation!.Evaluate(0, 1).Single();
+            Require(atRoot.Clips.Count == 1 && Vector3.Distance(Vector3.Transform(new(12, 0, 0), frame.Transform), new(13, 0, 0)) < .001f,
+                "Root fallback must retain the attached branch's animation and exclude its detached original parent's animation.");
+            var (skeleton, skeletonRoot, _) = Model("Skeleton", 30);
+            skeletonRoot.Scale = 2;
+            Save(skeleton, targetFolder);
+            var onActor = ModelPreview.Load(targetSource with { Appearance = new(null, null, "Skeleton.nif") }, targetAssets,
+                artSource, artAssets, CancellationToken.None);
+            Require(onActor.Meshes[1].Geometry.Positions![0] == new Vector3(34, 0, 0) &&
+                onActor.Meshes[1].Geometry.Positions![1] == new Vector3(36, 0, 0),
+                "An actor's missing named node must use the skeleton root, including its authored translation and scale.");
+            var attachment = branch.ExtraDataList.GetBlocks(art).OfType<NiStringsExtraData>().Single();
+            attachment.Data = [new("NamedNode&Target shape")];
+            Save(art, artFolder);
+            Unavailable(() => ModelPreview.Load(targetSource, targetAssets, artSource, artAssets, CancellationToken.None), "not a node");
+            targetRoot.Children.AddBlockRef(target.AddBlock(new NiNode { Name = new("Socket"), Translation = new(9, 0, 0), Scale = 1 }));
+            Save(target, targetFolder);
+            attachment.Data = [new("NamedNode&Socket")];
+            Save(art, artFolder);
+            Unavailable(() => ModelPreview.Load(targetSource, targetAssets, artSource, artAssets, CancellationToken.None), "ambiguous");
             branch.ExtraDataList.Clear();
             branch.ExtraDataList.AddBlockRef(art.AddBlock(new NiStringsExtraData { Name = new("AttachT"), Data = [new("HavokGeometry")] }));
             Save(art, artFolder);

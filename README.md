@@ -65,7 +65,7 @@ Models with supported animation offer **Play/Pause**, a position slider, and a c
 
 Art objects and effect shaders offer **Preview on item...** in their preset fields. The preview uses the stage item when specified, otherwise an affected item. When several items apply, choose one for the preview. Behaviors covering a whole item type offer **Choose preview item...**; this selection is only for viewing and does not change the preset. The preview button stays disabled until an item with a model is selected.
 
-Applied effects and standalone art objects start playing automatically. Art objects play supported model animation and particles alongside the item; effects that require missing attachment nodes explain that limitation. Effect shaders show animated surface colors, textures, fades, and particles. These are offline approximations: Skyrim's blending, per-pixel rim lighting, and dissolve effects are not reproduced exactly. The preview reports unsupported features.
+Applied effects and standalone art objects start playing automatically. Art objects play supported model animation and particles alongside the item. Named attachments use the matching item node, or the item's root when the node is missing, as Skyrim does. Effect shaders show animated surface colors, textures, fades, and particles. These are offline approximations: Skyrim's blending, per-pixel rim lighting, and dissolve effects are not reproduced exactly. The preview reports unsupported features.
 
 **Preview textures...** shows the source images used by effect shaders and texture sets. Cube maps appear as six faces in a cross. These images help identify the selected effect; they do not play the effect as it appears in Skyrim.
 

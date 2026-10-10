@@ -56,15 +56,15 @@ public static class ModelPreview
         var messages = new HashSet<string>();
         var budget = new PreviewBudget();
         var animation = new ModelPreviewAnimation();
-        var targetNodes = art is null ? null : new Dictionary<string, Matrix3D?>(StringComparer.OrdinalIgnoreCase);
-        if (targetNodes is not null && source.Appearance?.SkeletonPath is { } skeleton)
+        var attachmentTarget = art is null ? null : new EffectAttachmentTarget();
+        if (attachmentTarget is not null && source.Appearance?.SkeletonPath is { } skeleton)
         {
             try
             {
                 using var stream = ReadAsset(assets, AssetPath(skeleton, "meshes"), MaxModelBytes, cancellationToken);
                 var nif = new NifFile(stream);
                 if (!nif.Valid) throw new InvalidDataException("The target's attachment skeleton could not be read.");
-                AddAttachmentNodes(nif, Matrix3D.Identity, targetNodes, cancellationToken);
+                AddAttachmentNodes(nif, Matrix3D.Identity, attachmentTarget, cancellationToken);
             }
             catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
             { messages.Add($"{skeleton}: {error.Message}"); }
@@ -72,7 +72,7 @@ public static class ModelPreview
         foreach (var part in source.Parts)
         {
             try { LoadPart(part, source.Appearance, assets, model, particles, budget, art is null ? animation : null, messages,
-                cancellationToken, source.Appearance?.SkeletonPath is null ? targetNodes : null, includeParticles: art is null); }
+                cancellationToken, source.Appearance?.SkeletonPath is null ? attachmentTarget : null, includeParticles: art is null); }
             catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
             { messages.Add($"{part.Path}: {error.Message}"); }
         }
@@ -84,7 +84,7 @@ public static class ModelPreview
             foreach (var part in art.Parts)
             {
                 try { LoadPart(part, art.Appearance, artAssets!, model, particles, budget, animation, messages, cancellationToken,
-                    targetNodes, attachedEffect: true); }
+                    attachmentTarget, attachedEffect: true); }
                 catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
                 { messages.Add($"{part.Path}: {error.Message}"); }
             }
@@ -209,7 +209,7 @@ public static class ModelPreview
 
     private static void LoadPart(ModelPreviewPart part, ModelPreviewAppearance? appearance, IAssetProvider assets,
         List<ModelPreviewMesh> model, List<ModelPreviewParticleMesh> particles, PreviewBudget budget, ModelPreviewAnimation? animation,
-        HashSet<string> messages, CancellationToken cancellationToken, Dictionary<string, Matrix3D?>? targetNodes = null,
+        HashSet<string> messages, CancellationToken cancellationToken, EffectAttachmentTarget? attachmentTarget = null,
         bool attachedEffect = false, bool includeParticles = true)
     {
         using var stream = ReadAsset(assets, AssetPath(part.Path, "meshes"), MaxModelBytes, cancellationToken);
@@ -221,7 +221,7 @@ public static class ModelPreview
         var bindings = new List<(INiShape Shape, int MeshIndex, Numerics.Matrix4x4 InitialWorld)>();
         var attachmentRoots = attachedEffect ? new Dictionary<INiShape, NiAVObject>() : null;
         var attachment = AttachmentTransform(part, appearance, assets, cancellationToken);
-        if (targetNodes is not null && !attachedEffect) AddAttachmentNodes(nif, attachment, targetNodes, cancellationToken);
+        if (attachmentTarget is not null && !attachedEffect) AddAttachmentNodes(nif, attachment, attachmentTarget, cancellationToken);
         var shapeIndex = 0;
         var usedReplacements = new HashSet<int>();
         foreach (var shape in SceneShapes(nif, cancellationToken))
@@ -230,7 +230,7 @@ public static class ModelPreview
             cancellationToken.ThrowIfCancellationRequested();
             if (part.ExcludedShapes?.Contains(shape.Name.String) == true) continue;
             NiAVObject? attachmentRoot = null;
-            var shapeAttachment = attachedEffect ? EffectAttachment(nif, shape, targetNodes!, messages, cancellationToken, out attachmentRoot) : attachment;
+            var shapeAttachment = attachedEffect ? EffectAttachment(nif, shape, attachmentTarget!, messages, cancellationToken, out attachmentRoot) : attachment;
             if (shapeAttachment is null) continue;
             if (attachmentRoot is not null) attachmentRoots!.Add(shape, attachmentRoot);
             if (attachedEffect && (shape.IsSkinned || shape.HasSkinInstance))
@@ -294,7 +294,7 @@ public static class ModelPreview
             messages.Add("Some alternate textures target geometry that is not shown.");
         if (nif.HasUnknownBlocks) messages.Add("The NIF contains unsupported blocks.");
         if (model.Count == initialShapes && particles.Count == initialParticles && part.ExcludedPartitions is not { Count: > 0 } && part.ExcludedShapes is not { Count: > 0 })
-            messages.Add($"{part.Path}: no supported triangle geometry.");
+            messages.Add($"{part.Path}: no supported meshes or particle systems could be shown.");
         animation?.AddPart(nif, bindings, messages, attachmentRoots);
     }
 
@@ -587,20 +587,34 @@ public static class ModelPreview
         return shape.Triangles.Where(entry => { var triangle = entry; triangle.Rotate(); return !hidden.Contains(triangle); });
     }
 
-    private static void AddAttachmentNodes(NifFile nif, Matrix3D attachment, Dictionary<string, Matrix3D?> nodes, CancellationToken token)
+    private sealed class EffectAttachmentTarget
     {
-        foreach (var node in nif.Blocks.OfType<NiNode>())
+        public readonly Dictionary<string, (Matrix3D? Transform, bool IsNode)> Objects = new(StringComparer.OrdinalIgnoreCase);
+        public Matrix3D? Root;
+    }
+
+    private static void AddAttachmentNodes(NifFile nif, Matrix3D attachment, EffectAttachmentTarget target, CancellationToken token)
+    {
+        if (target.Root is null && nif.GetRootNode() is { } root)
+        {
+            var world = NodeTransform(nif, root, token);
+            world.Append(attachment);
+            target.Root = world;
+        }
+        foreach (var node in nif.Blocks.OfType<NiAVObject>())
         {
             token.ThrowIfCancellationRequested();
             if (node.Name.String.Length == 0) continue;
             var world = NodeTransform(nif, node, token);
             world.Append(attachment);
-            if (nodes.TryGetValue(node.Name.String, out var previous) && previous != world) nodes[node.Name.String] = null;
-            else nodes[node.Name.String] = world;
+            var isNode = node is NiNode;
+            if (target.Objects.TryGetValue(node.Name.String, out var previous) && (previous.Transform != world || previous.IsNode != isNode))
+                target.Objects[node.Name.String] = (null, isNode);
+            else target.Objects[node.Name.String] = (world, isNode);
         }
     }
 
-    private static Matrix3D? EffectAttachment(NifFile nif, INiShape shape, IReadOnlyDictionary<string, Matrix3D?> nodes,
+    private static Matrix3D? EffectAttachment(NifFile nif, INiShape shape, EffectAttachmentTarget target,
         HashSet<string> messages, CancellationToken token, out NiAVObject? attachmentRoot)
     {
         const string namedNode = "NamedNode&";
@@ -616,13 +630,19 @@ public static class ModelPreview
             if (instructions.Length == 1 && instructions[0].StartsWith(namedNode, StringComparison.Ordinal))
             {
                 var name = instructions[0][namedNode.Length..];
-                if (!nodes.TryGetValue(name, out var target) || target is null)
-                { messages.Add($"The effect needs attachment node {name}, which is not available on this item."); return null; }
+                var found = target.Objects.TryGetValue(name, out var named);
+                if (found && named.Transform is null)
+                { messages.Add($"The effect's attachment node {name} is ambiguous on this item."); return null; }
+                if (found && !named.IsNode)
+                { messages.Add($"The effect's attachment target {name} is not a node."); return null; }
+                var transform = found ? named.Transform : target.Root;
+                if (transform is null)
+                { messages.Add("The selected item's attachment root is unavailable."); return null; }
                 var parent = nif.GetParentNode(node);
                 var result = parent is null ? Matrix3D.Identity : NodeTransform(nif, parent, token);
                 if (!result.HasInverse) throw new InvalidDataException("The effect attachment parent has zero scale.");
                 result.Invert();
-                result.Append(target.Value);
+                result.Append(transform.Value);
                 attachmentRoot = node;
                 return result;
             }
