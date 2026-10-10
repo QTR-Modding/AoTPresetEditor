@@ -27,6 +27,7 @@ public sealed class FormPickerWindow : Window
     private readonly SoundPreview soundPreview = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 0) };
     private readonly Button modelPreview;
     private readonly Button texturePreview;
+    private readonly EffectPreviewControls effectPreview;
     private readonly Button choose = new() { Content = "Choose", IsDefault = true, Visibility = Visibility.Collapsed };
     private readonly Button clear = new() { Content = "Clear selection", Visibility = Visibility.Collapsed };
     private readonly HashSet<FormRow> selected = [];
@@ -36,7 +37,9 @@ public sealed class FormPickerWindow : Window
     public IReadOnlyList<FormRow> SelectedForms { get; private set; } = [];
 
     public FormPickerWindow(IReadOnlyList<FormRow> forms, IReadOnlyCollection<string>? allowedTypes = null, bool multiple = false,
-        FormSelection? selection = null, bool browseOnly = false, string? purpose = null)
+        FormSelection? selection = null, bool browseOnly = false, string? purpose = null,
+        Func<IReadOnlyList<FormRow>>? effectPreviewTargets = null, Func<IReadOnlyList<FormRow>>? previewItemCandidates = null,
+        Action<FormRow>? selectPreviewItem = null)
     {
         this.forms = allowedTypes is { Count: > 0 } || selection is not null
             ? forms.Where(form => (allowedTypes is not { Count: > 0 } || allowedTypes.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
@@ -55,6 +58,10 @@ public sealed class FormPickerWindow : Window
         modelPreview.Visibility = this.forms.Any(ModelPreviewWindow.CanPreview) ? Visibility.Visible : Visibility.Collapsed;
         texturePreview = TexturePreviewWindow.CreateButton(() => results.SelectedItem as FormRow);
         texturePreview.Visibility = this.forms.Any(TexturePreviewWindow.CanPreview) ? Visibility.Visible : Visibility.Collapsed;
+        effectPreview = new(() => results.SelectedItem as FormRow, effectPreviewTargets ?? (() => []),
+            previewItemCandidates ?? (() => effectPreviewTargets is null
+                ? forms.Where(form => form.IsBoundObject && ModelPreviewWindow.CanPreview(form)).ToArray() : []),
+            selectPreviewItem, soundPreview.Stop);
         Content = BuildContent();
 
         types.ItemsSource = new[] { AllTypes }.Concat(this.forms.Select(form => form.Type)
@@ -86,7 +93,7 @@ public sealed class FormPickerWindow : Window
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var previews = new StackPanel();
         var visualPreviews = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
-        visualPreviews.Children.Add(modelPreview); visualPreviews.Children.Add(texturePreview);
+        visualPreviews.Children.Add(modelPreview); visualPreviews.Children.Add(texturePreview); visualPreviews.Children.Add(effectPreview);
         previews.Children.Add(visualPreviews); previews.Children.Add(soundPreview);
         Grid.SetRow(previews, 3); layout.Children.Add(previews);
 
@@ -256,6 +263,7 @@ public sealed class FormPickerWindow : Window
         texturePreview.IsEnabled = TexturePreviewWindow.CanPreview(current);
         soundPreview.Visibility = current?.SoundFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         soundPreview.SetSamples(current?.Assets, current?.SoundFiles ?? []);
+        effectPreview.Refresh();
         choose.IsEnabled = selected.Count > 0;
         choose.Visibility = clear.Visibility = selected.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         selection.Text = multiple

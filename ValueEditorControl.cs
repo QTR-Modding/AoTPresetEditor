@@ -716,6 +716,7 @@ public sealed class ValueEditorControl : UserControl
         var modelPreview = field?.Kind == FieldKind.FormList ? ModelPreviewWindow.CreateButton(SelectedForm) : null;
         var texturePreview = field?.Kind == FieldKind.FormList ? TexturePreviewWindow.CreateButton(SelectedForm) : null;
         var soundPreview = field?.Kind == FieldKind.FormList ? new SoundPreview { Visibility = Visibility.Collapsed } : null;
+        EffectPreviewControls? effectPreview = null;
         FormRow? SelectedForm()
         {
             var index = list.SelectedIndex;
@@ -763,7 +764,8 @@ public sealed class ValueEditorControl : UserControl
         if (field?.Kind == FieldKind.FormList) actions.Children.Add(EditorControls.Button("Choose forms...", () =>
         {
             soundPreview?.Stop();
-            var picker = new FormPickerWindow(forms, multiple: true, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
+            var picker = new FormPickerWindow(forms, multiple: true, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant(),
+                effectPreviewTargets: PreviewTargets, previewItemCandidates: PreviewItemCandidates, selectPreviewItem: SelectPreviewItem) { Owner = Window.GetWindow(this) };
             if (picker.ShowDialog() != true) return;
             foreach (var form in picker.SelectedForms)
                 if (!Value.Items.Any(item => item.Kind == ValueKind.Scalar && item.Text == form.Identifier)) Value.Items.Add(PresetValue.Scalar(form.Identifier));
@@ -792,6 +794,8 @@ public sealed class ValueEditorControl : UserControl
         actions.Children.Add(edit); actions.Children.Add(remove); actions.Children.Add(up); actions.Children.Add(down);
         if (modelPreview is not null) actions.Children.Add(modelPreview);
         if (texturePreview is not null) actions.Children.Add(texturePreview);
+        if (field?.Kind == FieldKind.FormList)
+            effectPreview = AddEffectPreview(actions, () => details.Visibility == Visibility.Visible ? null : SelectedForm(), () => soundPreview?.Stop());
         void ShowActions()
         {
             createGroup.Visibility = GroupMembersFromList() is null ? Visibility.Collapsed : Visibility.Visible;
@@ -806,6 +810,7 @@ public sealed class ValueEditorControl : UserControl
         void UpdatePreviews()
         {
             var form = details.Visibility == Visibility.Visible ? null : SelectedForm();
+            effectPreview?.Refresh();
             if (modelPreview is not null)
             {
                 modelPreview.IsEnabled = ModelPreviewWindow.CanPreview(form);
@@ -937,7 +942,8 @@ public sealed class ValueEditorControl : UserControl
         if (field?.Kind is FieldKind.Form or FieldKind.FormList) choices.Children.Add(EditorControls.Button("Choose form...", () =>
         {
             soundPreview?.Stop();
-            var picker = new FormPickerWindow(forms, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
+            var picker = new FormPickerWindow(forms, selection: FormSelection(), purpose: "Choose " + title.ToLowerInvariant(),
+                effectPreviewTargets: PreviewTargets, previewItemCandidates: PreviewItemCandidates, selectPreviewItem: SelectPreviewItem) { Owner = Window.GetWindow(this) };
             if (picker.ShowDialog() == true && picker.SelectedForms.FirstOrDefault() is { } form) entry.Text = form.Identifier;
         }));
         if (field?.Kind is FieldKind.Form or FieldKind.FormList)
@@ -958,8 +964,7 @@ public sealed class ValueEditorControl : UserControl
                 texturePreview.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
             }
             UpdateTexturePreview(); entry.TextChanged += (_, _) => UpdateTexturePreview(); choices.Children.Add(texturePreview);
-            if (field.FormTypes is { Length: 1 } types && types[0] is "ArtObject" or "EffectShader")
-                AddEffectPreview(choices, () => presentation.ResolveForm(entry.Text));
+            AddEffectPreview(choices, () => presentation.ResolveForm(entry.Text), () => soundPreview?.Stop());
         }
         if (parent == root) root.AddAllItemsChoice(choices, field);
         if (field?.AllowsGroups == true) choices.Children.Add(EditorControls.Button("Choose form group...", () => ChooseGroup(group => entry.Text = group.Name)));
@@ -1009,47 +1014,20 @@ public sealed class ValueEditorControl : UserControl
         return row;
     }
 
-    private void AddEffectPreview(Panel choices, Func<FormRow?> selectedEffect)
+    private EffectPreviewControls AddEffectPreview(Panel choices, Func<FormRow?> selectedEffect, Action? stopSound = null)
     {
-        var preview = EditorControls.Button("Preview on item...", () =>
-        {
-            root.Capture();
-            var effect = selectedEffect();
-            var targets = PreviewTargets().Where(ModelPreviewWindow.CanPreview).ToArray();
-            if (effect is null || targets.Length == 0) return;
-            var target = targets.Length == 1 ? targets[0] : ChoosePreviewItem(targets);
-            if (target is not null) new ModelPreviewWindow(target, effect) { Owner = Window.GetWindow(this) }.ShowDialog();
-        });
-        var choose = EditorControls.Button("Choose preview item...", () =>
-        {
-            var candidates = forms.Where(form => new FormSelection(Category: Document.Category).Matches(form) &&
-                ModelPreviewWindow.CanPreview(form)).ToArray();
-            if (ChoosePreviewItem(candidates) is { } item) { root.previewItem = item; root.RefreshEffectPreviews(); }
-        });
-        choices.Children.Add(choose); choices.Children.Add(preview);
-        ToolTipService.SetShowOnDisabled(preview, true);
-        refreshEffectPreview = () =>
-        {
-            var targets = PreviewTargets();
-            var effect = selectedEffect();
-            preview.IsEnabled = targets.Any(ModelPreviewWindow.CanPreview) && ModelPreviewWindow.CanPreviewEffect(effect);
-            preview.ToolTip = targets.Count == 0 ? "Select an item to preview this effect."
-                : !targets.Any(ModelPreviewWindow.CanPreview) ? "The selected item has no model to preview."
-                : effect is null ? "Select an effect to preview."
-                : effect.Type == "ArtObject" && !ModelPreviewWindow.CanPreview(effect) ? "The selected art object has no model to preview."
-                : !ModelPreviewWindow.CanPreviewEffect(effect) ? "The selected effect shader has no preview data."
-                : targets.Count > 1 ? "Choose which affected item to preview this effect on."
-                : "Preview this effect on " + presentation.FormLabel(targets[0].Identifier) + ".";
-            choose.Visibility = CanChoosePreviewItem() && EffectTargets().Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        };
-        refreshEffectPreview();
+        var controls = new EffectPreviewControls(selectedEffect, PreviewTargets, PreviewItemCandidates, SelectPreviewItem,
+            () => { root.Capture(); stopSound?.Invoke(); }, showWhenEmpty: field?.Kind == FieldKind.Form &&
+                field.FormTypes?.Any(type => type is "ArtObject" or "EffectShader") == true);
+        choices.Children.Add(controls);
+        refreshEffectPreview = controls.Refresh;
+        return controls;
     }
 
-    private FormRow? ChoosePreviewItem(IReadOnlyList<FormRow> candidates)
-    {
-        var picker = new FormPickerWindow(candidates, purpose: "Choose an item to preview this effect on") { Owner = Window.GetWindow(this) };
-        return picker.ShowDialog() == true ? picker.SelectedForms.FirstOrDefault() : null;
-    }
+    private IReadOnlyList<FormRow> PreviewItemCandidates() => CanChoosePreviewItem() && EffectTargets().Count == 0
+        ? forms.Where(form => new FormSelection(Category: Document.Category).Matches(form) && ModelPreviewWindow.CanPreview(form)).ToArray() : [];
+
+    private void SelectPreviewItem(FormRow item) { root.previewItem = item; root.RefreshEffectPreviews(); }
 
     private IReadOnlyList<FormRow> PreviewTargets()
     {
@@ -1217,7 +1195,8 @@ public sealed class ValueEditorControl : UserControl
             return;
         }
         var available = Document.PendingGroups.Concat(groups).DistinctBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToArray();
-        var editor = new GroupEditorWindow(available, forms, FormSelection(), members) { Owner = Window.GetWindow(this) };
+        var editor = new GroupEditorWindow(available, forms, FormSelection(), members,
+            effectPreviewTargets: PreviewTargets, previewItemCandidates: PreviewItemCandidates, selectPreviewItem: SelectPreviewItem) { Owner = Window.GetWindow(this) };
         if (editor.ShowDialog() != true || editor.Group is not { } group) return;
         Document.PendingGroups.Add(group);
         SetValue(PresetValue.Scalar(group.Name));
@@ -1225,7 +1204,8 @@ public sealed class ValueEditorControl : UserControl
     private void ChooseGroup(Action<FormGroupDefinition> use)
     {
         var available = Document.PendingGroups.Concat(groups).DistinctBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToArray();
-        var picker = new GroupPickerWindow(available, forms, FormSelection(), purpose: "Choose a form group for " + title.ToLowerInvariant()) { Owner = Window.GetWindow(this) };
+        var picker = new GroupPickerWindow(available, forms, FormSelection(), purpose: "Choose a form group for " + title.ToLowerInvariant(),
+            effectPreviewTargets: PreviewTargets, previewItemCandidates: PreviewItemCandidates, selectPreviewItem: SelectPreviewItem) { Owner = Window.GetWindow(this) };
         if (picker.ShowDialog() != true || picker.SelectedGroup is not { } selected) return;
         Document.PendingGroups.AddRange(picker.CreatedGroups); use(selected);
     }

@@ -608,8 +608,13 @@ public sealed class BehaviorEditorControl : UserControl
     {
         if (column.Field is not { } field) return;
         Capture();
+        var definition = BehaviorFamily.Find(document, RuleId)!.Definition;
+        var targets = EffectPreviewTargets.ForParameter(document, presentation, definition.Id, column.Parameter, [], forms);
         var picker = new FormPickerWindow(forms, multiple: true,
-            selection: BulkFormSelection(field, column.Parameter), purpose: "Choose forms for " + column.Label) { Owner = Window.GetWindow(this) };
+            selection: BulkFormSelection(field, column.Parameter), purpose: "Choose forms for " + column.Label,
+            effectPreviewTargets: () => targets,
+            previewItemCandidates: () => targets.Count == 0 && CanChooseBulkPreviewItem(column.Parameter)
+                ? forms.Where(form => new FormSelection(Category: document.Category).Matches(form) && ModelPreviewWindow.CanPreview(form)).ToArray() : []) { Owner = Window.GetWindow(this) };
         if (picker.ShowDialog() != true) return;
         string? first = null;
         foreach (var form in picker.SelectedForms)
@@ -619,6 +624,37 @@ public sealed class BehaviorEditorControl : UserControl
         }
         if (Rule().Kind == BlockKind.Template && first is not null) RuleId = first;
         Rebuild(true, first, column.Parameter); NotifyChanged();
+    }
+
+    private bool CanChooseBulkPreviewItem(string parameter)
+    {
+        var definition = BehaviorFamily.Find(document, RuleId)!.Definition;
+        foreach (var path in EffectPreviewTargets.Paths(document, definition.Value, definition.Context)
+            .Where(path => ValueEditorControl.IssueParameter(document, definition.Value, path).Parameter == parameter))
+        {
+            if (path.Count >= 2 && path[0] == "stages" && int.TryParse(path[1], out var index) &&
+                BehaviorFamily.ResolveValue(document, definition.Value, "stages") is { } value &&
+                BehaviorFamily.ResolveValue(document, value) is { Kind: ValueKind.Sequence } stages && index < stages.Items.Count)
+            {
+                var item = EffectPreviewTargets.StageItem(document, stages.Items[index]);
+                if (item is not null && TemplateCall.FindParameters(item, document).Count > 0) return true;
+                if (item is not null && !item.IsNull && !item.IsUnsetArgument &&
+                    (item.Kind != ValueKind.Scalar || !string.IsNullOrWhiteSpace(item.Text)))
+                {
+                    var number = BehaviorFamily.ResolveValue(document, stages.Items[index], "no");
+                    number = number is null ? null : BehaviorFamily.ResolveValue(document, number);
+                    if (number is not null && (number.IsUnsetArgument || TemplateCall.FindParameters(number, document).Count > 0)) return true;
+                    continue;
+                }
+            }
+            var sources = BehaviorFamily.ResolveValue(document, definition.Value, "owners") ??
+                BehaviorFamily.ResolveValue(document, definition.Value, "forms");
+            sources = sources is null ? null : BehaviorFamily.ResolveValue(document, sources);
+            if (sources is null || sources.IsNull || sources.IsUnsetArgument || TemplateCall.FindParameters(sources, document).Count > 0 ||
+                sources.Kind == ValueKind.Sequence && sources.Items.Count == 0 ||
+                sources.Kind == ValueKind.Scalar && string.IsNullOrWhiteSpace(sources.Text)) return true;
+        }
+        return false;
     }
 
     private IEnumerable<FormRow> OtherStageForms(string rowId, string parameter)

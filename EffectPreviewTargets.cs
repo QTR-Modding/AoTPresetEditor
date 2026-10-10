@@ -67,6 +67,9 @@ internal static class EffectPreviewTargets
     {
         var item = StageItem(document, stage);
         if (item is null || item.IsNull || item.Kind == ValueKind.Scalar && string.IsNullOrWhiteSpace(item.Text)) return sources;
+        var number = BehaviorFamily.ResolveValue(document, stage, "no");
+        if (number is null || BehaviorFamily.ResolveValue(document, number) is not { } resolved ||
+            !PresetSchema.TryUnsigned(resolved.Text, out _)) return [];
         return item.Kind == ValueKind.Scalar && presentation.ResolveForm(item.Text) is { } form ? [form] : [];
     }
 
@@ -103,7 +106,12 @@ internal static class EffectPreviewTargets
                 var child = BehaviorFamily.ResolveValue(document, resolved, descriptor.Key);
                 if (child is null) continue;
                 var childPath = path.Append(descriptor.Key).ToArray();
-                if (descriptor.Key is "art_object" or "effect_shader") yield return childPath;
+                if (descriptor.Kind is FieldKind.Form or FieldKind.FormList)
+                {
+                    yield return childPath;
+                    if (descriptor.Kind == FieldKind.FormList && BehaviorFamily.ResolveValue(document, child) is { Kind: ValueKind.Sequence } values)
+                        for (var index = 0; index < values.Items.Count; index++) yield return childPath.Append(index.ToString()).ToArray();
+                }
                 else if (descriptor.Kind == FieldKind.ObjectList &&
                     BehaviorFamily.ResolveValue(document, child) is { Kind: ValueKind.Sequence } list)
                     for (var index = 0; index < list.Items.Count; index++)

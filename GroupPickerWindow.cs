@@ -16,16 +16,24 @@ public sealed class GroupPickerWindow : Window
     private readonly TextBlock source = EditorControls.Text("");
     private readonly DataGrid members = CreateMemberGrid();
     private readonly SoundPreview soundPreview = new() { Visibility = Visibility.Collapsed };
+    private readonly EffectPreviewControls effectPreview;
+    private readonly Func<IReadOnlyList<FormRow>> previewItemCandidates;
     private readonly Button choose;
 
     public FormGroupDefinition? SelectedGroup { get; private set; }
     public IReadOnlyList<FormGroupDefinition> CreatedGroups { get; private set; } = [];
 
-    public GroupPickerWindow(IReadOnlyList<FormGroupDefinition> groups, IReadOnlyList<FormRow> forms, FormSelection? constraint = null, string? purpose = null)
+    public GroupPickerWindow(IReadOnlyList<FormGroupDefinition> groups, IReadOnlyList<FormRow> forms, FormSelection? constraint = null, string? purpose = null,
+        Func<IReadOnlyList<FormRow>>? effectPreviewTargets = null, Func<IReadOnlyList<FormRow>>? previewItemCandidates = null,
+        Action<FormRow>? selectPreviewItem = null)
     {
         this.groups = [.. groups];
         this.forms = forms;
         this.constraint = constraint;
+        this.previewItemCandidates = previewItemCandidates ?? (() => effectPreviewTargets is null
+            ? forms.Where(form => form.IsBoundObject && ModelPreviewWindow.CanPreview(form)).ToArray() : []);
+        effectPreview = new(() => (members.SelectedItem as MemberRow)?.Form, effectPreviewTargets ?? (() => []),
+            this.previewItemCandidates, selectPreviewItem, soundPreview.Stop);
         Title = purpose ?? "Choose a form group"; Width = 1080; Height = 660; MinWidth = 780; MinHeight = 450;
         EditorControls.FitToOwner(this);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -55,7 +63,7 @@ public sealed class GroupPickerWindow : Window
         var preview = ModelPreviewWindow.CreateButton(() => (members.SelectedItem as MemberRow)?.Form);
         var textures = TexturePreviewWindow.CreateButton(() => (members.SelectedItem as MemberRow)?.Form);
         preview.Visibility = textures.Visibility = Visibility.Collapsed;
-        var previewButtons = new WrapPanel(); previewButtons.Children.Add(preview); previewButtons.Children.Add(textures);
+        var previewButtons = new WrapPanel(); previewButtons.Children.Add(preview); previewButtons.Children.Add(textures); previewButtons.Children.Add(effectPreview);
         var previews = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
         previews.Children.Add(previewButtons); previews.Children.Add(soundPreview);
         members.SelectionChanged += (_, _) =>
@@ -67,7 +75,8 @@ public sealed class GroupPickerWindow : Window
             textures.Visibility = textures.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
             soundPreview.Visibility = form?.SoundFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             soundPreview.SetSamples(form?.Assets, form?.SoundFiles ?? []);
-            previews.Visibility = preview.IsEnabled || textures.IsEnabled || soundPreview.Visibility == Visibility.Visible
+            effectPreview.Refresh();
+            previews.Visibility = preview.IsEnabled || textures.IsEnabled || soundPreview.Visibility == Visibility.Visible || effectPreview.Visibility == Visibility.Visible
                 ? Visibility.Visible : Visibility.Collapsed;
         };
         Closed += (_, _) => soundPreview.Stop();
@@ -119,7 +128,8 @@ public sealed class GroupPickerWindow : Window
     private void NewGroup()
     {
         soundPreview.Stop();
-        var editor = new GroupEditorWindow(groups, forms, constraint) { Owner = this };
+        var editor = new GroupEditorWindow(groups, forms, constraint, effectPreviewTargets: effectPreview.PreviewTargets,
+            previewItemCandidates: previewItemCandidates, selectPreviewItem: effectPreview.SelectPreviewItem) { Owner = this };
         if (editor.ShowDialog() != true || editor.Group is not { } group) return;
         groups.Add(group); created.Add(group); search.Text = ""; Filter(); groupList.SelectedItem = group;
     }
@@ -191,6 +201,8 @@ public sealed class GroupEditorWindow : Window
     private readonly TextBox name = new();
     private readonly DataGrid members = GroupPickerWindow.CreateMemberGrid();
     private readonly SoundPreview soundPreview = new() { Visibility = Visibility.Collapsed };
+    private readonly EffectPreviewControls effectPreview;
+    private readonly Func<IReadOnlyList<FormRow>> previewItemCandidates;
     private readonly TextBlock status = EditorControls.Text("");
     private readonly TextBlock nameStatus = EditorControls.Text("");
     private readonly Button create;
@@ -198,9 +210,14 @@ public sealed class GroupEditorWindow : Window
     public FormGroupDefinition? Group { get; private set; }
 
     public GroupEditorWindow(IReadOnlyList<FormGroupDefinition> existing, IReadOnlyList<FormRow> forms, FormSelection? constraint = null,
-        IReadOnlyList<string>? initialMembers = null)
+        IReadOnlyList<string>? initialMembers = null, Func<IReadOnlyList<FormRow>>? effectPreviewTargets = null,
+        Func<IReadOnlyList<FormRow>>? previewItemCandidates = null, Action<FormRow>? selectPreviewItem = null)
     {
         this.existing = existing; this.forms = forms; this.constraint = constraint;
+        this.previewItemCandidates = previewItemCandidates ?? (() => effectPreviewTargets is null
+            ? forms.Where(form => form.IsBoundObject && ModelPreviewWindow.CanPreview(form)).ToArray() : []);
+        effectPreview = new(() => (members.SelectedItem as GroupPickerWindow.MemberRow)?.Form, effectPreviewTargets ?? (() => []),
+            this.previewItemCandidates, selectPreviewItem, soundPreview.Stop);
         identifiers.AddRange(initialMembers?.Distinct(StringComparer.Ordinal) ?? []);
         Title = "New form group"; Width = 980; Height = 650; MinWidth = 760; MinHeight = 460;
         EditorControls.FitToOwner(this);
@@ -231,11 +248,12 @@ public sealed class GroupEditorWindow : Window
             textures.Visibility = textures.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
             soundPreview.Visibility = form?.SoundFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             soundPreview.SetSamples(form?.Assets, form?.SoundFiles ?? []);
+            effectPreview.Refresh();
         };
         Closed += (_, _) => soundPreview.Stop();
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
         var footer = new StackPanel();
-        var previewButtons = new WrapPanel(); previewButtons.Children.Add(preview); previewButtons.Children.Add(textures);
+        var previewButtons = new WrapPanel(); previewButtons.Children.Add(preview); previewButtons.Children.Add(textures); previewButtons.Children.Add(effectPreview);
         footer.Children.Add(previewButtons); footer.Children.Add(soundPreview); footer.Children.Add(status);
         create = EditorControls.Button("Create group", Create, isDefault: true);
         create.ToolTip = "Adds this group to the preset. Save to mod exports it with the preset.";
@@ -248,7 +266,9 @@ public sealed class GroupEditorWindow : Window
     private void AddForms()
     {
         soundPreview.Stop();
-        var picker = new FormPickerWindow(forms, multiple: true, selection: constraint, purpose: "Choose group members") { Owner = this };
+        var picker = new FormPickerWindow(forms, multiple: true, selection: constraint, purpose: "Choose group members",
+            effectPreviewTargets: effectPreview.PreviewTargets, previewItemCandidates: previewItemCandidates,
+            selectPreviewItem: effectPreview.SelectPreviewItem) { Owner = this };
         if (picker.ShowDialog() != true) return;
         foreach (var form in picker.SelectedForms)
             if (!identifiers.Contains(form.Identifier, StringComparer.OrdinalIgnoreCase)) identifiers.Add(form.Identifier);
