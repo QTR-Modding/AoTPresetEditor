@@ -32,6 +32,7 @@ public sealed record FormRow(string Name, string EditorId, string Type, string P
     public IReadOnlyList<ModelPreviewSource> Models { get; init; } = [];
     public IReadOnlyList<TexturePreviewSource> Textures { get; init; } = [];
     public IEffectShaderGetter? EffectShader { get; init; }
+    public IReadOnlyList<FormRow>? FormListMembers { get; init; }
     public IComparable IdentifierSortKey => PresetPresentation.IdentifierSortKey(Identifier);
 }
 
@@ -113,6 +114,7 @@ public static class FormCatalog
             AddRecords(mod, plugin, forms);
         }
 
+        ResolveFormListMembers(forms, environment.LinkCache);
         AssignRuntimeIds(forms, environment.LoadOrder.ListedOrder.Select(listing => listing.Mod!));
         var assets = GameAssets.FromLoadOrder(dataFolder, environment.LoadOrder.ListedOrder.Select(listing => listing.ModKey));
         ResolvePreviewAssets(forms, environment.LinkCache, assets);
@@ -154,22 +156,56 @@ public static class FormCatalog
                 continue;
             }
 
-            string name = record switch
-            {
-                INamedGetter named => named.Name ?? "",
-                INamedRequiredGetter named => named.Name,
-                _ => ""
-            };
-            string origin = record.FormKey.ModKey.FileName.String;
-            var boundObject = IsBoundObject(record);
-            forms[record.FormKey] = new FormRow(name, record.EditorID ?? "", record.Registration.Name, origin, winner,
-                $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter or IEffectShaderGetter or IFormListGetter, boundObject)
-            {
-                SoundFiles = record is ISoundDescriptorGetter sound ? sound.SoundFiles.Select(file => file.DataRelativePath.Path).ToArray() : [],
-                Textures = GetTextures(record),
-                EffectShader = record is IEffectShaderGetter shader ? shader.DeepCopy() : null
-            };
+            forms[record.FormKey] = CreateFormRow(record, winner);
         }
+    }
+
+    private static FormRow CreateFormRow(IMajorRecordGetter record, string winner)
+    {
+        string name = record switch
+        {
+            INamedGetter named => named.Name ?? "",
+            INamedRequiredGetter named => named.Name,
+            _ => ""
+        };
+        string origin = record.FormKey.ModKey.FileName.String;
+        var boundObject = IsBoundObject(record);
+        return new FormRow(name, record.EditorID ?? "", record.Registration.Name, origin, winner,
+            $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter or IEffectShaderGetter or IFormListGetter, boundObject)
+        {
+            SoundFiles = record is ISoundDescriptorGetter sound ? sound.SoundFiles.Select(file => file.DataRelativePath.Path).ToArray() : [],
+            Textures = GetTextures(record),
+            EffectShader = record is IEffectShaderGetter shader ? shader.DeepCopy() : null,
+            FormListMembers = record is IFormListGetter ? [] : null
+        };
+    }
+
+    private static void ResolveFormListMembers(Dictionary<FormKey, FormRow> forms, ILinkCache cache)
+    {
+        foreach (var (key, form) in forms.Where(pair => pair.Value.FormListMembers is not null).ToArray())
+        {
+            var members = new List<FormRow>();
+            if (Resolve<IFormListGetter>(cache, key) is { } list)
+                foreach (var link in list.Items)
+                    if (forms.TryGetValue(link.FormKey, out var member)) members.Add(member);
+                    else if (Resolve<ISkyrimMajorRecordGetter>(cache, link.FormKey) is { } record)
+                        members.Add(CreateFormRow(record, record.FormKey.ModKey.FileName.String));
+            forms[key] = form with { FormListMembers = members };
+        }
+    }
+
+    public static IReadOnlyList<FormRow> ExpandFormList(FormRow form, Func<string, FormRow?> resolve)
+    {
+        var result = new List<FormRow>();
+        AppendFormList(form, resolve, new HashSet<string>(StringComparer.OrdinalIgnoreCase), result);
+        return result;
+    }
+
+    private static void AppendFormList(FormRow form, Func<string, FormRow?> resolve, HashSet<string> visited, List<FormRow> result)
+    {
+        if (form.FormListMembers is not { } members) { result.Add(form); return; }
+        if (!visited.Add(form.Identifier)) return;
+        foreach (var member in members) AppendFormList(resolve(member.Identifier) ?? member, resolve, visited, result);
     }
 
     private static IReadOnlyList<ModelPreviewSource> GetDirectModels(IMajorRecordGetter record, ILinkCache cache)
