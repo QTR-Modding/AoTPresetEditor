@@ -31,6 +31,10 @@ internal static class SchemaPickerChecks
             Require(Get(context, "FormEditorID").AllowsGroups && Get(context, "FormEditorID").TriggerOnly,
                 "Triggers must offer groups and constrain individual forms to trigger types.");
             Require(Get(context, "containers").AllowsGroups, "Trigger inventory filters must offer groups.");
+            Require(Get(context, "FormEditorID").Help.Contains("active magic effect") &&
+                Get(context, "FormEditorID").Help.Contains("Magic effects trigger only world items") &&
+                Get(context, "FormEditorID").Help.Contains("inventory owner's magic effects, use perk conditions"),
+                "Magic effect trigger help must distinguish world effects from inventory-owner perk conditions.");
         }
         Require(!Get("stage", "FormEditorID").AllowsGroups && !Get("effect", "FormEditorID").AllowsGroups &&
                 !Get("transformer", "finalFormEditorID").AllowsGroups, "Singular results and effects must not offer groups.");
