@@ -15,6 +15,9 @@ public sealed class FormPickerWindow : Window
     private const string AllPlugins = "All plugins";
     private static readonly TimeSpan SearchDelay = TimeSpan.FromMilliseconds(180);
     private readonly IReadOnlyList<FormRow> forms;
+    private readonly IReadOnlyList<FormRow> allForms;
+    private readonly FormSelection? constraint;
+    private readonly Button listMembers = new() { Content = "View members...", Visibility = Visibility.Collapsed };
     private readonly bool multiple;
     private readonly bool browseOnly;
     private readonly string purpose;
@@ -41,6 +44,9 @@ public sealed class FormPickerWindow : Window
         Func<IReadOnlyList<FormRow>>? effectPreviewTargets = null, Func<IReadOnlyList<FormRow>>? previewItemCandidates = null,
         Action<FormRow>? selectPreviewItem = null)
     {
+        allForms = forms;
+        constraint = selection;
+        listMembers.Click += (_, _) => ShowFormListMembers();
         this.forms = allowedTypes is { Count: > 0 } || selection is not null
             ? forms.Where(form => (allowedTypes is not { Count: > 0 } || allowedTypes.Contains(form.Type, StringComparer.OrdinalIgnoreCase)) &&
                 (selection?.IsPickerChoice(form) ?? true)).ToArray()
@@ -93,6 +99,7 @@ public sealed class FormPickerWindow : Window
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var previews = new StackPanel();
         var visualPreviews = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+        visualPreviews.Children.Add(listMembers);
         visualPreviews.Children.Add(modelPreview); visualPreviews.Children.Add(texturePreview); visualPreviews.Children.Add(effectPreview);
         previews.Children.Add(visualPreviews); previews.Children.Add(soundPreview);
         Grid.SetRow(previews, 3); layout.Children.Add(previews);
@@ -259,6 +266,7 @@ public sealed class FormPickerWindow : Window
     private void UpdateSelection()
     {
         var current = results.SelectedItem as FormRow;
+        listMembers.Visibility = current?.FormListMembers is not null ? Visibility.Visible : Visibility.Collapsed;
         modelPreview.IsEnabled = ModelPreviewWindow.CanPreview(current);
         texturePreview.IsEnabled = TexturePreviewWindow.CanPreview(current);
         soundPreview.Visibility = current?.SoundFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -269,6 +277,25 @@ public sealed class FormPickerWindow : Window
         selection.Text = multiple
             ? $"{selected.Count:N0} selected · Ctrl/Shift for multiple · Kept when filtering"
             : selected.FirstOrDefault() is { } form ? $"{(form.Name.Length == 0 ? form.EditorId : form.Name)} · {form.Identifier}" : "Choose a form from the list.";
+    }
+
+    private void ShowFormListMembers()
+    {
+        if (results.SelectedItem is not FormRow { FormListMembers: not null } form) return;
+        var lookup = PresetPresentation.FormIdentifiers(allForms).ToLookup(pair => pair.Identifier, pair => pair.Form, StringComparer.OrdinalIgnoreCase);
+        var members = FormCatalog.ExpandFormList(form, id => lookup[PresetPresentation.NormalizeIdentifier(id)].FirstOrDefault());
+        var grid = GroupPickerWindow.CreateMemberGrid();
+        grid.ItemsSource = members.Select(member => new GroupPickerWindow.MemberRow(member.Identifier, member, constraint?.Matches(member) ?? true)).ToArray();
+        var layout = new DockPanel { Margin = new Thickness(14) };
+        var heading = EditorControls.Text($"{members.Count} members, including nested lists. Script-added members are not included.");
+        DockPanel.SetDock(heading, Dock.Top); layout.Children.Add(heading);
+        var close = new Button { Content = "Close", IsCancel = true, HorizontalAlignment = HorizontalAlignment.Right };
+        DockPanel.SetDock(close, Dock.Bottom); layout.Children.Add(close); layout.Children.Add(grid);
+        var window = new Window { Title = $"Form list - {form.EditorId}", Owner = this, Content = layout,
+            Width = 900, Height = 550, MinWidth = 600, MinHeight = 300, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        window.SetResourceReference(StyleProperty, typeof(Window));
+        EditorControls.FitToOwner(window);
+        window.ShowDialog();
     }
 
     private void Results_DoubleClick(object sender, MouseButtonEventArgs args)
