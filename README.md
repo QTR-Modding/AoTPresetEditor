@@ -50,6 +50,8 @@ Validation checks AoT field requirements, values, stage numbering, templates, sh
 
 Trigger fields also accept art objects and effect shaders applied to the world item itself or a nearby reference. Keywords match the base object of the world item itself or a nearby reference. In inventories, Keywords match any contained item's base object, including the evolving item; the inventory owner's keywords do not count. Changes to these effects are detected on the next scan. Skyrim form lists can supply several triggers; AoT reads only their plugin-defined members when loading settings; members added by scripts are not included. Select a Skyrim form list in the picker and use **View members...** to inspect its members, including nested lists. Trigger validation checks those members, including lists used through form groups, while preserving the authored list identifiers in YAML. These trigger choices require an AoT build containing the corresponding support.
 
+Faction triggers match nearby actors that belong to the faction, or nearby non-actor references explicitly owned by it. In inventories, the inventory owner must match; faction ownership of contained items or the cell does not count. Membership and ownership changes are detected by AoT's existing scans. Factions can be mixed with other triggers, form groups, and Skyrim form lists, and require an AoT build containing faction-trigger support.
+
 Transformations and time modifiers need stages, which can come from another preset. The editor checks the current workspace and loaded presets and shows a warning when it cannot find or verify those stages. This warning does not prevent saving.
 
 ## Preview world effects
