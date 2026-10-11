@@ -68,9 +68,9 @@ internal static class FormSelectionChecks
         Require(Row("Armor").Categories == ItemCategories.ARMO && Row("Misc").Categories == ItemCategories.MISC,
             "Equipment and miscellaneous item categories must come from record type.");
         Require(Row("Key").Categories == ItemCategories.None, "Keys must not inherit the MISC category from the engine class hierarchy.");
-        foreach (var id in new[] { "Food", "FoodIngredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Location", "Perk", "Fire", "Grass", "LeveledNpc", "Explosion", "Hazard", "Art", "Shader", "FormList" })
+        foreach (var id in new[] { "Food", "FoodIngredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Location", "Perk", "Fire", "Grass", "LeveledNpc", "Explosion", "Hazard", "Art", "Shader", "FormList", "Keyword" })
             Require(Row(id).IsTrigger, $"{id} must pass AoT's native trigger type check.");
-        foreach (var id in new[] { "Keyword", "Sound", "MagicEffect", "ArmorAddon" })
+        foreach (var id in new[] { "Sound", "MagicEffect", "ArmorAddon" })
             Require(!Row(id).IsTrigger, $"{id} must fail AoT's native trigger type check.");
 
         var resultSelection = new FormSelection(BoundObjectOnly: true);
@@ -510,7 +510,7 @@ internal static class FormSelectionChecks
     {
         foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon })
         foreach (var section in new[] { "transformers", "timeModulators" })
-        foreach (var selector in new[] { "Art", "Shader", "FormList", "[Art, Shader, FormList]", "AppliedEffects" })
+        foreach (var selector in new[] { "Art", "Shader", "FormList", "Keyword", "[Art, Shader, FormList, Keyword]", "AppliedEffects" })
         {
             var settings = section == "transformers" ? "finalFormEditorID: OtherFood, duration: 1" : "magnitude: 0";
             var rule = PresetYaml.Parse($"{{{section}: [{{FormEditorID: $trigger, {settings}}}]}}");
@@ -523,7 +523,7 @@ internal static class FormSelectionChecks
             var call = $"behavior({selector})";
             var output = kind == PresetKind.Default ? "<<: " + call : (kind == PresetKind.Custom ? "ownerLists" : "formsLists") + ":\n- " + call;
             var document = PresetDocument.Parse("templates:\n  behavior: " + PresetYaml.Write(rule, flow: true).Trim() + "\n" + output, "FOOD", kind);
-            var catalog = new PresetPresentation(document, forms, [new("AppliedEffects", ["Art", "Shader", "FormList"])]);
+            var catalog = new PresetPresentation(document, forms, [new("AppliedEffects", ["Art", "Shader", "FormList", "Keyword"])]);
             Require(PresetValidation.Check(document, CancellationToken.None, catalog).GetAwaiter().GetResult().IsValid,
                 $"{kind}/{section} must accept applied effects and FLST identifiers after template expansion: {selector}");
         }
