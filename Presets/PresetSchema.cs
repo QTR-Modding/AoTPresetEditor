@@ -38,14 +38,14 @@ public static class PresetSchema
     ];
     private static readonly PresetField[] ModulatorFields =
     [
-        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. For world items, an art object or effect shader on the item itself or a nearby reference can also trigger this effect. A form group or Skyrim form list can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
+        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. For world items, an art object or effect shader on the item itself or a nearby reference can also trigger this effect. Keywords on the item's or a nearby reference's base object also trigger world items. A form group or Skyrim form list can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
         new("magnitude", "Time multiplier", FieldKind.Number, "1 is normal speed, 0 pauses progression, and negative values reverse it. This does not change transformation duration.", true, DefaultText: "1"),
         .. TriggerFields,
         .. VisualFields
     ];
     private static readonly PresetField[] TransformerFields =
     [
-        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. For world items, an art object or effect shader on the item itself or a nearby reference can also trigger this effect. A form group or Skyrim form list can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
+        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. For world items, an art object or effect shader on the item itself or a nearby reference can also trigger this effect. Keywords on the item's or a nearby reference's base object also trigger world items. A form group or Skyrim form list can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
         new("finalFormEditorID", "Result item", FieldKind.Form, "The object produced when the transformation finishes.", true, BoundObjectOnly: true),
         new("duration", "Duration (game hours)", FieldKind.Number, "Positive time needed to finish this transformation while its trigger applies.", true, DefaultText: "0.05"),
         .. TriggerFields,
