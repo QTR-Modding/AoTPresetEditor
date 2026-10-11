@@ -1,0 +1,74 @@
+<Window x:Class="AoTPresetEditor.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:AoTPresetEditor"
+ Title="AoT Preset Editor" Width="1400" Height="900"
+ Style="{DynamicResource {x:Type Window}}" WindowStartupLocation="CenterScreen">
+ <ScrollViewer x:Name="WindowViewport" Margin="12,6,12,8" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Focusable="False">
+ <Grid MinWidth="800" MinHeight="420" Width="{Binding ViewportWidth, ElementName=WindowViewport}" Height="{Binding ViewportHeight, ElementName=WindowViewport}">
+  <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <DockPanel Panel.ZIndex="1" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,0,4,0">
+   <Menu x:Name="ToolsMenu" DockPanel.Dock="Right" VerticalAlignment="Center">
+    <MenuItem Header="Tools">
+     <MenuItem Header="Appearance..." Click="Appearance_Click"/>
+     <MenuItem x:Name="FormBrowserAction" Header="Form browser..." Click="FormBrowser_Click" Visibility="Collapsed"/>
+    </MenuItem>
+   </Menu>
+  </DockPanel>
+  <TabControl x:Name="MainTabs" SelectionChanged="MainTab_Selected">
+   <TabItem Header="Presets">
+    <Grid Margin="4">
+     <DockPanel x:Name="PresetBrowser" Margin="8">
+      <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+       <Button x:Name="ResumeEditing" DockPanel.Dock="Right" Content="Resume editing" Click="Resume_Click" Visibility="Collapsed"/>
+       <StackPanel Orientation="Horizontal">
+        <Button Content="New preset..." Click="NewPreset_Click"/>
+        <Button Content="Open file or draft..." Click="OpenPreset_Click"/>
+       </StackPanel>
+      </DockPanel>
+      <TextBlock DockPanel.Dock="Top" Text="Installed presets" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+      <DockPanel>
+       <StackPanel x:Name="PresetFilters" DockPanel.Dock="Left" Width="220" Margin="0,0,16,0" Visibility="Collapsed">
+        <TextBlock Text="Item type" Margin="0,0,0,5"/>
+        <ComboBox x:Name="PresetCategories" SelectionChanged="PresetFilter_Changed" AutomationProperties.Name="Preset type"/>
+        <TextBlock Text="Behavior" Margin="0,10,0,5"/>
+        <ComboBox x:Name="PresetKinds" SelectionChanged="PresetFilter_Changed" DisplayMemberPath="Value" AutomationProperties.Name="Behavior"/>
+        <TextBlock Text="Search files" Margin="0,10,0,5"/>
+        <TextBox x:Name="PresetSearch" TextChanged="PresetFilter_Changed" AutomationProperties.Name="Search presets" ToolTip="Filter preset paths"/>
+       </StackPanel>
+       <Grid>
+        <ListBox x:Name="PresetList" SelectionChanged="Preset_Selected" ScrollViewer.HorizontalScrollBarVisibility="Auto">
+         <ListBox.ItemTemplate>
+          <DataTemplate>
+           <StackPanel Margin="4">
+            <TextBlock Text="{Binding DisplayName}"/>
+            <TextBlock Text="{Binding RelativePath}" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+           </StackPanel>
+          </DataTemplate>
+         </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock x:Name="PresetEmpty" Text="Choose a Skyrim Data folder on the Game data tab to browse installed presets. You can also open a file or create a preset." Margin="16" TextWrapping="Wrap" IsHitTestVisible="False"/>
+       </Grid>
+      </DockPanel>
+     </DockPanel>
+     <local:PresetWorkspace x:Name="Workspace" Visibility="Collapsed"/>
+    </Grid>
+   </TabItem>
+   <TabItem Header="Game data">
+    <DockPanel Margin="12">
+     <TextBlock Text="Skyrim Data folder" DockPanel.Dock="Top" Margin="0,0,0,6"/>
+     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+      <TextBlock x:Name="DataLoading" DockPanel.Dock="Right" Text="Loading..." Margin="12,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+      <Button x:Name="ReloadButton" DockPanel.Dock="Right" Content="Reload" Click="Reload_Click" Visibility="Collapsed"/>
+      <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="Data folder..." Click="Browse_Click"/>
+      <TextBox x:Name="DataPath" IsReadOnly="True" AutomationProperties.Name="Skyrim Data folder" ToolTip="Launch through MO2 to read the selected profile's files."/>
+     </DockPanel>
+     <TextBlock x:Name="LoadOrderInfo" DockPanel.Dock="Top" Margin="0,0,0,8" TextWrapping="Wrap"/>
+     <ListBox x:Name="LoadOrderList" FontFamily="Consolas"/>
+    </DockPanel>
+   </TabItem>
+   <TabItem x:Name="HelpTab" Header="Help"/>
+  </TabControl>
+  <TextBlock x:Name="Status" Grid.Row="1" Margin="0,3,0,0" FontSize="12" Text="Launch through MO2, or choose a Skyrim Data folder on the Game data tab." TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+ </Grid>
+ </ScrollViewer>
+</Window>

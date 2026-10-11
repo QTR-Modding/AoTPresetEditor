@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ApplicationIcon>Assets\AoTPresetEditor.ico</ApplicationIcon>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <CETCompat>false</CETCompat>
+    <Version>0.1.0</Version>
+    <Authors>Quantumyilmaz</Authors>
+    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="tests/**/*.cs" />
+    <PackageReference Include="AvalonEdit" Version="6.3.1.120" />
+    <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="3.1.2" />
+    <PackageReference Include="Nifly" Version="1.1.0" />
+    <PackageReference Include="Pfim" Version="0.11.3" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" GeneratePathProperty="true" />
+    <PackageReference Include="Mutagen.Bethesda.Skyrim" Version="0.54.0" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <PackageReference Include="Vortice.XAudio2" Version="3.8.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="LICENSE;licenses/Nifly.txt;licenses/HelixToolkit.txt;licenses/Pfim.txt;licenses/Miniball.txt;licenses/CommunityToolkit.txt;licenses/CommunityToolkit-NOTICE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="licenses/Vortice.Windows.txt;licenses/Vortice.Mathematics.txt;licenses/SharpGen.txt;licenses/SharpDX.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="licenses/AvalonEdit.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(PkgMicrosoft_Web_WebView2)/LICENSE.txt" Link="licenses/WebView2.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(PkgMicrosoft_Web_WebView2)/NOTICE.txt" Link="licenses/WebView2-NOTICE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
