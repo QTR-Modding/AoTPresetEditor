@@ -177,7 +177,7 @@ public static class PresetValidation
                     ? $"{name} has no EditorID; AoT cannot use it as a source item."
                     : field.BoundObjectOnly ? $"{name} is {form.Type}, not a bound object that AoT can produce."
                     : field.MatchPresetCategory ? $"{name} does not belong to {category}."
-                    : field.TriggerOnly ? $"{name} is {form.Type}; a trigger must be a bound object, location, or perk."
+                    : field.TriggerOnly ? $"{name} is {form.Type}; a trigger must be a bound object, location, perk, effect shader, or form list."
                     : $"{name} is {form.Type}; this setting requires {string.Join(" or ", field.FormTypes ?? [])}.";
                 errors.Add($"{label}: {reason}");
             }

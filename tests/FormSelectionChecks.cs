@@ -68,15 +68,15 @@ internal static class FormSelectionChecks
         Require(Row("Armor").Categories == ItemCategories.ARMO && Row("Misc").Categories == ItemCategories.MISC,
             "Equipment and miscellaneous item categories must come from record type.");
         Require(Row("Key").Categories == ItemCategories.None, "Keys must not inherit the MISC category from the engine class hierarchy.");
-        foreach (var id in new[] { "Food", "FoodIngredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Location", "Perk", "Fire", "Grass", "LeveledNpc", "Explosion", "Hazard" })
+        foreach (var id in new[] { "Food", "FoodIngredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Location", "Perk", "Fire", "Grass", "LeveledNpc", "Explosion", "Hazard", "Art", "Shader", "FormList" })
             Require(Row(id).IsTrigger, $"{id} must pass AoT's native trigger type check.");
-        foreach (var id in new[] { "Keyword", "FormList", "Sound", "MagicEffect", "ArmorAddon" })
+        foreach (var id in new[] { "Keyword", "Sound", "MagicEffect", "ArmorAddon" })
             Require(!Row(id).IsTrigger, $"{id} must fail AoT's native trigger type check.");
 
         var resultSelection = new FormSelection(BoundObjectOnly: true);
         foreach (var id in new[] { "Food", "Medicine", "PoisonedFood", "Ingredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Fire" })
             Require(resultSelection.Matches(Row(id)), $"{id} must pass native bound-object validation, independently of the source category.");
-        foreach (var id in new[] { "Keyword", "FormList", "Sound", "MagicEffect", "ArmorAddon", "Location", "Perk" })
+        foreach (var id in new[] { "Keyword", "FormList", "Shader", "Sound", "MagicEffect", "ArmorAddon", "Location", "Perk" })
             Require(!resultSelection.Matches(Row(id)), $"{id} must fail native bound-object validation.");
         Require(new FormSelection(BoundObjectOnly: true, TriggerOnly: true).Matches(Row("Key")) &&
             !new FormSelection(BoundObjectOnly: true, TriggerOnly: true).Matches(Row("Location")),
@@ -113,6 +113,7 @@ internal static class FormSelectionChecks
         AddonSettings(forms);
         SourceGroups(forms);
         KnownForms(forms);
+        ExpandedTriggerForms(forms);
     }
 
     private static void PickerControls(IReadOnlyList<FormRow> forms)
@@ -399,7 +400,7 @@ internal static class FormSelectionChecks
         IReadOnlyList<string> Errors(PresetValue value) => (IReadOnlyList<string>)typeof(PresetValidation)
             .GetMethod("KnownFormErrors", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [value, "FOOD", PresetKind.Custom, catalog])!;
         Require(Errors(rule).Count == 0, "A FOOD rule may produce keys and ammunition while explicit stages stay compatible with its source.");
-        foreach (var result in new[] { "Location", "Perk", "FormList", "Sound", "MagicEffect" })
+        foreach (var result in new[] { "Location", "Perk", "FormList", "Shader", "Sound", "MagicEffect" })
         {
             var invalid = rule.Clone(); invalid.Set("finalFormEditorID", PresetValue.Scalar(result));
             Require(Errors(invalid).Any(error => error.StartsWith("Final item:", StringComparison.Ordinal)),
@@ -503,6 +504,29 @@ internal static class FormSelectionChecks
         var validation = PresetValidation.Check(expanded, CancellationToken.None, catalog).GetAwaiter().GetResult();
         Require(validation.FileErrors.Count == 0 && validation.Errors.Values.SelectMany(errors => errors).Any(error => error.Contains("bound object")),
             "Known-form validation must inspect native-expanded template arguments, not only authored mappings.");
+    }
+
+    private static void ExpandedTriggerForms(IReadOnlyList<FormRow> forms)
+    {
+        foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon })
+        foreach (var section in new[] { "transformers", "timeModulators" })
+        foreach (var selector in new[] { "Art", "Shader", "FormList", "[Art, Shader, FormList]", "AppliedEffects" })
+        {
+            var settings = section == "transformers" ? "finalFormEditorID: OtherFood, duration: 1" : "magnitude: 0";
+            var rule = PresetYaml.Parse($"{{{section}: [{{FormEditorID: $trigger, {settings}}}]}}");
+            if (kind != PresetKind.Addon)
+            {
+                rule.Set("stages", PresetYaml.Parse("[{no: 0, name: '', duration: 1}]"));
+                rule.Set("finalFormEditorID", PresetValue.Scalar("OtherFood"));
+            }
+            if (kind != PresetKind.Default) rule.Set(kind == PresetKind.Custom ? "owners" : "forms", PresetValue.Scalar("Food"));
+            var call = $"behavior({selector})";
+            var output = kind == PresetKind.Default ? "<<: " + call : (kind == PresetKind.Custom ? "ownerLists" : "formsLists") + ":\n- " + call;
+            var document = PresetDocument.Parse("templates:\n  behavior: " + PresetYaml.Write(rule, flow: true).Trim() + "\n" + output, "FOOD", kind);
+            var catalog = new PresetPresentation(document, forms, [new("AppliedEffects", ["Art", "Shader", "FormList"])]);
+            Require(PresetValidation.Check(document, CancellationToken.None, catalog).GetAwaiter().GetResult().IsValid,
+                $"{kind}/{section} must accept applied effects and FLST identifiers after template expansion: {selector}");
+        }
     }
 
     private static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;

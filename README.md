@@ -46,6 +46,8 @@ Fields appear when AoT can use them. Stage 0 uses the original item; later FOOD 
 
 Validation checks AoT field requirements, values, stage numbering, templates, shared references, and known form types. It detects incompatible replacements, reuse of a source as a later stage, and duplicate replacements written with different identifiers. Source items need an EditorID, including when selected by numeric ID. Unknown identifiers still need to exist in your game. Test the exported preset in game to check its behavior.
 
+Trigger fields also accept art objects and effect shaders applied to the world item itself or a nearby reference. Changes to these effects are detected on the next scan. Skyrim form lists can supply several triggers; AoT reads only their plugin-defined members when loading settings; members added by scripts are not included. The editor accepts the list identifier but does not inspect its members. These trigger choices require an AoT build containing the corresponding support.
+
 Transformations and time modifiers need stages, which can come from another preset. The editor checks the current workspace and loaded presets and shows a warning when it cannot find or verify those stages. This warning does not prevent saving.
 
 ## Preview world effects
