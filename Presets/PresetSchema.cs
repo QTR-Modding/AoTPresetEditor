@@ -138,7 +138,9 @@ public static class PresetSchema
             var effect = NormalizeContext(context) == "transformer" ? "transformation" : "time modifier";
             help = $"Restrict this {effect} to the selected inventories; leave empty for no restriction. Items lying in the world ignore this filter.";
         }
-        if (kind == PresetKind.Addon && field.Key is "containers" or "allowed_stages")
+        if (kind == PresetKind.Addon && field.Key == "containers" && NormalizeContext(context) == "rule")
+            help = "Replace the item's shared Containers filter with this list. It affects stage progression and all transformations, including those from other presets. An empty list removes the restriction. Use existing filter removes this override and keeps the filter supplied by the default/custom rule or earlier addons.";
+        else if (kind == PresetKind.Addon && field.Key is "containers" or "allowed_stages")
             help += NormalizeContext(context) == "rule"
                 ? " These entries are added to the Containers filter in the item's stage settings. Leaving this empty keeps that filter."
                 : " When the item's stage settings already define this trigger, the lists are combined. Leaving this empty keeps the existing list.";
@@ -311,7 +313,7 @@ public static class PresetSchema
 
     public static string DefaultDescription(PresetField field, string context, PresetKind kind = PresetKind.Custom) => field.Key switch
     {
-        "containers" when kind == PresetKind.Addon => "No containers added here. Existing filters still apply.",
+        "containers" when kind == PresetKind.Addon => "Uses the existing filter",
         "allowed_stages" when kind == PresetKind.Addon => "Keeps any restriction from the source rule",
         "weight" or "value" => "Unchanged",
         "crafting_allowed" => "Cannot stand in for the source item in crafting",

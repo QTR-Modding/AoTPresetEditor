@@ -566,7 +566,8 @@ public sealed class ValueEditorControl : UserControl
                 actions.Children.Add(EditorControls.Button("Override here", () => editSections!(descriptor.Key, true)));
             actions.Children.Add(EditorControls.Button("Remove section", () => editSections!(descriptor.Key, false)));
         }
-        else if (!variable && current is not null && (!descriptor.Required || Value.Get("<<") is not null)) actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Clear" : "Use inherited value", () =>
+        else if (!variable && current is not null && (!descriptor.Required || Value.Get("<<") is not null)) actions.Children.Add(EditorControls.Button(Value.Get("<<") is not null ? "Use inherited value" :
+            Document.Kind == PresetKind.Addon && descriptor.Key == "containers" && PresetSchema.NormalizeContext(context) == "rule" ? "Use existing filter" : "Clear", () =>
             ReplaceField(descriptor, target, null)));
         else if (!variable && (!descriptor.Required || Value.Get("<<") is not null))
             actions.Children.Add(EditorControls.Button(Value.Get("<<") is null ? "Set" : "Override here", () =>
@@ -671,6 +672,8 @@ public sealed class ValueEditorControl : UserControl
                 errors = PresetSchema.ValidateField(own, view.Field, context, Document.Category, Document.Kind,
                     partial: parametersAllowed || Value.Get("<<") is not null || IsReference(own));
                 text = errors.Count > 0 ? string.Join(Environment.NewLine, errors)
+                    : Document.Kind == PresetKind.Addon && key == "containers" && PresetSchema.NormalizeContext(context) == "rule" && own is { Kind: ValueKind.Sequence, Items.Count: 0 }
+                        ? "Removes the existing filter"
                     : own.Kind == ValueKind.Scalar && view.Field.Kind is FieldKind.Form or FieldKind.FormList
                         ? behaviorMode && IsVariable(own) ? "" : presentation.FormLabel(own.Text, true) : "";
             }

@@ -274,7 +274,7 @@ internal static class SchemaPickerChecks
 
         var containers = PresetSchema.GetFields("rule", PresetKind.Addon).Single(field => field.Key == "containers");
         Require(PresetSchema.DefaultDescription(containers, "rule", PresetKind.Addon) ==
-            "No containers added here. Existing filters still apply.", "Unset addon containers must describe the existing filters.");
+            "Uses the existing filter", "Unset addon containers must describe the existing filters.");
         var allowed = PresetSchema.GetFields("transformer", PresetKind.Addon).Single(field => field.Key == "allowed_stages");
         Require(!PresetSchema.DefaultDescription(allowed, "transformer", PresetKind.Addon).Contains("containers"),
             "The container explanation must not replace the unrelated allowed-stage explanation.");
