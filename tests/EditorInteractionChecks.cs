@@ -28,6 +28,7 @@ internal static class EditorInteractionChecks
         InlineEditing();
         TriggerStageIssueNavigation();
         CompactFields();
+        AddonContainerClearing();
         VariableCheckboxes();
         EmptyScalarDisplay();
         CompactScalarLists();
@@ -1028,6 +1029,40 @@ internal static class EditorInteractionChecks
         inheritedMagnitude.Text = "25";
         Require(ReferenceEquals(inheritedMagnitude, FieldInput(inherited, "magnitude")) && inherited.Value.Get("magnitude")?.Text == "25",
             "Pending inherited-effect expansion must keep magnitude editable while the user types.");
+    }
+
+    private static void AddonContainerClearing()
+    {
+        var document = PresetDocument.Parse("formsLists: [{forms: FoodBeef}]", "FOOD", PresetKind.Addon);
+        var rule = document.Blocks.Single();
+        var editor = new ValueEditorControl(document, Forms, rule.Value, rule.Context, "Beef");
+        PresetDocument Saved()
+        {
+            var saved = document.Clone(); saved.Blocks.Single().Value = editor.Value.Clone();
+            return PresetDocument.Parse(saved.ToYaml(), "FOOD", PresetKind.Addon);
+        }
+        Click(Descendants<Button>(FieldCard(editor, "containers")).Single(button => Equals(button.Content, "Set")));
+        editor.Capture();
+        Require(editor.Value.Get("containers") is { Kind: ValueKind.Sequence, Items.Count: 0 },
+            "Setting addon Containers without entries must create an explicit empty list.");
+        Require(Descendants<TextBlock>(FieldCard(editor, "containers")).Any(text => text.Text == "Removes the existing filter"),
+            "An empty addon filter must describe its clearing effect.");
+        var restored = Saved();
+        Require(restored.Blocks.Single().Value.Get("containers") is { Kind: ValueKind.Sequence, Items.Count: 0 } &&
+                PresetValidation.Check(restored, CancellationToken.None).GetAwaiter().GetResult().IsValid,
+            "The clear-only addon must remain explicit and exportable after saving and reopening.");
+        Click(Descendants<Button>(FieldCard(editor, "containers")).Single(button => Equals(button.Content, "Use existing filter")));
+        editor.Capture();
+        Require(editor.Value.Get("containers") is null && Saved().Blocks.Single().Value.Get("containers") is null,
+            "Using the existing filter must omit the field rather than serialize an empty list.");
+        rule.Value.Set("containers", PresetYaml.Parse("[0x7]"));
+        editor = new ValueEditorControl(document, Forms, rule.Value, rule.Context, "Beef");
+        var card = FieldCard(editor, "containers");
+        Descendants<ListBox>(card).Single().SelectedIndex = 0;
+        Click(Descendants<Button>(card).Single(button => Equals(button.Content, "Remove")));
+        editor.Capture();
+        Require(editor.Value.Get("containers") is { Kind: ValueKind.Sequence, Items.Count: 0 },
+            "Removing the last container must retain an explicit clear rather than omit the override.");
     }
 
     private static void ContextualActions()

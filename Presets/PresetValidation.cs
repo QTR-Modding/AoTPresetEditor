@@ -95,7 +95,8 @@ public static class PresetValidation
 
     private static bool HasEffectiveAddonSettings(PresetValue rule, PresetPresentation? catalog)
     {
-        if (HasConfiguredForms(rule.Get("containers"), catalog)) return true;
+        if (rule.Get("containers") is { Kind: ValueKind.Sequence, Items.Count: 0 } ||
+            HasConfiguredForms(rule.Get("containers"), catalog)) return true;
         var triggerSelection = new FormSelection(TriggerOnly: true);
         foreach (var key in new[] { "transformers", "timeModulators" })
             if (rule.Get(key) is { Kind: ValueKind.Sequence } triggers &&

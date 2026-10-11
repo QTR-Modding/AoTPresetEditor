@@ -262,7 +262,7 @@ internal static class FormSelectionChecks
         foreach (var settings in new[]
         {
             "", ", containers: 0", ", containers: 0x0", ", containers: Zero", ", containers: null, transformers: null, timeModulators: null",
-            ", containers: [], transformers: [], timeModulators: []", ", containers: Empty",
+            ", containers: Empty",
             ", containers: [Empty, Missing]", ", timeModulators: [{FormEditorID: 0, magnitude: 0}]", ", timeModulators: [{FormEditorID: Empty, magnitude: 0}]",
             ", transformers: [{FormEditorID: Missing, finalFormEditorID: Food, duration: 1}]"
         })
@@ -276,6 +276,7 @@ internal static class FormSelectionChecks
                 "Blank or null form selections cannot make an addon effective.");
         foreach (var settings in new[]
         {
+            "containers: []", "containers: [], transformers: [], timeModulators: []",
             "containers: Player", "containers: Food", "containers: [Empty, Player]", "containers: OptionalContainer",
             "timeModulators: [{FormEditorID: Fires, magnitude: 0}]", "timeModulators: [{FormEditorID: Fire, magnitude: 1}]",
             "timeModulators: [{FormEditorID: Fire, magnitude: -1}]",
@@ -291,6 +292,13 @@ internal static class FormSelectionChecks
         })
             Require(Validate(yaml).Errors.Values.SelectMany(errors => errors).Any(error => error.Contains("No effective settings")),
                 "No-effective-settings validation must inspect expanded shared, nested template, and whole-list rules.");
+        foreach (var yaml in new[]
+        {
+            "base: &base {forms: Food, containers: []}\nformsLists: [{<<: *base}]",
+            "templates: {clear: {forms: $item, containers: []}}\nformsLists: [clear(Food)]",
+            "templates: {clear: {forms: $item, containers: $filter}}\nformsLists:\n- clear(Food, [])"
+        })
+            Require(Validate(yaml).IsValid, "An explicit container clear must remain effective through inheritance and template arguments.");
         var shared = Validate("""
             partial: &partial {forms: Food}
             settings: &settings {containers: Player}
