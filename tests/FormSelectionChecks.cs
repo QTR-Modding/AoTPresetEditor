@@ -5,6 +5,7 @@ using System.Windows.Threading;
 using AoTPresetEditor;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
+using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Skyrim;
 
 internal static class FormSelectionChecks
@@ -53,9 +54,12 @@ internal static class FormSelectionChecks
         var effect = mod.MagicEffects.AddNew(); effect.EditorID = "MagicEffect";
         var art = mod.ArtObjects.AddNew(); art.EditorID = "Art";
         var shader = mod.EffectShaders.AddNew(); shader.EditorID = "Shader";
+        list.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(fire.FormKey));
         var catalog = new Dictionary<FormKey, FormRow>();
         typeof(FormCatalog).GetMethod("AddRecords", BindingFlags.NonPublic | BindingFlags.Static)!
             .Invoke(null, [mod, "PickerTest.esp", catalog]);
+        using (var cache = mod.ToImmutableLinkCache())
+            typeof(FormCatalog).GetMethod("ResolveFormListMembers", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [catalog, cache]);
         var forms = catalog.Values.ToArray();
         FormRow Row(string editorId) => forms.Single(form => form.EditorId == editorId);
 
@@ -114,6 +118,7 @@ internal static class FormSelectionChecks
         SourceGroups(forms);
         KnownForms(forms);
         ExpandedTriggerForms(forms);
+        FormListMembers(mod, forms);
     }
 
     private static void PickerControls(IReadOnlyList<FormRow> forms)
@@ -527,6 +532,89 @@ internal static class FormSelectionChecks
             Require(PresetValidation.Check(document, CancellationToken.None, catalog).GetAwaiter().GetResult().IsValid,
                 $"{kind}/{section} must accept applied effects and FLST identifiers after template expansion: {selector}");
         }
+    }
+
+    private static void FormListMembers(SkyrimMod mod, IReadOnlyList<FormRow> forms)
+    {
+        var fire = forms.Single(form => form.EditorId == "Fire");
+        var shader = forms.Single(form => form.EditorId == "Shader");
+        var keyword = forms.Single(form => form.EditorId == "Keyword");
+        var original = forms.Single(form => form.EditorId == "FormList");
+        Require(original.FormListMembers!.Single().Identifier == fire.Identifier, "Catalog must retain plugin-defined FormList members.");
+        var nested = mod.FormLists.AddNew(); nested.EditorID = "NestedTriggers";
+        nested.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.FormLists.First().FormKey));
+        nested.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(nested.FormKey));
+        nested.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.EffectShaders.First().FormKey));
+        nested.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.FormLists.First().FormKey));
+        var invalid = mod.FormLists.AddNew(); invalid.EditorID = "InvalidTriggers";
+        invalid.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.Statics.First().FormKey));
+        invalid.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.Keywords.First().FormKey));
+        var cell = new Cell(new FormKey(mod.ModKey, 0x900), SkyrimRelease.SkyrimSE) { EditorID = "HiddenCell" };
+        mod.Cells.Add(new CellBlock { SubBlocks = { new CellSubBlock { Cells = { cell } } } });
+        invalid.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(cell.FormKey));
+        var empty = mod.FormLists.AddNew(); empty.EditorID = "EmptyTriggers";
+        var cycle = mod.FormLists.AddNew(); cycle.EditorID = "CycleOnly";
+        cycle.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(cycle.FormKey));
+        var records = new Dictionary<FormKey, FormRow>();
+        typeof(FormCatalog).GetMethod("AddRecords", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [mod, "PickerTest.esp", records]);
+        using (var cache = mod.ToImmutableLinkCache())
+            typeof(FormCatalog).GetMethod("ResolveFormListMembers", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [records, cache]);
+        var all = records.Values.ToArray();
+        Require(!all.Any(form => form.EditorId == "HiddenCell"), "List inspection must not add hidden record types to normal picker choices.");
+        var catalog = new PresetPresentation(PresetDocument.Create("FOOD", PresetKind.Addon), all);
+        var expanded = FormCatalog.ExpandFormList(all.Single(form => form.EditorId == "NestedTriggers"), id => catalog.ResolveForm(id));
+        Require(expanded.Select(member => member.Identifier).SequenceEqual(new[] { fire.Identifier, shader.Identifier }), "Nested lists must preserve member order, skip repeated lists and terminate cycles.");
+        var overrideMod = new SkyrimMod(ModKey.FromNameAndExtension("Override.esp"), SkyrimRelease.SkyrimSE);
+        var replacement = overrideMod.FormLists.GetOrAddAsOverride(mod.FormLists.First());
+        replacement.Items.Clear(); replacement.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.EffectShaders.First().FormKey));
+        typeof(FormCatalog).GetMethod("AddRecords", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [overrideMod, "Override.esp", records]);
+        using (var cache = new ISkyrimModGetter[] { mod, overrideMod }.ToImmutableLinkCache<ISkyrimMod, ISkyrimModGetter>())
+            typeof(FormCatalog).GetMethod("ResolveFormListMembers", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [records, cache]);
+        Require(records[replacement.FormKey].FormListMembers!.Single().Identifier == shader.Identifier && original.FormListMembers!.Single().Identifier == fire.Identifier,
+            "Winning overrides must replace member snapshots without mutating older catalog rows.");
+
+        foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon })
+        foreach (var section in new[] { "transformers", "timeModulators" })
+        foreach (var selector in new[] { "[Fire, NestedTriggers, TriggerGroup]", "TriggerGroup", "InvalidTriggers", "[Fire, InvalidTriggers]", "InvalidGroup", "EmptyTriggers", "CycleOnly" })
+        {
+            var settings = section == "transformers" ? "finalFormEditorID: OtherFood, duration: 1" : "magnitude: 0";
+            var rule = PresetYaml.Parse($"{{{section}: [{{FormEditorID: $trigger, {settings}}}]}}");
+            if (kind != PresetKind.Addon)
+            {
+                rule.Set("stages", PresetYaml.Parse("[{no: 0, name: '', duration: 1}]"));
+                rule.Set("finalFormEditorID", PresetValue.Scalar("OtherFood"));
+            }
+            if (kind != PresetKind.Default) rule.Set(kind == PresetKind.Custom ? "owners" : "forms", PresetValue.Scalar("Food"));
+            var call = $"behavior({selector})";
+            var output = kind == PresetKind.Default ? "<<: " + call : (kind == PresetKind.Custom ? "ownerLists" : "formsLists") + ":\n- " + call;
+            var document = PresetDocument.Parse("templates:\n  behavior: " + PresetYaml.Write(rule, flow: true).Trim() + "\n" + output, "FOOD", kind);
+            var before = document.ToYaml();
+            var presentation = new PresetPresentation(document, all, [new("TriggerGroup", ["Shader", "NestedTriggers"]), new("InvalidGroup", ["Fire", "InvalidTriggers"])]);
+            var result = PresetValidation.Check(document, CancellationToken.None, presentation).GetAwaiter().GetResult();
+            var valid = selector is "[Fire, NestedTriggers, TriggerGroup]" or "TriggerGroup";
+            Require(result.IsValid == valid, $"{kind}/{section}: FormList members must be validated through mixed selectors and template arguments: {selector}");
+            Require(valid || result.Errors.Values.SelectMany(errors => errors).Any(error => error.Contains("form list", StringComparison.Ordinal)),
+                "An invalid list must identify the offending Trigger field.");
+            Require(before == document.ToYaml(), "Inspecting and validating FormLists must preserve authored YAML.");
+        }
+        var picker = new FormPickerWindow(all, selection: new(TriggerOnly: true)) { ShowActivated = false };
+        picker.Show();
+        Field<DataGrid>(picker, "results").SelectedItem = all.Single(form => form.EditorId == "InvalidTriggers");
+        Require(Field<Button>(picker, "listMembers").Visibility == Visibility.Visible, "A selected FormList must offer member inspection.");
+        object[]? shown = null;
+        picker.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+        {
+            var window = picker.OwnedWindows.Cast<Window>().Single();
+            var grid = ((DockPanel)window.Content).Children.OfType<DataGrid>().Single();
+            shown = grid.Items.Cast<object>().ToArray();
+            window.Close();
+        }));
+        Field<Button>(picker, "listMembers").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Require(shown is { Length: 3 } && shown.Any(row => ((FormRow)row.GetType().GetProperty("Form")!.GetValue(row)!).Identifier == fire.Identifier && (bool)row.GetType().GetProperty("Applicable")!.GetValue(row)!) && shown.Any(row => ((FormRow)row.GetType().GetProperty("Form")!.GetValue(row)!).Identifier == keyword.Identifier && (bool)row.GetType().GetProperty("Applicable")!.GetValue(row)!),
+            "Member inspection must show the underlying forms and distinguish unsupported triggers.");
+        Field<DataGrid>(picker, "results").SelectedItem = all.Single(form => form.EditorId == "Fire");
+        Require(Field<Button>(picker, "listMembers").Visibility == Visibility.Collapsed, "Ordinary forms must not offer list inspection.");
+        picker.Close();
     }
 
     private static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(owner)!;

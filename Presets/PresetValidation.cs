@@ -111,11 +111,30 @@ public static class PresetValidation
             if (item.Kind != ValueKind.Scalar || item.IsNull || string.IsNullOrWhiteSpace(item.Text)) continue;
             if (catalog?.ResolveGroup(item.Text) is { } group)
             {
-                if (group.Members.Any(member => catalog.ResolveForm(member) is { } memberForm && (selection?.Matches(memberForm) ?? true))) return true;
+                if (group.Members.Any(member => catalog.ResolveForm(member) is not null && HasApplicableForm(member, catalog, selection))) return true;
             }
-            else if (!PresetSchema.IsZeroForm(item) && (catalog?.ResolveForm(item.Text) is not { } form || (selection?.Matches(form) ?? true))) return true;
+            else if (!PresetSchema.IsZeroForm(item) && HasApplicableForm(item.Text, catalog, selection)) return true;
         }
         return false;
+    }
+
+    private static bool HasApplicableForm(string identifier, PresetPresentation? catalog, FormSelection? selection)
+    {
+        if (catalog?.ResolveForm(identifier) is not { } form) return true;
+        if (selection is null || form.FormListMembers is null) return selection?.Matches(form) ?? true;
+        return FormCatalog.ExpandFormList(form, id => catalog.ResolveForm(id))
+            .Any(selection.Matches);
+    }
+
+    private static void CheckTriggerFormList(string identifier, PresetPresentation catalog, FormSelection selection, string label, List<string> errors)
+    {
+        if (catalog.ResolveForm(identifier) is not { FormListMembers: not null } list) return;
+        var members = FormCatalog.ExpandFormList(list, id => catalog.ResolveForm(id));
+        if (!members.Any(selection.Matches))
+            errors.Add($"{label}: form list '{catalog.FormLabel(identifier)}' has no compatible triggers in loaded game data.");
+        foreach (var member in members.DistinctBy(member => member.Identifier))
+            if (!selection.Matches(member))
+                errors.Add($"{label}: form list '{catalog.FormLabel(identifier)}' contains {member.EditorId} ({member.Identifier}, {member.Type}), which cannot be a trigger.");
     }
 
     private static IReadOnlyList<string> KnownFormErrors(PresetValue rule, string category, PresetKind kind, PresetPresentation catalog)
@@ -167,8 +186,11 @@ public static class PresetValidation
                 {
                     if (selection.RequiresKnownGroupMember && !group.Members.Any(member => catalog.ResolveForm(member) is { } memberForm && selection.Matches(memberForm)))
                         errors.Add($"{label}: group '{group.Name}' has no compatible {category} source items in loaded game data.");
+                    if (field.TriggerOnly)
+                        foreach (var member in group.Members) CheckTriggerFormList(member, catalog, selection, label, errors);
                     continue;
                 }
+                if (field.TriggerOnly) CheckTriggerFormList(item.Text, catalog, selection, label, errors);
                 // Custom owner text can match item names even when the same text is another form's EditorID.
                 if (field.Key == "owners" && !PresetPresentation.NormalizeIdentifier(item.Text).Contains('~')) continue;
                 if (catalog.ResolveForm(item.Text) is not { } form || selection.Matches(form)) continue;
