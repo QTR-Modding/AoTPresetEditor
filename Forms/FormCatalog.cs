@@ -171,7 +171,7 @@ public static class FormCatalog
         string origin = record.FormKey.ModKey.FileName.String;
         var boundObject = IsBoundObject(record);
         return new FormRow(name, record.EditorID ?? "", record.Registration.Name, origin, winner,
-            $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter or IEffectShaderGetter or IFormListGetter or IKeywordGetter or IMagicEffectGetter, boundObject)
+            $"0x{record.FormKey.ID:X}~{origin}", GetCategories(record), boundObject || record is ILocationGetter or IPerkGetter or IEffectShaderGetter or IFormListGetter or IKeywordGetter or IMagicEffectGetter or IFactionGetter, boundObject)
         {
             SoundFiles = record is ISoundDescriptorGetter sound ? sound.SoundFiles.Select(file => file.DataRelativePath.Path).ToArray() : [],
             Textures = GetTextures(record),

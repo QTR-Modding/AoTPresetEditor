@@ -49,6 +49,7 @@ internal static class FormSelectionChecks
         var perk = mod.Perks.AddNew(); perk.EditorID = "Perk";
         var fire = mod.Statics.AddNew(); fire.EditorID = "Fire";
         var keyword = mod.Keywords.AddNew(); keyword.EditorID = "Keyword";
+        var faction = mod.Factions.AddNew(); faction.EditorID = "Faction";
         var list = mod.FormLists.AddNew(); list.EditorID = "FormList";
         var sound = mod.SoundDescriptors.AddNew(); sound.EditorID = "Sound";
         var effect = mod.MagicEffects.AddNew(); effect.EditorID = "MagicEffect";
@@ -72,7 +73,7 @@ internal static class FormSelectionChecks
         Require(Row("Armor").Categories == ItemCategories.ARMO && Row("Misc").Categories == ItemCategories.MISC,
             "Equipment and miscellaneous item categories must come from record type.");
         Require(Row("Key").Categories == ItemCategories.None, "Keys must not inherit the MISC category from the engine class hierarchy.");
-        foreach (var id in new[] { "Food", "FoodIngredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Location", "Perk", "Fire", "Grass", "LeveledNpc", "Explosion", "Hazard", "Art", "Shader", "FormList", "Keyword", "MagicEffect" })
+        foreach (var id in new[] { "Food", "FoodIngredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Location", "Perk", "Fire", "Grass", "LeveledNpc", "Explosion", "Hazard", "Art", "Shader", "FormList", "Keyword", "MagicEffect", "Faction" })
             Require(Row(id).IsTrigger, $"{id} must pass AoT's native trigger type check.");
         foreach (var id in new[] { "Sound", "ArmorAddon" })
             Require(!Row(id).IsTrigger, $"{id} must fail AoT's native trigger type check.");
@@ -80,7 +81,7 @@ internal static class FormSelectionChecks
         var resultSelection = new FormSelection(BoundObjectOnly: true);
         foreach (var id in new[] { "Food", "Medicine", "PoisonedFood", "Ingredient", "Armor", "Key", "Ammunition", "Light", "Spell", "Fire" })
             Require(resultSelection.Matches(Row(id)), $"{id} must pass native bound-object validation, independently of the source category.");
-        foreach (var id in new[] { "Keyword", "FormList", "Shader", "Sound", "MagicEffect", "ArmorAddon", "Location", "Perk" })
+        foreach (var id in new[] { "Keyword", "Faction", "FormList", "Shader", "Sound", "MagicEffect", "ArmorAddon", "Location", "Perk" })
             Require(!resultSelection.Matches(Row(id)), $"{id} must fail native bound-object validation.");
         Require(new FormSelection(BoundObjectOnly: true, TriggerOnly: true).Matches(Row("Key")) &&
             !new FormSelection(BoundObjectOnly: true, TriggerOnly: true).Matches(Row("Location")),
@@ -523,7 +524,7 @@ internal static class FormSelectionChecks
     {
         foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon })
         foreach (var section in new[] { "transformers", "timeModulators" })
-        foreach (var selector in new[] { "Art", "Shader", "FormList", "Keyword", "MagicEffect", "[Art, Shader, FormList, Keyword, MagicEffect]", "AppliedEffects" })
+        foreach (var selector in new[] { "Art", "Shader", "FormList", "Keyword", "MagicEffect", "Faction", "[Art, Shader, FormList, Keyword, MagicEffect, Faction]", "AppliedEffects" })
         {
             var settings = section == "transformers" ? "finalFormEditorID: OtherFood, duration: 1" : "magnitude: 0";
             var rule = PresetYaml.Parse($"{{{section}: [{{FormEditorID: $trigger, {settings}}}]}}");
@@ -536,7 +537,7 @@ internal static class FormSelectionChecks
             var call = $"behavior({selector})";
             var output = kind == PresetKind.Default ? "<<: " + call : (kind == PresetKind.Custom ? "ownerLists" : "formsLists") + ":\n- " + call;
             var document = PresetDocument.Parse("templates:\n  behavior: " + PresetYaml.Write(rule, flow: true).Trim() + "\n" + output, "FOOD", kind);
-            var catalog = new PresetPresentation(document, forms, [new("AppliedEffects", ["Art", "Shader", "FormList", "Keyword", "MagicEffect"])]);
+            var catalog = new PresetPresentation(document, forms, [new("AppliedEffects", ["Art", "Shader", "FormList", "Keyword", "MagicEffect", "Faction"])]);
             Require(PresetValidation.Check(document, CancellationToken.None, catalog).GetAwaiter().GetResult().IsValid,
                 $"{kind}/{section} must accept applied effects and FLST identifiers after template expansion: {selector}");
         }
@@ -548,6 +549,7 @@ internal static class FormSelectionChecks
         var shader = forms.Single(form => form.EditorId == "Shader");
         var keyword = forms.Single(form => form.EditorId == "Keyword");
         var effect = forms.Single(form => form.EditorId == "MagicEffect");
+        var faction = forms.Single(form => form.EditorId == "Faction");
         var original = forms.Single(form => form.EditorId == "FormList");
         Require(original.FormListMembers!.Single().Identifier == fire.Identifier, "Catalog must retain plugin-defined FormList members.");
         var nested = mod.FormLists.AddNew(); nested.EditorID = "NestedTriggers";
@@ -555,10 +557,12 @@ internal static class FormSelectionChecks
         nested.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(nested.FormKey));
         nested.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.EffectShaders.First().FormKey));
         nested.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.MagicEffects.First().FormKey));
+        nested.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.Factions.First().FormKey));
         nested.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.FormLists.First().FormKey));
         var invalid = mod.FormLists.AddNew(); invalid.EditorID = "InvalidTriggers";
         invalid.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.Statics.First().FormKey));
         invalid.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.Keywords.First().FormKey));
+        invalid.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.Factions.First().FormKey));
         var cell = new Cell(new FormKey(mod.ModKey, 0x900), SkyrimRelease.SkyrimSE) { EditorID = "HiddenCell" };
         mod.Cells.Add(new CellBlock { SubBlocks = { new CellSubBlock { Cells = { cell } } } });
         invalid.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(cell.FormKey));
@@ -573,7 +577,7 @@ internal static class FormSelectionChecks
         Require(!all.Any(form => form.EditorId == "HiddenCell"), "List inspection must not add hidden record types to normal picker choices.");
         var catalog = new PresetPresentation(PresetDocument.Create("FOOD", PresetKind.Addon), all);
         var expanded = FormCatalog.ExpandFormList(all.Single(form => form.EditorId == "NestedTriggers"), id => catalog.ResolveForm(id));
-        Require(expanded.Select(member => member.Identifier).SequenceEqual(new[] { fire.Identifier, shader.Identifier, effect.Identifier }), "Nested lists must preserve member order, skip repeated lists and terminate cycles.");
+        Require(expanded.Select(member => member.Identifier).SequenceEqual(new[] { fire.Identifier, shader.Identifier, effect.Identifier, faction.Identifier }), "Nested lists must preserve member order, skip repeated lists and terminate cycles.");
         var overrideMod = new SkyrimMod(ModKey.FromNameAndExtension("Override.esp"), SkyrimRelease.SkyrimSE);
         var replacement = overrideMod.FormLists.GetOrAddAsOverride(mod.FormLists.First());
         replacement.Items.Clear(); replacement.Items.Add(new FormLink<ISkyrimMajorRecordGetter>(mod.EffectShaders.First().FormKey));
@@ -585,7 +589,7 @@ internal static class FormSelectionChecks
 
         foreach (var kind in new[] { PresetKind.Default, PresetKind.Custom, PresetKind.Addon })
         foreach (var section in new[] { "transformers", "timeModulators" })
-        foreach (var selector in new[] { "[Fire, MagicEffect, NestedTriggers, TriggerGroup]", "TriggerGroup", "InvalidTriggers", "[Fire, InvalidTriggers]", "InvalidGroup", "EmptyTriggers", "CycleOnly" })
+        foreach (var selector in new[] { "[Fire, MagicEffect, Faction, NestedTriggers, TriggerGroup]", "TriggerGroup", "InvalidTriggers", "[Fire, InvalidTriggers]", "InvalidGroup", "EmptyTriggers", "CycleOnly" })
         {
             var settings = section == "transformers" ? "finalFormEditorID: OtherFood, duration: 1" : "magnitude: 0";
             var rule = PresetYaml.Parse($"{{{section}: [{{FormEditorID: $trigger, {settings}}}]}}");
@@ -599,9 +603,9 @@ internal static class FormSelectionChecks
             var output = kind == PresetKind.Default ? "<<: " + call : (kind == PresetKind.Custom ? "ownerLists" : "formsLists") + ":\n- " + call;
             var document = PresetDocument.Parse("templates:\n  behavior: " + PresetYaml.Write(rule, flow: true).Trim() + "\n" + output, "FOOD", kind);
             var before = document.ToYaml();
-            var presentation = new PresetPresentation(document, all, [new("TriggerGroup", ["Shader", "MagicEffect", "NestedTriggers"]), new("InvalidGroup", ["Fire", "InvalidTriggers"])]);
+            var presentation = new PresetPresentation(document, all, [new("TriggerGroup", ["Shader", "MagicEffect", "Faction", "NestedTriggers"]), new("InvalidGroup", ["Fire", "InvalidTriggers"])]);
             var result = PresetValidation.Check(document, CancellationToken.None, presentation).GetAwaiter().GetResult();
-            var valid = selector is "[Fire, MagicEffect, NestedTriggers, TriggerGroup]" or "TriggerGroup";
+            var valid = selector is "[Fire, MagicEffect, Faction, NestedTriggers, TriggerGroup]" or "TriggerGroup";
             Require(result.IsValid == valid, $"{kind}/{section}: FormList members must be validated through mixed selectors and template arguments: {selector}");
             Require(valid || result.Errors.Values.SelectMany(errors => errors).Any(error => error.Contains("form list", StringComparison.Ordinal)),
                 "An invalid list must identify the offending Trigger field.");
@@ -620,7 +624,7 @@ internal static class FormSelectionChecks
             window.Close();
         }));
         Field<Button>(picker, "listMembers").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        Require(shown is { Length: 3 } && shown.Any(row => ((FormRow)row.GetType().GetProperty("Form")!.GetValue(row)!).Identifier == fire.Identifier && (bool)row.GetType().GetProperty("Applicable")!.GetValue(row)!) && shown.Any(row => ((FormRow)row.GetType().GetProperty("Form")!.GetValue(row)!).Identifier == keyword.Identifier && (bool)row.GetType().GetProperty("Applicable")!.GetValue(row)!),
+        Require(shown is { Length: 4 } && shown.Any(row => ((FormRow)row.GetType().GetProperty("Form")!.GetValue(row)!).Identifier == fire.Identifier && (bool)row.GetType().GetProperty("Applicable")!.GetValue(row)!) && shown.Any(row => ((FormRow)row.GetType().GetProperty("Form")!.GetValue(row)!).Identifier == keyword.Identifier && (bool)row.GetType().GetProperty("Applicable")!.GetValue(row)!) && shown.Any(row => ((FormRow)row.GetType().GetProperty("Form")!.GetValue(row)!).Identifier == faction.Identifier && (bool)row.GetType().GetProperty("Applicable")!.GetValue(row)!),
             "Member inspection must show the underlying forms and distinguish unsupported triggers.");
         Field<DataGrid>(picker, "results").SelectedItem = all.Single(form => form.EditorId == "Fire");
         Require(Field<Button>(picker, "listMembers").Visibility == Visibility.Collapsed, "Ordinary forms must not offer list inspection.");
