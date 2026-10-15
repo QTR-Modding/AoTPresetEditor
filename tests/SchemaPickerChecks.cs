@@ -32,7 +32,7 @@ internal static class SchemaPickerChecks
                 "Triggers must offer groups and constrain individual forms to trigger types.");
             Require(Get(context, "containers").AllowsGroups, "Trigger inventory filters must offer groups.");
             Require(Get(context, "FormEditorID").Help.Contains("active magic effect") &&
-                Get(context, "FormEditorID").Help.Contains("In inventories, art objects and effect shaders trigger when applied to the inventory owner; magic effects trigger when active on it"),
+                Get(context, "FormEditorID").Help.Contains("In inventories, an art object, effect shader, or active magic effect triggers when the inventory owner has it"),
                 "Applied effect trigger help must describe world references and effects on the inventory owner.");
         }
         Require(!Get("stage", "FormEditorID").AllowsGroups && !Get("effect", "FormEditorID").AllowsGroups &&
