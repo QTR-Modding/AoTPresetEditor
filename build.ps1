@@ -10,7 +10,7 @@ $build = Join-Path $PSScriptRoot 'build\native'
 $dist = Join-Path $PSScriptRoot 'dist'
 & cmd.exe /d /c "call `"$vcvars`" && `"$cmake`" -S `"$native`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM=`"$ninja`" && `"$cmake`" --build `"$build`""
 if ($LASTEXITCODE) { throw 'Native YAML helper build failed.' }
-& dotnet publish (Join-Path $PSScriptRoot 'AoTPresetEditor.csproj') -c Release -r win-x64 --self-contained true -o $dist
+& dotnet publish (Join-Path $PSScriptRoot 'AoTPresetEditor.csproj') -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $dist
 if ($LASTEXITCODE) { throw 'Desktop app publish failed.' }
 Copy-Item -LiteralPath (Join-Path $build 'AoTYaml.exe') -Destination $dist
 Copy-Item -LiteralPath (Join-Path $build 'licenses') -Destination $dist -Recurse -Force
