@@ -106,4 +106,4 @@ After building, run `dotnet run --project tests -- dist/AoTYaml.exe`. Add a pres
 
 ## License
 
-AoT Preset Editor is licensed under the [GNU General Public License, version 3](LICENSE) (GPL-3.0-only). Third-party license texts and notices are included in `licenses`.
+AoT Preset Editor is licensed under the [GNU General Public License, version 3](LICENSE) (GPL-3.0-only). Third-party license texts, notices, and source links are included in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
