@@ -13,6 +13,4 @@ if ($LASTEXITCODE) { throw 'Native YAML helper build failed.' }
 & dotnet publish (Join-Path $PSScriptRoot 'AoTPresetEditor.csproj') -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $dist
 if ($LASTEXITCODE) { throw 'Desktop app publish failed.' }
 Copy-Item -LiteralPath (Join-Path $build 'AoTYaml.exe') -Destination $dist
-Copy-Item -LiteralPath (Join-Path $build 'licenses') -Destination $dist -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'licenses\YamlDotNet.txt') -Destination (Join-Path $dist 'licenses')
 Write-Host "Ready: $dist\AoTPresetEditor.exe"
