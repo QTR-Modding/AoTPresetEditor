@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <CETCompat>false</CETCompat>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Quantumyilmaz</Authors>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
   </PropertyGroup>
