@@ -21,7 +21,8 @@ public enum ItemCategories
 {
     None = 0,
     FOOD = 1 << 0, INGR = 1 << 1, MEDC = 1 << 2, POSN = 1 << 3, ARMO = 1 << 4,
-    WEAP = 1 << 5, SCRL = 1 << 6, BOOK = 1 << 7, SLGM = 1 << 8, MISC = 1 << 9
+    WEAP = 1 << 5, SCRL = 1 << 6, BOOK = 1 << 7, SLGM = 1 << 8, MISC = 1 << 9,
+    STAT = 1 << 10, MSTT = 1 << 11
 }
 
 public sealed record FormRow(string Name, string EditorId, string Type, string Plugin, string Winner, string Identifier,
@@ -552,6 +553,8 @@ public static class FormCatalog
             IBookGetter => ItemCategories.BOOK,
             ISoulGemGetter => ItemCategories.SLGM,
             IMiscItemGetter => ItemCategories.MISC,
+            IStaticGetter => ItemCategories.STAT,
+            IMoveableStaticGetter => ItemCategories.MSTT,
             _ => ItemCategories.None
         };
     }

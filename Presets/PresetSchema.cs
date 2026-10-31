@@ -11,7 +11,7 @@ public sealed record PresetField(string Key, string Label, FieldKind Kind, strin
 
 public static class PresetSchema
 {
-    private static readonly string[] ItemTypes = ["Ingestible", "Ingredient", "Armor", "Weapon", "Scroll", "Book", "SoulGem", "MiscItem"];
+    private static readonly string[] ItemTypes = ["Ingestible", "Ingredient", "Armor", "Weapon", "Scroll", "Book", "SoulGem", "MiscItem", "Static", "MoveableStatic"];
     private static readonly PresetField[] VisualFields =
     [
         new("color", "Tint", FieldKind.Color, "Color for items lying in the world. Use the color picker, or enter #RRGGBB or #RRGGBBAA (including opacity). Zero removes tint. Existing colors without # keep their original meaning."),
