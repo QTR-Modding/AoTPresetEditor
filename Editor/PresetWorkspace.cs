@@ -15,8 +15,8 @@ public sealed class PresetWorkspace : UserControl
     public event Action? Opened;
     public event Action? BrowseRequested;
     public bool HasProject => project is not null;
-    private static readonly string[] Categories = ["FOOD", "INGR", "MEDC", "POSN", "ARMO", "WEAP", "BOOK", "SCRL", "SLGM", "MISC"];
-    private static readonly string[] CategoryNames = ["Food", "Ingredients", "Medicine", "Poisons", "Armor", "Weapons", "Books", "Scrolls", "Soul gems", "Miscellaneous items"];
+    private static readonly string[] Categories = ["FOOD", "INGR", "MEDC", "POSN", "ARMO", "WEAP", "BOOK", "SCRL", "SLGM", "MISC", "STAT", "MSTT"];
+    private static readonly string[] CategoryNames = ["Food", "Ingredients", "Medicine", "Poisons", "Armor", "Weapons", "Books", "Scrolls", "Soul gems", "Miscellaneous items", "Statics", "Movable statics"];
     private readonly TextBlock title = EditorControls.Text("Open or create a preset", true);
     private readonly TextBlock state = EditorControls.Text("Choose a file from the list, or create a new preset.");
     private readonly TextBlock location = EditorControls.Text("");
