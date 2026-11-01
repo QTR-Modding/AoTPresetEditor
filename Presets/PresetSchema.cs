@@ -76,6 +76,50 @@ public static class PresetSchema
         .. RuleFields.Where(field => field.Key is not ("stages" or "finalFormEditorID"))
     ];
 
+    public static string? NumericTriggerField(string context) => NormalizeContext(context) switch
+    {
+        "transformer" => "duration", "modulator" => "magnitude", _ => null
+    };
+
+    public static bool HasNumericTrigger(PresetValue value, string context)
+    {
+        if (NumericTriggerField(context) is not { } key || value.Get(key) is { IsNull: false } ||
+            value.Get("FormEditorID") is not { IsNull: false } trigger) return false;
+        var items = trigger.Kind == ValueKind.Sequence ? trigger.Items : [trigger];
+        return items.Any(item => item.Kind == ValueKind.Scalar &&
+            (float.TryParse(item.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _) ||
+             value.Get(key) is { IsNull: true } && IsReference(item)));
+
+    }
+
+    public static bool TryNumericTrigger(PresetValue value, string context, out float number)
+    {
+        number = 0;
+        return NumericTriggerField(context) is { } key && value.Get(key) is not { IsNull: false } &&
+            value.Get("FormEditorID") is { Kind: ValueKind.Scalar, IsNull: false } trigger &&
+            float.TryParse(trigger.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out number) && float.IsFinite(number);
+    }
+
+    public static string NumericKeywordName(float number)
+    {
+        var text = (number == 0 ? 0 : number).ToString("R", CultureInfo.InvariantCulture);
+        var exponentAt = text.IndexOfAny(['e', 'E']);
+        if (exponentAt >= 0)
+        {
+            var exponent = int.Parse(text[(exponentAt + 1)..], CultureInfo.InvariantCulture);
+            var negative = text.StartsWith('-');
+            var mantissa = text[..exponentAt].TrimStart('-');
+            var point = mantissa.IndexOf('.');
+            var digits = mantissa.Replace(".", "");
+            var position = (point < 0 ? mantissa.Length : point) + exponent;
+            text = position <= 0 ? "0." + new string('0', -position) + digits
+                : position >= digits.Length ? digits + new string('0', position - digits.Length)
+                : digits.Insert(position, ".");
+            if (negative) text = "-" + text;
+        }
+        return "AoT_Value_" + text.Replace("-", "minus_").Replace('.', '_');
+    }
+
     public static IReadOnlyList<PresetField> GetFields(string context, PresetKind kind)
     {
         kind = ContextKind(context, kind);
@@ -248,6 +292,8 @@ public static class PresetSchema
                     {
                         var childField = fields.FirstOrDefault(candidate => candidate.Key == name)
                             ?? VisualFields.FirstOrDefault(candidate => candidate.Key == name);
+                        if (childField?.TriggerOnly == true && HasNumericTrigger(value, context))
+                            childField = childField with { Kind = FieldKind.Number, AllowsGroups = false };
                         if (childField is not null) childField = childField with { Help = FieldHelp(childField, context, document.Kind) };
                         FindParameterUses(child, childField?.ChildContext ?? InferContext(name, child), childField,
                             parameter, document, uses, activeTemplates, activeValues);
@@ -363,6 +409,21 @@ public static class PresetSchema
         {
             if (context == "effect" && InactiveReason(field, value, context, category, partial: partial) is not null) continue;
             var child = value.Get(field.Key);
+            if (field.Key == NumericTriggerField(context) && HasNumericTrigger(value, context)) continue;
+            if (field.Key == "FormEditorID" && HasNumericTrigger(value, context))
+            {
+                foreach (var item in child!.Kind == ValueKind.Sequence ? child.Items : [child])
+                {
+                    if (partial && IsReference(item)) continue;
+                    if (float.TryParse(item.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var numericTrigger))
+                    {
+                        if (!float.IsFinite(numericTrigger)) errors.Add(At(path, "Generated keyword: enter a finite number."));
+                        else if (context == "transformer" && numericTrigger <= 0) errors.Add(At(path, "Duration must be greater than zero."));
+                    }
+                    else if (context == "transformer") errors.Add(At(path, "Duration is required for nonnumeric triggers."));
+                }
+                continue;
+            }
             if (child is null || child.IsNull)
             {
                 if (field.Required && !partial && !(child is not null && ((context == "stage" && field.Key == "name") || (context == "modulator" && field.Key == "magnitude")))) errors.Add(At(path, $"{field.Label} is required."));
@@ -411,7 +472,10 @@ public static class PresetSchema
                     errors.Add($"{label}: clear this field instead of using a zero identifier.");
                 break;
             case FieldKind.Number:
-                if (!TryNumber(text, out var number)) errors.Add($"{label}: enter a number.");
+                if (field.TriggerOnly && (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var triggerNumber) ||
+                    !float.IsFinite(triggerNumber) || NormalizeContext(context) == "transformer" && triggerNumber <= 0))
+                    errors.Add($"{label}: enter a finite {(NormalizeContext(context) == "transformer" ? "positive " : "")}number.");
+                else if (!TryNumber(text, out var number)) errors.Add($"{label}: enter a number.");
                 else if (field.Key == "duration" && number <= 0) errors.Add($"{label}: duration must be greater than zero.");
                 break;
             case FieldKind.Integer:
