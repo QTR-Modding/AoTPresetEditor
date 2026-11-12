@@ -446,7 +446,9 @@ public sealed class ValueEditorControl : UserControl
         var primary = descriptors.Where(descriptor => descriptor.Required ||
             descriptor.Kind == FieldKind.ObjectList && Value.Get(descriptor.Key) is not null ||
             PresetSchema.NormalizeContext(context) == "effect").ToArray();
-        foreach (var descriptor in primary) RenderField(descriptor, content);
+        foreach (var descriptor in primary)
+            if (descriptor.Key != PresetSchema.NumericTriggerField(context) || !UsesNumericTrigger)
+                RenderField(descriptor, content);
         foreach (var section in descriptors.Except(primary).GroupBy(FieldSection))
         {
             var panel = new StackPanel(); foreach (var descriptor in section) RenderField(descriptor, panel);
@@ -531,9 +533,15 @@ public sealed class ValueEditorControl : UserControl
         "containers" or "allowed_stages" => "Filters", _ => "Additional behavior"
     };
 
+    private bool UsesNumericTrigger => PresetSchema.HasNumericTrigger(Value, context) &&
+        (Value.Get(PresetSchema.NumericTriggerField(context)!) is not null ||
+         effective?.Get(PresetSchema.NumericTriggerField(context)!) is not { IsNull: false });
+
     private void RenderField(PresetField descriptor, Panel target)
     {
         var current = Value.Get(descriptor.Key); var box = new StackPanel(); var row = new DockPanel();
+        var numeric = descriptor.TriggerOnly && UsesNumericTrigger && Value.Get("FormEditorID")?.Kind != ValueKind.Sequence;
+        if (numeric) descriptor = descriptor with { Kind = FieldKind.Number, AllowsGroups = false };
         var label = EditorControls.Text(descriptor.Label); label.FontWeight = FontWeights.SemiBold;
         label.Margin = new Thickness(0); label.VerticalAlignment = VerticalAlignment.Center;
         var caption = new WrapPanel { Margin = new Thickness(0, 0, 8, 2), VerticalAlignment = VerticalAlignment.Center };
@@ -545,6 +553,31 @@ public sealed class ValueEditorControl : UserControl
             caption.Children.Add(EditorControls.Info(descriptor.Label, help));
         }
         var actions = new WrapPanel();
+        if (descriptor.TriggerOnly && PresetSchema.NumericTriggerField(context) is { } numericField)
+        {
+            var mode = new ComboBox { ItemsSource = new[] { "Choose trigger", numericField == "duration" ? "As duration" : "As magnitude" },
+                SelectedIndex = numeric ? 1 : 0, MinWidth = 140, Margin = new Thickness(0, 0, 6, 0) };
+            AutomationProperties.SetName(mode, "Trigger mode");
+            mode.SelectionChanged += (_, _) =>
+            {
+                if ((mode.SelectedIndex == 1) == numeric) return;
+                Capture();
+                if (mode.SelectedIndex == 1)
+                {
+                    var amount = Value.Get(numericField)?.Clone() ?? PresetValue.Scalar(numericField == "duration" ? "0.05" : "1");
+                    Value.Set("FormEditorID", amount);
+                    if (Value.Get("<<") is not null) Value.Set(numericField, PresetValue.Scalar("null"));
+                    else Value.Remove(numericField);
+                }
+                else
+                {
+                    Value.Set(numericField, Value.Get("FormEditorID")?.Clone() ?? PresetValue.Scalar("1"));
+                    Value.Set("FormEditorID", PresetValue.Scalar(""));
+                }
+                Render(); NotifyChanged();
+            };
+            actions.Children.Add(mode);
+        }
         var variable = behaviorMode && allowVariations && IsVariable(current);
         var canVary = behaviorMode && allowVariations && descriptor.Key is not ("<<" or "stages") &&
             (current is null || !PresetDocument.Descendants(current).Any(value => value.Anchor.Length > 0));
@@ -584,6 +617,17 @@ public sealed class ValueEditorControl : UserControl
             var child = Child(editable, descriptor.ChildContext, descriptor.Label, descriptor,
                 value => Value.Set(descriptor.Key, value), resolved => resolved?.Get(descriptor.Key));
             box.Children.Add(child);
+            if (numeric)
+            {
+                var keyword = Help("");
+                void UpdateKeyword()
+                {
+                    keyword.Text = PresetSchema.TryNumericTrigger(Value, context, out var amount)
+                        ? $"Keyword: {PresetSchema.NumericKeywordName(amount)}. Assign it to an item to activate this effect."
+                        : IsVariable(Value.Get("FormEditorID")) ? "The keyword follows this variable's value in each row." : "Enter a finite numeric value.";
+                }
+                UpdateKeyword(); child.Changed += (_, _) => UpdateKeyword(); box.Children.Add(keyword);
+            }
         }
         if (section && descriptor.Key == "stages")
             RenderField(PresetSchema.GetFields(context, Document.Kind).Single(item => item.Key == "finalFormEditorID"), box);
@@ -614,6 +658,8 @@ public sealed class ValueEditorControl : UserControl
         choice.IsChecked = previous;
         if (enabled == previous) return;
         root.Capture();
+        if (enabled && descriptor.TriggerOnly && descriptor.Kind == FieldKind.Number && PresetSchema.NumericTriggerField(context) is { } numericField)
+            Value.Set(numericField, PresetValue.Scalar("null"));
         var path = new List<string>();
         if (!FindPath(root.Value, Value, path)) return;
         path.Add(descriptor.Key);

@@ -183,6 +183,8 @@ public static class PresetValidation
             foreach (var item in child.Kind == ValueKind.Sequence ? child.Items : [child])
             {
                 if (item.Kind != ValueKind.Scalar || item.IsNull) continue;
+                if (field.TriggerOnly && PresetSchema.HasNumericTrigger(value, context) &&
+                    float.TryParse(item.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _)) continue;
                 if (field.AllowsGroups && catalog.ResolveGroup(item.Text) is { } group)
                 {
                     if (selection.RequiresKnownGroupMember && !group.Members.Any(member => catalog.ResolveForm(member) is { } memberForm && selection.Matches(memberForm)))

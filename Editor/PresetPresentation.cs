@@ -143,6 +143,14 @@ public sealed class PresetPresentation
             return value.Items.Count == 0 ? "No " + noun : $"{value.Items.Count} {noun}: " + ListLabels(value.Items, behaviorMode, parametersAllowed);
         }
         var normalized = PresetSchema.NormalizeContext(context.Length == 0 ? PresetSchema.InferContext("", value) : context);
+        if (PresetSchema.TryNumericTrigger(value, normalized, out var numericTrigger))
+        {
+            var keyword = PresetSchema.NumericKeywordName(numericTrigger);
+            return normalized == "transformer"
+                ? Join("Keyword: " + keyword, Duration(value.Get("FormEditorID"), "game hour", behaviorMode, parametersAllowed),
+                    value.Get("finalFormEditorID") is { } target ? "Produces " + ListLabels(target, behaviorMode, parametersAllowed) : "Choose a result item")
+                : Join("Keyword: " + keyword, "Time multiplier: " + value.Get("FormEditorID")!.Text);
+        }
         return normalized switch
         {
             "rule" => SummarizeRule(value, behaviorMode, parametersAllowed),
