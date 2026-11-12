@@ -21,6 +21,7 @@ public static class PresetSchema
     ];
     private static readonly PresetField[] TriggerFields =
     [
+        new("activation_delay", "Activation delay (game hours)", FieldKind.Number, "Average wait before this trigger activates while its conditions hold. Leave blank or enter 0 for immediate activation."),
         new("allowed_stages", "Allowed stages", FieldKind.IntegerList, "Stage numbers this trigger affects. Unset or empty means all stages; 0 selects the initial stage."),
         new("containers", "Containers", FieldKind.FormList, "Restrict this effect to the selected inventories; leave empty for no restriction. Items lying in the world ignore this filter.", AllowsGroups: true, InventoryOwnerOnly: true)
     ];
@@ -477,6 +478,7 @@ public static class PresetSchema
                     errors.Add($"{label}: enter a finite {(NormalizeContext(context) == "transformer" ? "positive " : "")}number.");
                 else if (!TryNumber(text, out var number)) errors.Add($"{label}: enter a number.");
                 else if (field.Key == "duration" && number <= 0) errors.Add($"{label}: duration must be greater than zero.");
+                else if (field.Key == "activation_delay" && (!float.IsFinite(number) || number < 0)) errors.Add($"{label}: enter a finite number greater than or equal to zero.");
                 break;
             case FieldKind.Integer:
                 if (field.Key == "no" || context == "effect")
