@@ -19,12 +19,15 @@ internal static class CreationDialogChecks
             host.Show();
             Submit(workspace.New, "New preset", "Create", "Enter preset");
             Require(Field<PresetProject>(workspace, "project").Name == "Enter preset", "Enter must create the named preset.");
+            var firstBehavior = Field<PresetDocument>(workspace, "document").Blocks.Single();
+            Require(firstBehavior.Name == "Enter preset", "New presets must open with their first behavior ready to edit.");
             Submit(() => Invoke(workspace, "AddBehavior"), "Add behavior", "Create", "Enter behavior");
             var document = Field<PresetDocument>(workspace, "document");
-            Require(document.Blocks.Single().Name == "Enter behavior", "Enter must create the named behavior.");
+            var addedBehavior = document.Blocks.Single(block => block.Name == "Enter behavior");
+            Require(document.Blocks.Count == 2, "Enter must add the named behavior.");
             Invoke(workspace, "ResetEditor");
 
-            var behavior = new BehaviorEditorControl(document, [], document.Blocks.Single().Id);
+            var behavior = new BehaviorEditorControl(document, [], addedBehavior.Id);
             host.Content = behavior;
             string? variableName = null;
             Submit(() => variableName = (string?)Invoke(behavior, "ChooseVariableName",

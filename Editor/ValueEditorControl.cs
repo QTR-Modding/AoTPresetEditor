@@ -433,14 +433,7 @@ public sealed class ValueEditorControl : UserControl
         if (editSections is not null)
         {
             foreach (var descriptor in descriptors.Where(item => item.Key is "owners" or "forms")) RenderField(descriptor, content);
-            var add = new WrapPanel { Margin = new Thickness(0, 4, 0, 8) };
-            foreach (var (key, label) in new[] { ("stages", "Add stages"), ("transformers", "Add transformation"), ("timeModulators", "Add time modifier") })
-                if (!HasSection(key) && (key != "stages" || Document.Kind == PresetKind.Addon))
-                    add.Children.Add(EditorControls.Button(label, () => editSections(key, true)));
-            if (add.Children.Count > 0) content.Children.Add(add);
-            foreach (var key in new[] { "stages", "transformers", "timeModulators" })
-                if (descriptors.FirstOrDefault(item => item.Key == key) is { } descriptor &&
-                    (descriptor.Required || HasSection(key))) RenderField(descriptor, content);
+            RenderBehaviorChoices(descriptors);
             descriptors = descriptors.Where(item => item.Key is not ("owners" or "forms" or "stages" or "finalFormEditorID" or "transformers" or "timeModulators")).ToArray();
         }
         var primary = descriptors.Where(descriptor => descriptor.Required || descriptor.Key == "name" ||
@@ -526,6 +519,46 @@ public sealed class ValueEditorControl : UserControl
         content.Children.Add(card);
     }
 
+    private void RenderBehaviorChoices(IReadOnlyList<PresetField> descriptors)
+    {
+        (string Key, string Label, string Description)[] sections =
+        [
+            ("stages", "Add stages", "Change the item as time passes."),
+            ("transformers", "Add transformation", "Turn it into another item when a trigger matches."),
+            ("timeModulators", "Add time modifier", "Make its stages run faster, slower, or pause when a trigger matches.")
+        ];
+        var configured = sections.Where(section => HasSection(section.Key)).Select(section => section.Key).ToHashSet();
+        var firstChoice = configured.Count == 0 && Document.Kind == PresetKind.Addon;
+        Panel actions = firstChoice ? new StackPanel() : new WrapPanel();
+        actions.Margin = new Thickness(0, 4, 0, 8);
+        if (firstChoice) actions.Children.Add(EditorControls.Text("What should happen?", true));
+        foreach (var (key, label, description) in sections)
+        {
+            if (configured.Contains(key) || key == "stages" && Document.Kind != PresetKind.Addon) continue;
+            var button = EditorControls.Button(label, () => editSections!(key, true));
+            if (!firstChoice)
+            {
+                actions.Children.Add(button);
+                continue;
+            }
+            button.MinWidth = 168;
+            var row = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+            var detail = EditorControls.Text(description);
+            detail.Margin = new Thickness(10, 0, 0, 0);
+            detail.VerticalAlignment = VerticalAlignment.Center;
+            DockPanel.SetDock(button, Dock.Left);
+            row.Children.Add(button);
+            row.Children.Add(detail);
+            actions.Children.Add(row);
+        }
+        if (firstChoice)
+            actions.Children.Add(Help("Transformations and time modifiers need stages. Use stages from an installed preset or add them here."));
+        if (actions.Children.Count > 0) content.Children.Add(actions);
+        foreach (var (key, _, _) in sections)
+            if (descriptors.FirstOrDefault(item => item.Key == key) is { } descriptor &&
+                (descriptor.Required || configured.Contains(key))) RenderField(descriptor, content);
+    }
+
     private static string FieldSection(PresetField descriptor) => descriptor.Key switch
     {
         "color" or "sound" or "art_object" or "effect_shader" or "fx_conditions" => "World effects",
@@ -539,7 +572,7 @@ public sealed class ValueEditorControl : UserControl
     {
         var current = Value.Get(descriptor.Key); var box = new StackPanel(); var row = new DockPanel();
         var numeric = descriptor.TriggerOnly && UsesNumericTrigger && Value.Get("FormEditorID")?.Kind == ValueKind.Scalar;
-        if (numeric) descriptor = descriptor with { Kind = FieldKind.Number, AllowsGroups = false };
+        if (numeric) descriptor = PresetSchema.NumericTriggerInput(descriptor, context);
         var label = EditorControls.Text(descriptor.Label); label.FontWeight = FontWeights.SemiBold;
         label.Margin = new Thickness(0); label.VerticalAlignment = VerticalAlignment.Center;
         var caption = new WrapPanel { Margin = new Thickness(0, 0, 8, 2), VerticalAlignment = VerticalAlignment.Center };
@@ -553,14 +586,14 @@ public sealed class ValueEditorControl : UserControl
         var actions = new WrapPanel();
         if (descriptor.TriggerOnly && PresetSchema.NumericTriggerField(context) is { } numericField)
         {
-            var mode = new ComboBox { ItemsSource = new[] { "Choose trigger", numericField == "duration" ? "As duration" : "As magnitude" },
-                SelectedIndex = numeric ? 1 : 0, MinWidth = 140, Margin = new Thickness(0, 0, 6, 0) };
+            var mode = new ComboBox { ItemsSource = new[] { "Choose forms", "Generate keyword name" },
+                SelectedIndex = numeric ? 1 : 0, MinWidth = 168, Margin = new Thickness(0, 0, 6, 0) };
             AutomationProperties.SetName(mode, "Trigger mode");
             if (PresetSchema.HasInheritedTriggerTiming(Value, context, Document))
             {
                 mode.IsEnabled = false;
-                mode.ToolTip = numericField == "duration" ? "Remove Duration from Common settings to use a numeric trigger."
-                    : "Remove Time multiplier from Common settings to use a numeric trigger.";
+                mode.ToolTip = numericField == "duration" ? "Shared settings already supply the duration. Remove it there to generate a keyword name."
+                    : "Shared settings already supply the multiplier. Remove it there to generate a keyword name.";
                 ToolTipService.SetShowOnDisabled(mode, true);
             }
             mode.SelectionChanged += (_, _) =>
@@ -596,6 +629,7 @@ public sealed class ValueEditorControl : UserControl
             var choice = new CheckBox { Content = "Variable", IsChecked = variable, VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(8, 0, 4, 0) };
             AutomationProperties.SetName(choice, "Variable: " + descriptor.Label);
+            choice.ToolTip = "Set a different value for each row on the Variables tab.";
             choice.Click += (_, _) => RequestVariable(descriptor, choice, variable);
             actions.Children.Add(choice);
         }
@@ -629,13 +663,20 @@ public sealed class ValueEditorControl : UserControl
             if (numeric)
             {
                 var keyword = Help("");
+                keyword.FontWeight = FontWeights.SemiBold;
+                var instructions = Help("Create a keyword with this EditorID in your plugin. Add it to the base object that should trigger the change.");
                 void UpdateKeyword()
                 {
-                    keyword.Text = PresetSchema.TryNumericTrigger(Value, context, out var amount)
-                        ? $"Keyword: {PresetSchema.NumericKeywordName(amount)}. Assign it to an item to activate this effect."
-                        : IsVariable(Value.Get("FormEditorID")) ? "The keyword follows this variable's value in each row." : "Enter a finite numeric value.";
+                    var valid = PresetSchema.TryNumericTrigger(Value, context, out var amount) &&
+                        (PresetSchema.NumericTriggerField(context) != "duration" || amount > 0);
+                    keyword.Text = valid ? $"Keyword EditorID  {PresetSchema.NumericKeywordName(amount)}"
+                        : IsVariable(Value.Get("FormEditorID")) ? "Each Variables row supplies its own keyword name." : "";
+                    keyword.Visibility = keyword.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+                    instructions.Visibility = valid ? Visibility.Visible : Visibility.Collapsed;
                 }
-                UpdateKeyword(); child.Changed += (_, _) => UpdateKeyword(); box.Children.Add(keyword);
+                UpdateKeyword(); child.Changed += (_, _) => UpdateKeyword();
+                box.Children.Add(keyword);
+                box.Children.Add(instructions);
             }
         }
         if (section && descriptor.Key == "stages")
@@ -768,6 +809,8 @@ public sealed class ValueEditorControl : UserControl
         var up = new Button { Content = "Move up" };
         var down = new Button { Content = "Move down" };
         var edit = new Button { Content = "Edit entry" };
+        var matchOrder = ItemContext() is "transformer" or "modulator"
+            ? Help("AoT checks the list from top to bottom and uses the first match.") : null;
         var createGroup = EditorControls.Button("Create group from list...", CreateGroupFromList);
         var modelPreview = field?.Kind == FieldKind.FormList ? ModelPreviewWindow.CreateButton(SelectedForm) : null;
         var texturePreview = field?.Kind == FieldKind.FormList ? TexturePreviewWindow.CreateButton(SelectedForm) : null;
@@ -788,6 +831,7 @@ public sealed class ValueEditorControl : UserControl
                 Content = new TextBlock { Text = ListEntrySummary(item, index), TextWrapping = TextWrapping.Wrap }
             }).ToArray();
             list.Visibility = Value.Items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+            if (matchOrder is not null) matchOrder.Visibility = Value.Items.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
             list.SelectedIndex = selected;
         }
         refreshSummary = () =>
@@ -905,7 +949,7 @@ public sealed class ValueEditorControl : UserControl
         content.Children.Add(details);
         RefreshList(Value.Items.Count > 0 ? 0 : -1); ShowActions();
         if (context == "Inheritance") content.Children.Add(Help("Earlier settings take precedence. Values entered on the containing block override inherited values."));
-        else if (ItemContext() is "transformer" or "modulator") content.Children.Insert(0, Help("Checked from top to bottom. The first matching trigger wins."));
+        else if (matchOrder is not null) content.Children.Insert(0, matchOrder);
     }
 
     private PresetField? ItemField() => field?.Kind switch
