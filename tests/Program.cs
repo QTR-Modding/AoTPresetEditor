@@ -248,7 +248,7 @@ internal static class Program
         var named = PresetYaml.Parse("no: 0\nname: null\nduration: 1\n");
         Require(PresetSchema.Validate(named, "stage", "FOOD").Count == 0, "An explicit null stage name was rejected.");
         named.Remove("name");
-        Require(PresetSchema.Validate(named, "stage", "FOOD").Count > 0, "A missing stage name was accepted.");
+        Require(PresetSchema.Validate(named, "stage", "FOOD").Count == 0, "An omitted stage name was rejected.");
         var rule = PresetYaml.Parse("owners: FoodBeef\nstages:\n- no: 0\n  name: null\n  duration: 1\nfinalFormEditorID: FoodBeef\ntransformers:\n- FormEditorID: fire\n  finalFormEditorID: FoodBeef\n  duration: 1\n  allowed_stages: [0]\n");
         Require(PresetSchema.Validate(rule, "CustomRule", "FOOD").Count == 0, "Stage zero was rejected.");
         rule.Get("transformers")!.Items[0].Get("allowed_stages")!.Items[0].Text = "1";

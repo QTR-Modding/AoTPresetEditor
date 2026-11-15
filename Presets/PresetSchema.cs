@@ -7,7 +7,7 @@ public enum FieldKind { Text, Form, FormList, Number, Integer, IntegerList, Bool
 public sealed record PresetField(string Key, string Label, FieldKind Kind, string Help,
     bool Required = false, string ChildContext = "", string[]? FormTypes = null, string? DefaultText = null,
     bool AllowsGroups = false, bool MatchPresetCategory = false, bool TriggerOnly = false, bool BoundObjectOnly = false,
-    bool MatchSourceType = false, bool RequiresEditorId = false, bool InventoryOwnerOnly = false);
+    bool MatchSourceType = false, bool RequiresEditorId = false, bool InventoryOwnerOnly = false, bool SequenceOnly = false);
 
 public static class PresetSchema
 {
@@ -22,13 +22,14 @@ public static class PresetSchema
     private static readonly PresetField[] TriggerFields =
     [
         new("activation_delay", "Activation delay (game hours)", FieldKind.Number, "Average wait before this trigger activates while its conditions hold. Leave blank or enter 0 for immediate activation."),
+        new("fx_conditions", "Effect perk conditions", FieldKind.FormList, "Use the trigger's world effects when the evolving reference meets at least one selected perk's conditions. Otherwise, use the stage's effects. Leave empty to always allow the trigger's effects.", FormTypes: ["Perk"], SequenceOnly: true),
         new("allowed_stages", "Allowed stages", FieldKind.IntegerList, "Stage numbers this trigger affects. Unset or empty means all stages; 0 selects the initial stage."),
         new("containers", "Containers", FieldKind.FormList, "Restrict this effect to the selected inventories; leave empty for no restriction. Items lying in the world ignore this filter.", AllowsGroups: true, InventoryOwnerOnly: true)
     ];
     private static readonly PresetField[] StageFields =
     [
         new("no", "Stage number", FieldKind.Integer, "Start at 0 and increase by one for each stage.", true, DefaultText: "0"),
-        new("name", "Stage name", FieldKind.Text, "Stage label shown in LoreBox. Also added to generated FOOD or MISC item names. Leave empty to keep the original name.", true, DefaultText: ""),
+        new("name", "Stage name", FieldKind.Text, "Stage label shown in LoreBox. Also added to generated FOOD or MISC item names. Leave unset to keep the original name."),
         new("duration", "Duration (game hours)", FieldKind.Number, "How long this stage lasts. Use a positive number or .inf for an infinite stage.", true, DefaultText: "1"),
         new("FormEditorID", "Stage item", FieldKind.Form, "Choose a different item of the same type and AoT category as the source. FOOD or MISC stages may leave this unset to generate an item; other categories need a replacement.", FormTypes: ItemTypes, MatchPresetCategory: true, MatchSourceType: true),
         new("value", "Value", FieldKind.Integer, "Value of a generated stage item. Unset or a negative number keeps its original value. Zero is a valid override."),
@@ -73,7 +74,7 @@ public static class PresetSchema
     ];
     private static readonly PresetField[] AddonFields =
     [
-        new("forms", "Applies to", FieldKind.FormList, "Items selected by form identifiers or form groups. A scalar or a list is accepted.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true, RequiresEditorId: true),
+        new("forms", "Applies to", FieldKind.FormList, "Items selected by form identifiers or form groups. Addons extend items that already have stages from a default or custom preset.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true, RequiresEditorId: true),
         .. RuleFields.Where(field => field.Key is not ("stages" or "finalFormEditorID"))
     ];
 
@@ -82,43 +83,47 @@ public static class PresetSchema
         "transformer" => "duration", "modulator" => "magnitude", _ => null
     };
 
-    public static bool HasNumericTrigger(PresetValue value, string context)
-    {
-        if (NumericTriggerField(context) is not { } key || value.Get(key) is { IsNull: false } ||
-            value.Get("FormEditorID") is not { IsNull: false } trigger) return false;
-        var items = trigger.Kind == ValueKind.Sequence ? trigger.Items : [trigger];
-        return items.Any(item => item.Kind == ValueKind.Scalar &&
-            (float.TryParse(item.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _) ||
-             value.Get(key) is { IsNull: true } && IsReference(item)));
+    private static PresetValue? NumericTriggerValue(PresetValue value, string context) =>
+        NumericTriggerField(context) is { } key && value.Get(key) is null ? value.Get("FormEditorID") : null;
 
+    public static bool HasNumericTrigger(PresetValue value, string context, bool partial = false)
+    {
+        var trigger = NumericTriggerValue(value, context);
+        return trigger is { Kind: ValueKind.Scalar, IsNull: false } &&
+            float.TryParse(trigger.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _) ||
+            partial && trigger is not null && IsReference(trigger);
     }
 
     public static bool TryNumericTrigger(PresetValue value, string context, out float number)
     {
         number = 0;
-        return NumericTriggerField(context) is { } key && value.Get(key) is not { IsNull: false } &&
-            value.Get("FormEditorID") is { Kind: ValueKind.Scalar, IsNull: false } trigger &&
+        return NumericTriggerValue(value, context) is { Kind: ValueKind.Scalar, IsNull: false } trigger &&
             float.TryParse(trigger.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out number) && float.IsFinite(number);
     }
 
     public static string NumericKeywordName(float number)
     {
-        var text = (number == 0 ? 0 : number).ToString("R", CultureInfo.InvariantCulture);
-        var exponentAt = text.IndexOfAny(['e', 'E']);
-        if (exponentAt >= 0)
+        var magnitude = Math.Abs(number);
+        var text = magnitude.ToString("R", CultureInfo.InvariantCulture);
+        if (magnitude != 0)
         {
-            var exponent = int.Parse(text[(exponentAt + 1)..], CultureInfo.InvariantCulture);
-            var negative = text.StartsWith('-');
-            var mantissa = text[..exponentAt].TrimStart('-');
+            var exponentAt = text.IndexOf('E');
+            var exponent = exponentAt < 0 ? 0 : int.Parse(text[(exponentAt + 1)..], CultureInfo.InvariantCulture);
+            var mantissa = exponentAt < 0 ? text : text[..exponentAt];
             var point = mantissa.IndexOf('.');
             var digits = mantissa.Replace(".", "");
-            var position = (point < 0 ? mantissa.Length : point) + exponent;
-            text = position <= 0 ? "0." + new string('0', -position) + digits
-                : position >= digits.Length ? digits + new string('0', position - digits.Length)
+            var leadingZeros = digits.Length - digits.TrimStart('0').Length;
+            var position = (point < 0 ? mantissa.Length : point) + exponent - leadingZeros;
+            digits = digits.Trim('0');
+            var fixedText = position <= 0 ? "0." + new string('0', -position) + digits
+                : position >= digits.Length ? ((double)magnitude).ToString("F0", CultureInfo.InvariantCulture)
                 : digits.Insert(position, ".");
-            if (negative) text = "-" + text;
+            var scientificText = (digits.Length == 1 ? digits : digits.Insert(1, ".")) + "e" +
+                (position - 1).ToString("+00;-00;+00", CultureInfo.InvariantCulture);
+            text = scientificText.Length < fixedText.Length ? scientificText : fixedText;
         }
-        return "AoT_Value_" + text.Replace("-", "minus_").Replace('.', '_');
+        if (number < 0) text = "-" + text;
+        return "AoT_NKW_" + text.Replace("-", "minus_").Replace("+", "plus_").Replace('.', '_');
     }
 
     public static IReadOnlyList<PresetField> GetFields(string context, PresetKind kind)
@@ -189,6 +194,9 @@ public static class PresetSchema
             help += NormalizeContext(context) == "rule"
                 ? " These entries are added to the Containers filter in the item's stage settings. Leaving this empty keeps that filter."
                 : " When the item's stage settings already define this trigger, the lists are combined. Leaving this empty keeps the existing list.";
+        if (NormalizeContext(context) is "transformer" or "modulator" &&
+            field.Key is "color" or "sound" or "art_object" or "effect_shader")
+            help += " Leave unset to use the stage's value.";
         if (kind == PresetKind.Default && NormalizeContext(context) == "stage" && field.Key == "duration")
             help += " For this scope, when stage 0 lasts 9999 game hours or more (including .inf), progression only starts for items with matching transformation or time-modifier settings.";
         return help;
@@ -293,7 +301,7 @@ public static class PresetSchema
                     {
                         var childField = fields.FirstOrDefault(candidate => candidate.Key == name)
                             ?? VisualFields.FirstOrDefault(candidate => candidate.Key == name);
-                        if (childField?.TriggerOnly == true && HasNumericTrigger(value, context))
+                        if (childField?.TriggerOnly == true && HasNumericTrigger(value, context, partial: true))
                             childField = childField with { Kind = FieldKind.Number, AllowsGroups = false };
                         if (childField is not null) childField = childField with { Help = FieldHelp(childField, context, document.Kind) };
                         FindParameterUses(child, childField?.ChildContext ?? InferContext(name, child), childField,
@@ -332,7 +340,8 @@ public static class PresetSchema
             BoundObjectOnly = known.Any(field => field.BoundObjectOnly),
             MatchSourceType = known.Any(field => field.MatchSourceType),
             RequiresEditorId = known.Any(field => field.RequiresEditorId),
-            InventoryOwnerOnly = known.Any(field => field.InventoryOwnerOnly)
+            InventoryOwnerOnly = known.Any(field => field.InventoryOwnerOnly),
+            SequenceOnly = known.Any(field => field.SequenceOnly)
         };
     }
     public static IReadOnlyList<string> Validate(PresetValue value, string context, string category, bool partial = false) =>
@@ -342,7 +351,7 @@ public static class PresetSchema
         string category, PresetKind kind, bool partial = false)
     {
         var errors = new List<string>();
-        if (partial && IsReference(value)) return errors;
+        if (value.IsNull && !field.Required || partial && IsReference(value)) return errors;
         if (field.Kind == FieldKind.ObjectList)
         {
             if (value.Kind != ValueKind.Sequence) errors.Add("Expected a list.");
@@ -369,6 +378,8 @@ public static class PresetSchema
         "containers" => "Unrestricted",
         "timeModulators" => "Normal stage progression",
         "transformers" => "None",
+        "fx_conditions" => "No perk conditions",
+        "name" => "Keeps the original item name",
         "sound" or "art_object" or "effect_shader" or "color" when NormalizeContext(context) is "transformer" or "modulator" => "Uses the stage setting",
         "sound" or "art_object" or "effect_shader" or "color" => "None",
         "FormEditorID" when NormalizeContext(context) == "stage" => "Source item at stage 0; generated item at later FOOD or MISC stages",
@@ -406,28 +417,25 @@ public static class PresetSchema
             errors.Add(At(path, "Expected a settings block."));
             return;
         }
+        var numericTrigger = HasNumericTrigger(value, context, partial);
         foreach (var field in GetFields(context, kind))
         {
             if (context == "effect" && InactiveReason(field, value, context, category, partial: partial) is not null) continue;
             var child = value.Get(field.Key);
-            if (field.Key == NumericTriggerField(context) && HasNumericTrigger(value, context)) continue;
-            if (field.Key == "FormEditorID" && HasNumericTrigger(value, context))
+            if (numericTrigger && field.Key == NumericTriggerField(context)) continue;
+            if (numericTrigger && field.Key == "FormEditorID")
             {
-                foreach (var item in child!.Kind == ValueKind.Sequence ? child.Items : [child])
-                {
-                    if (partial && IsReference(item)) continue;
-                    if (float.TryParse(item.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var numericTrigger))
-                    {
-                        if (!float.IsFinite(numericTrigger)) errors.Add(At(path, "Generated keyword: enter a finite number."));
-                        else if (context == "transformer" && numericTrigger <= 0) errors.Add(At(path, "Duration must be greater than zero."));
-                    }
-                    else if (context == "transformer") errors.Add(At(path, "Duration is required for nonnumeric triggers."));
-                }
+                if (partial && IsReference(child!)) continue;
+                if (!TryNumericTrigger(value, context, out var amount))
+                    errors.Add(At(path, "Generated keyword: enter a finite number."));
+                else if (context == "transformer" && amount <= 0)
+                    errors.Add(At(path, "Duration must be greater than zero."));
                 continue;
             }
             if (child is null || child.IsNull)
             {
-                if (field.Required && !partial && !(child is not null && ((context == "stage" && field.Key == "name") || (context == "modulator" && field.Key == "magnitude")))) errors.Add(At(path, $"{field.Label} is required."));
+                if (field.Required && !partial && !(child is not null && context == "modulator" && field.Key == "magnitude"))
+                    errors.Add(At(path, $"{field.Label} is required."));
                 continue;
             }
             if (partial && IsReference(child)) continue;
@@ -504,7 +512,11 @@ public static class PresetSchema
 
     private static void ValidateList(PresetValue value, PresetField field, bool partial, string label, List<string> errors)
     {
-        if (value.Kind is not (ValueKind.Scalar or ValueKind.Sequence)) { errors.Add($"{label}: expected a value or list."); return; }
+        if (value.Kind != ValueKind.Sequence && (field.SequenceOnly || value.Kind != ValueKind.Scalar))
+        {
+            errors.Add(field.SequenceOnly ? $"{label}: expected a list." : $"{label}: expected a value or list.");
+            return;
+        }
         var items = value.Kind == ValueKind.Sequence ? value.Items : [value];
         if (field.Required && items.Count == 0 && !partial) errors.Add($"{label}: add at least one entry.");
         foreach (var item in items)

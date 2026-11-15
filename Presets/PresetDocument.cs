@@ -276,8 +276,12 @@ public sealed class PresetDocument
             if (value.Get(field.Key) is not { } child) continue;
             if (field.Kind is FieldKind.FormList or FieldKind.IntegerList)
             {
-                child = CompactSelector(child);
-                value.Set(field.Key, child);
+                if (!field.SequenceOnly && !(field.TriggerOnly && PresetSchema.NumericTriggerField(context) is { } timing &&
+                    value.Get(timing) is null))
+                {
+                    child = CompactSelector(child);
+                    value.Set(field.Key, child);
+                }
                 if (child.Kind == ValueKind.Sequence && child.TrailingComments.Count == 0 &&
                     child.Items.All(item => item.Kind is ValueKind.Scalar or ValueKind.Alias &&
                         !item.Text.Contains('\n') && !item.Text.Contains('\r') && item.Comments.Count == 0 &&
