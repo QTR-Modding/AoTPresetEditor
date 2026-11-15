@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -19,6 +20,8 @@ public partial class MainWindow : Window
     public MainWindow(string? dataFolder, string? placementPath = null)
     {
         InitializeComponent();
+        var version = typeof(MainWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
+        Title = $"{Title} {version.Split('+')[0]}";
         InputBindings.Add(new KeyBinding(ApplicationCommands.Save, Key.S, ModifierKeys.Control) { CommandTarget = Workspace });
         if (WindowPlacement.Load(placementPath) is { } placement)
         {
