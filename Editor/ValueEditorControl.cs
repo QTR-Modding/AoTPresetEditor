@@ -533,9 +533,7 @@ public sealed class ValueEditorControl : UserControl
         "containers" or "allowed_stages" => "Filters", _ => "Additional behavior"
     };
 
-    private bool UsesNumericTrigger => PresetSchema.HasNumericTrigger(Value, context, partial: parametersAllowed) &&
-        (Value.Get("<<") is not { } inherited ||
-         BehaviorFamily.ResolveValue(Document, inherited, PresetSchema.NumericTriggerField(context)) is null);
+    private bool UsesNumericTrigger => PresetSchema.HasNumericTrigger(Value, context, partial: parametersAllowed, document: Document);
 
     private void RenderField(PresetField descriptor, Panel target)
     {
@@ -558,7 +556,7 @@ public sealed class ValueEditorControl : UserControl
             var mode = new ComboBox { ItemsSource = new[] { "Choose trigger", numericField == "duration" ? "As duration" : "As magnitude" },
                 SelectedIndex = numeric ? 1 : 0, MinWidth = 140, Margin = new Thickness(0, 0, 6, 0) };
             AutomationProperties.SetName(mode, "Trigger mode");
-            if (Value.Get("<<") is { } inherited && BehaviorFamily.ResolveValue(Document, inherited, numericField) is not null)
+            if (PresetSchema.HasInheritedTriggerTiming(Value, context, Document))
             {
                 mode.IsEnabled = false;
                 mode.ToolTip = numericField == "duration" ? "Remove Duration from Common settings to use a numeric trigger."

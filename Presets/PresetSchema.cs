@@ -19,6 +19,9 @@ public static class PresetSchema
         new("art_object", "Art object", FieldKind.Form, "Art effect attached to items lying in the world.", FormTypes: ["ArtObject"]),
         new("effect_shader", "Effect shader", FieldKind.Form, "Shader applied to items lying in the world.", FormTypes: ["EffectShader"])
     ];
+    private static readonly PresetField Trigger = new("FormEditorID", "Trigger", FieldKind.FormList,
+        "Choose what starts this behavior, such as a nearby item or a location.\nSee Help for trigger rules.",
+        true, AllowsGroups: true, TriggerOnly: true);
     private static readonly PresetField[] TriggerFields =
     [
         new("activation_delay", "Activation delay (game hours)", FieldKind.Number, "Average wait before this trigger activates while its conditions hold. Leave blank or enter 0 for immediate activation."),
@@ -40,14 +43,14 @@ public static class PresetSchema
     ];
     private static readonly PresetField[] ModulatorFields =
     [
-        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. For world items, an art object, effect shader, or active magic effect on the item itself or a nearby reference can also trigger this effect. Keywords on the item's or a nearby reference's base object also trigger world items. In inventories, keywords on any contained item, including the evolving item, can trigger this effect; the inventory owner's keywords do not count. In inventories, an art object, effect shader, or active magic effect triggers when the inventory owner has it. Factions match nearby actors that belong to the faction or nearby non-actor references explicitly owned by it. In inventories, the inventory owner must match; ownership of contained items or the cell does not count. A form group or Skyrim form list can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
+        Trigger,
         new("magnitude", "Time multiplier", FieldKind.Number, "1 is normal speed, 0 pauses progression, and negative values reverse it. This does not change transformation duration.", true, DefaultText: "1"),
         .. TriggerFields,
         .. VisualFields
     ];
     private static readonly PresetField[] TransformerFields =
     [
-        new("FormEditorID", "Trigger", FieldKind.FormList, "Nearby object, item in the same inventory, location, or perk conditions. For world items, an art object, effect shader, or active magic effect on the item itself or a nearby reference can also trigger this effect. Keywords on the item's or a nearby reference's base object also trigger world items. In inventories, keywords on any contained item, including the evolving item, can trigger this effect; the inventory owner's keywords do not count. In inventories, an art object, effect shader, or active magic effect triggers when the inventory owner has it. Factions match nearby actors that belong to the faction or nearby non-actor references explicitly owned by it. In inventories, the inventory owner must match; ownership of contained items or the cell does not count. A form group or Skyrim form list can supply several triggers.", true, AllowsGroups: true, TriggerOnly: true),
+        Trigger,
         new("finalFormEditorID", "Result item", FieldKind.Form, "The object produced when the transformation finishes.", true, BoundObjectOnly: true),
         new("duration", "Duration (game hours)", FieldKind.Number, "Positive time needed to finish this transformation while its trigger applies.", true, DefaultText: "0.05"),
         .. TriggerFields,
@@ -86,12 +89,17 @@ public static class PresetSchema
     private static PresetValue? NumericTriggerValue(PresetValue value, string context) =>
         NumericTriggerField(context) is { } key && value.Get(key) is null ? value.Get("FormEditorID") : null;
 
-    public static bool HasNumericTrigger(PresetValue value, string context, bool partial = false)
+    internal static bool HasInheritedTriggerTiming(PresetValue value, string context, PresetDocument document) =>
+        NumericTriggerField(context) is { } key && value.Get("<<") is { } inherited &&
+        BehaviorFamily.ResolveValue(document, inherited, key) is not null;
+
+    public static bool HasNumericTrigger(PresetValue value, string context, bool partial = false, PresetDocument? document = null)
     {
         var trigger = NumericTriggerValue(value, context);
+        if (trigger is null || document is not null && HasInheritedTriggerTiming(value, context, document)) return false;
         return trigger is { Kind: ValueKind.Scalar, IsNull: false } &&
             float.TryParse(trigger.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _) ||
-            partial && trigger is not null && IsReference(trigger);
+            partial && IsReference(trigger);
     }
 
     public static bool TryNumericTrigger(PresetValue value, string context, out float number)
@@ -182,6 +190,13 @@ public static class PresetSchema
 
     public static string FieldHelp(PresetField field, string context, PresetKind kind)
     {
+        if (field.TriggerOnly && field.Kind == FieldKind.Number)
+            return NormalizeContext(context) switch
+            {
+                "transformer" => "Enter how long the transformation takes, in game hours.",
+                "modulator" => "1 is normal speed.\n0 pauses progression.\nNegative values reverse it.",
+                _ => field.Help
+            };
         var help = field.Help;
         if (field.Key == "containers" && NormalizeContext(context) is "transformer" or "modulator")
         {
@@ -282,7 +297,7 @@ public static class PresetSchema
                 };
                 var childField = field?.Kind switch
                 {
-                    FieldKind.FormList => field with { Kind = FieldKind.Form },
+                    FieldKind.FormList => field with { Kind = FieldKind.Form, SequenceOnly = false },
                     FieldKind.IntegerList => field with { Kind = FieldKind.Integer },
                     FieldKind.ObjectList => null,
                     _ => field
@@ -301,7 +316,7 @@ public static class PresetSchema
                     {
                         var childField = fields.FirstOrDefault(candidate => candidate.Key == name)
                             ?? VisualFields.FirstOrDefault(candidate => candidate.Key == name);
-                        if (childField?.TriggerOnly == true && HasNumericTrigger(value, context, partial: true))
+                        if (childField?.TriggerOnly == true && HasNumericTrigger(value, context, partial: true, document: document))
                             childField = childField with { Kind = FieldKind.Number, AllowsGroups = false };
                         if (childField is not null) childField = childField with { Help = FieldHelp(childField, context, document.Kind) };
                         FindParameterUses(child, childField?.ChildContext ?? InferContext(name, child), childField,
