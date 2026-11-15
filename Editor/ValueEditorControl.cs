@@ -443,7 +443,7 @@ public sealed class ValueEditorControl : UserControl
                     (descriptor.Required || HasSection(key))) RenderField(descriptor, content);
             descriptors = descriptors.Where(item => item.Key is not ("owners" or "forms" or "stages" or "finalFormEditorID" or "transformers" or "timeModulators")).ToArray();
         }
-        var primary = descriptors.Where(descriptor => descriptor.Required ||
+        var primary = descriptors.Where(descriptor => descriptor.Required || descriptor.Key == "name" ||
             descriptor.Kind == FieldKind.ObjectList && Value.Get(descriptor.Key) is not null ||
             PresetSchema.NormalizeContext(context) == "effect").ToArray();
         foreach (var descriptor in primary)
@@ -528,19 +528,17 @@ public sealed class ValueEditorControl : UserControl
 
     private static string FieldSection(PresetField descriptor) => descriptor.Key switch
     {
-        "color" or "sound" or "art_object" or "effect_shader" => "World effects",
+        "color" or "sound" or "art_object" or "effect_shader" or "fx_conditions" => "World effects",
         "value" or "weight" or "crafting_allowed" or "mgeffect" or "FormEditorID" => "Item properties",
         "containers" or "allowed_stages" => "Filters", _ => "Additional behavior"
     };
 
-    private bool UsesNumericTrigger => PresetSchema.HasNumericTrigger(Value, context) &&
-        (Value.Get(PresetSchema.NumericTriggerField(context)!) is not null ||
-         effective?.Get(PresetSchema.NumericTriggerField(context)!) is not { IsNull: false });
+    private bool UsesNumericTrigger => PresetSchema.HasNumericTrigger(Value, context, partial: parametersAllowed, document: Document);
 
     private void RenderField(PresetField descriptor, Panel target)
     {
         var current = Value.Get(descriptor.Key); var box = new StackPanel(); var row = new DockPanel();
-        var numeric = descriptor.TriggerOnly && UsesNumericTrigger && Value.Get("FormEditorID")?.Kind != ValueKind.Sequence;
+        var numeric = descriptor.TriggerOnly && UsesNumericTrigger && Value.Get("FormEditorID")?.Kind == ValueKind.Scalar;
         if (numeric) descriptor = descriptor with { Kind = FieldKind.Number, AllowsGroups = false };
         var label = EditorControls.Text(descriptor.Label); label.FontWeight = FontWeights.SemiBold;
         label.Margin = new Thickness(0); label.VerticalAlignment = VerticalAlignment.Center;
@@ -558,16 +556,27 @@ public sealed class ValueEditorControl : UserControl
             var mode = new ComboBox { ItemsSource = new[] { "Choose trigger", numericField == "duration" ? "As duration" : "As magnitude" },
                 SelectedIndex = numeric ? 1 : 0, MinWidth = 140, Margin = new Thickness(0, 0, 6, 0) };
             AutomationProperties.SetName(mode, "Trigger mode");
+            if (PresetSchema.HasInheritedTriggerTiming(Value, context, Document))
+            {
+                mode.IsEnabled = false;
+                mode.ToolTip = numericField == "duration" ? "Remove Duration from Common settings to use a numeric trigger."
+                    : "Remove Time multiplier from Common settings to use a numeric trigger.";
+                ToolTipService.SetShowOnDisabled(mode, true);
+            }
             mode.SelectionChanged += (_, _) =>
             {
                 if ((mode.SelectedIndex == 1) == numeric) return;
                 Capture();
                 if (mode.SelectedIndex == 1)
                 {
-                    var amount = Value.Get(numericField)?.Clone() ?? PresetValue.Scalar(numericField == "duration" ? "0.05" : "1");
-                    Value.Set("FormEditorID", amount);
-                    if (Value.Get("<<") is not null) Value.Set(numericField, PresetValue.Scalar("null"));
-                    else Value.Remove(numericField);
+                    var amount = Value.Get(numericField);
+                    var trigger = Value.Get("FormEditorID");
+                    if (amount is null || amount.IsNull)
+                        amount = trigger is { Kind: ValueKind.Scalar, IsNull: false } &&
+                            (float.TryParse(trigger.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _) ||
+                             IsVariable(trigger)) ? trigger : PresetValue.Scalar(numericField == "duration" ? "0.05" : "1");
+                    Value.Set("FormEditorID", amount.Clone());
+                    Value.Remove(numericField);
                 }
                 else
                 {
@@ -658,8 +667,6 @@ public sealed class ValueEditorControl : UserControl
         choice.IsChecked = previous;
         if (enabled == previous) return;
         root.Capture();
-        if (enabled && descriptor.TriggerOnly && descriptor.Kind == FieldKind.Number && PresetSchema.NumericTriggerField(context) is { } numericField)
-            Value.Set(numericField, PresetValue.Scalar("null"));
         var path = new List<string>();
         if (!FindPath(root.Value, Value, path)) return;
         path.Add(descriptor.Key);
@@ -936,7 +943,6 @@ public sealed class ValueEditorControl : UserControl
     {
         var stage = PresetValue.Map();
         stage.Set("no", PresetValue.Scalar(number.ToString(System.Globalization.CultureInfo.InvariantCulture)));
-        stage.Set("name", new() { Kind = ValueKind.Scalar, Text = "", Style = ScalarStyle.DoubleQuoted });
         stage.Set("duration", PresetValue.Scalar("1"));
         return stage;
     }
@@ -1302,7 +1308,7 @@ public sealed class ValueEditorControl : UserControl
         if (field is not null) return field.Kind switch
         {
             FieldKind.ObjectList => value.Kind == ValueKind.Sequence,
-            FieldKind.FormList or FieldKind.IntegerList => value.Kind is ValueKind.Scalar or ValueKind.Sequence,
+            FieldKind.FormList or FieldKind.IntegerList => value.Kind == ValueKind.Sequence || !field.SequenceOnly && value.Kind == ValueKind.Scalar,
             _ => value.Kind == ValueKind.Scalar
         };
         if (PresetSchema.GetFields(context, Document.Kind).Count > 0) return value.Kind == ValueKind.Mapping;

@@ -98,9 +98,9 @@ public static class PresetValidation
         if (rule.Get("containers") is { Kind: ValueKind.Sequence, Items.Count: 0 } ||
             HasConfiguredForms(rule.Get("containers"), catalog)) return true;
         var triggerSelection = new FormSelection(TriggerOnly: true);
-        foreach (var key in new[] { "transformers", "timeModulators" })
-            if (rule.Get(key) is { Kind: ValueKind.Sequence } triggers &&
-                triggers.Items.Any(trigger => HasConfiguredForms(trigger.Get("FormEditorID"), catalog, triggerSelection))) return true;
+        foreach (var (key, context) in new[] { ("transformers", "transformer"), ("timeModulators", "modulator") })
+            if (rule.Get(key) is { Kind: ValueKind.Sequence } triggers && triggers.Items.Any(trigger =>
+                PresetSchema.HasNumericTrigger(trigger, context) || HasConfiguredForms(trigger.Get("FormEditorID"), catalog, triggerSelection))) return true;
         return false;
     }
 
@@ -179,12 +179,11 @@ public static class PresetValidation
                 continue;
             }
             if (field.Kind is not (FieldKind.Form or FieldKind.FormList) || field.MatchSourceType) continue;
+            if (field.TriggerOnly && PresetSchema.HasNumericTrigger(value, context)) continue;
             var selection = FormSelection.ForField(field, category);
             foreach (var item in child.Kind == ValueKind.Sequence ? child.Items : [child])
             {
                 if (item.Kind != ValueKind.Scalar || item.IsNull) continue;
-                if (field.TriggerOnly && PresetSchema.HasNumericTrigger(value, context) &&
-                    float.TryParse(item.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _)) continue;
                 if (field.AllowsGroups && catalog.ResolveGroup(item.Text) is { } group)
                 {
                     if (selection.RequiresKnownGroupMember && !group.Members.Any(member => catalog.ResolveForm(member) is { } memberForm && selection.Matches(memberForm)))

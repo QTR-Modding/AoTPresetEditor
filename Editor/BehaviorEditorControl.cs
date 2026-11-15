@@ -620,7 +620,9 @@ public sealed class BehaviorEditorControl : UserControl
         foreach (var form in picker.SelectedForms)
         {
             var row = BehaviorFamily.AddUse(document, RuleId); first ??= row.Id;
-            BehaviorFamily.SetArgument(document, row.Id, column.Parameter, PresetValue.Scalar(form.Identifier));
+            var value = PresetValue.Scalar(form.Identifier);
+            BehaviorFamily.SetArgument(document, row.Id, column.Parameter,
+                field.SequenceOnly ? new PresetValue { Kind = ValueKind.Sequence, Items = { value } } : value);
         }
         if (Rule().Kind == BlockKind.Template && first is not null) RuleId = first;
         Rebuild(true, first, column.Parameter); NotifyChanged();
