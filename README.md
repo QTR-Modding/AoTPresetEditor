@@ -54,6 +54,15 @@ Faction triggers match nearby actors that belong to the faction, or nearby non-a
 
 Transformations and time modifiers need stages, which can come from another preset. The editor checks the current workspace and loaded presets and shows a warning when it cannot find or verify those stages. This warning does not prevent saving.
 
+### AoT 1.7 preset settings
+
+1. In a transformation, set **Trigger** to **As duration**, enter `0.06`, and choose a **Result item**. The editor shows `AoT_NKW_0_06`. Create a Keyword with that EditorID in your plugin and assign it to a base object that should trigger the transformation. For a time modifier, use **As magnitude** to set how quickly the item progresses through its stages.
+2. Under **Additional behavior**, set **Activation delay (game hours)** to give the trigger a random wait with that average. Leave it unset or enter `0` to start as soon as the trigger matches.
+3. Under **World effects > Effect perk conditions**, choose perks whose conditions AoT should check against the evolving world item. When one matches, the trigger can apply its effects. When none match, the item uses its stage's effects. Leave the list empty to allow trigger effects without a perk condition.
+4. Leave **Stage name** unset for an unnamed stage. Generated FOOD and MISC items keep the original item name.
+
+[See the AoT preset guide for YAML examples.](https://github.com/QTR-Modding/AlchemyOfTime/wiki)
+
 ## Preview world effects
 
 1. Under **World effects**, click the color swatch beside **Tint**. Choose a color and opacity, then **Apply**. **Cancel** keeps the original value; **No tint** explicitly removes an inherited tint. The hexadecimal field remains editable.
