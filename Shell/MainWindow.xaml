@@ -21,7 +21,7 @@
       <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
        <Button x:Name="ResumeEditing" DockPanel.Dock="Right" Content="Resume editing" Click="Resume_Click" Visibility="Collapsed"/>
        <StackPanel Orientation="Horizontal">
-        <Button Content="New preset..." Click="NewPreset_Click"/>
+        <Button Content="New preset..." Click="NewPreset_Click" Style="{DynamicResource PrimaryButton}"/>
         <Button Content="Open file or draft..." Click="OpenPreset_Click"/>
        </StackPanel>
       </DockPanel>
@@ -46,7 +46,7 @@
           </DataTemplate>
          </ListBox.ItemTemplate>
         </ListBox>
-        <TextBlock x:Name="PresetEmpty" Text="Choose a Skyrim Data folder on the Game data tab to browse installed presets. You can also open a file or create a preset." Margin="16" TextWrapping="Wrap" IsHitTestVisible="False"/>
+        <TextBlock x:Name="PresetEmpty" Text="To choose Skyrim items for your preset, launch the editor through MO2 or select Game data > Data folder..." Margin="16" TextWrapping="Wrap" IsHitTestVisible="False"/>
        </Grid>
       </DockPanel>
      </DockPanel>

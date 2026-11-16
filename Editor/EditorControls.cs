@@ -64,8 +64,11 @@ internal static class EditorControls
     }
     public static Button Info(string label, string explanation)
     {
-        var tooltip = new ToolTip { Content = new TextBlock { Text = explanation, TextWrapping = TextWrapping.Wrap, MaxWidth = 420 },
-            Placement = PlacementMode.Bottom };
+        var tooltip = new ToolTip
+        {
+            Content = new TextBlock { Text = explanation, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, Margin = new Thickness(7, 4, 7, 4) },
+            Placement = PlacementMode.Top
+        };
         var button = new Button { Content = "ⓘ", Width = 24, Height = 24, MinWidth = 0, MinHeight = 0,
             Padding = new Thickness(0), Margin = new Thickness(5, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
             ToolTip = tooltip };

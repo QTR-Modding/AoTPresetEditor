@@ -14,70 +14,71 @@ public static class PresetSchema
     private static readonly string[] ItemTypes = ["Ingestible", "Ingredient", "Armor", "Weapon", "Scroll", "Book", "SoulGem", "MiscItem", "Static", "MoveableStatic"];
     private static readonly PresetField[] VisualFields =
     [
-        new("color", "Tint", FieldKind.Color, "Color for items lying in the world. Use the color picker, or enter #RRGGBB or #RRGGBBAA (including opacity). Zero removes tint. Existing colors without # keep their original meaning."),
-        new("sound", "Sound", FieldKind.Form, "Sound played by items lying in the world.", FormTypes: ["SoundDescriptor"]),
-        new("art_object", "Art object", FieldKind.Form, "Art effect attached to items lying in the world.", FormTypes: ["ArtObject"]),
-        new("effect_shader", "Effect shader", FieldKind.Form, "Shader applied to items lying in the world.", FormTypes: ["EffectShader"])
+        new("color", "Tint", FieldKind.Color, "Color an item lying in the world.\nChoose No tint to remove its color."),
+        new("sound", "Sound", FieldKind.Form, "Play a sound from the item lying in the world.", FormTypes: ["SoundDescriptor"]),
+        new("art_object", "Art object", FieldKind.Form, "Attach a visual object to the item lying in the world.", FormTypes: ["ArtObject"]),
+        new("effect_shader", "Effect shader", FieldKind.Form, "Apply a visual effect to the surface of the item lying in the world.", FormTypes: ["EffectShader"])
     ];
+    private const string TimeMultiplierHelp = "1 is normal speed.\n0 pauses stage progression.\nNegative values run the stages in reverse.";
     private static readonly PresetField Trigger = new("FormEditorID", "Trigger", FieldKind.FormList,
-        "Choose what starts this behavior, such as a nearby item or a location.\nSee Help for trigger rules.",
+        "Choose what starts the change.\nAn item can match nearby in the world or in the same inventory.\nSee Help for other trigger types.",
         true, AllowsGroups: true, TriggerOnly: true);
     private static readonly PresetField[] TriggerFields =
     [
-        new("activation_delay", "Activation delay (game hours)", FieldKind.Number, "Average wait before this trigger activates while its conditions hold. Leave blank or enter 0 for immediate activation."),
-        new("fx_conditions", "Effect perk conditions", FieldKind.FormList, "Use the trigger's world effects when the evolving reference meets at least one selected perk's conditions. Otherwise, use the stage's effects. Leave empty to always allow the trigger's effects.", FormTypes: ["Perk"], SequenceOnly: true),
-        new("allowed_stages", "Allowed stages", FieldKind.IntegerList, "Stage numbers this trigger affects. Unset or empty means all stages; 0 selects the initial stage."),
-        new("containers", "Containers", FieldKind.FormList, "Restrict this effect to the selected inventories; leave empty for no restriction. Items lying in the world ignore this filter.", AllowsGroups: true, InventoryOwnerOnly: true)
+        new("activation_delay", "Activation delay (game hours)", FieldKind.Number, "How long the trigger waits on average after it starts matching.\nLeave blank or use 0 to start immediately."),
+        new("fx_conditions", "Effect perk conditions", FieldKind.FormList, "Check the selected perks' conditions on the world item.\nAny match uses this trigger's effects. Otherwise, the stage supplies them.\nLeave empty to skip this check.", FormTypes: ["Perk"], SequenceOnly: true),
+        new("allowed_stages", "Allowed stages", FieldKind.IntegerList, "Choose which stages can use this trigger.\n0 means the first stage. An empty list means any stage."),
+        new("containers", "Containers", FieldKind.FormList, "Choose which inventories can use this trigger.\nLeave empty to allow any inventory. World items ignore this filter.", AllowsGroups: true, InventoryOwnerOnly: true)
     ];
     private static readonly PresetField[] StageFields =
     [
-        new("no", "Stage number", FieldKind.Integer, "Start at 0 and increase by one for each stage.", true, DefaultText: "0"),
-        new("name", "Stage name", FieldKind.Text, "Stage label shown in LoreBox. Also added to generated FOOD or MISC item names. Leave unset to keep the original name."),
-        new("duration", "Duration (game hours)", FieldKind.Number, "How long this stage lasts. Use a positive number or .inf for an infinite stage.", true, DefaultText: "1"),
-        new("FormEditorID", "Stage item", FieldKind.Form, "Choose a different item of the same type and AoT category as the source. FOOD or MISC stages may leave this unset to generate an item; other categories need a replacement.", FormTypes: ItemTypes, MatchPresetCategory: true, MatchSourceType: true),
+        new("no", "Stage number", FieldKind.Integer, "Start with 0. Number later stages 1, 2, and so on, in order.", true, DefaultText: "0"),
+        new("name", "Stage name", FieldKind.Text, "An optional label, such as Fresh or Stale.\nAoT adds it to generated food and miscellaneous item names."),
+        new("duration", "Duration (game hours)", FieldKind.Number, "Enter how long the stage lasts. Use .inf to make it last forever.", true, DefaultText: "1"),
+        new("FormEditorID", "Stage item", FieldKind.Form, "Choose what the item becomes during this stage.\nLeave blank for AoT to generate a version of a food or miscellaneous item.", FormTypes: ItemTypes, MatchPresetCategory: true, MatchSourceType: true),
         new("value", "Value", FieldKind.Integer, "Value of a generated stage item. Unset or a negative number keeps its original value. Zero is a valid override."),
         new("weight", "Weight", FieldKind.Number, "Weight of a generated stage item. Unset or a negative number keeps its original weight. Zero is a valid override."),
-        new("crafting_allowed", "Allow crafting", FieldKind.Boolean, "Allows a later FOOD stage to stand in for its source item in cooking recipes. Defaults to false.", DefaultText: "false"),
-        new("mgeffect", "Magic effects", FieldKind.ObjectList, "Overwrites existing effect slots on generated FOOD items, in order. An unset or empty list keeps original effects. A nonempty list zeroes remaining slots; extra entries cannot add slots.", ChildContext: "effect"),
+        new("crafting_allowed", "Allow crafting", FieldKind.Boolean, "Let this later food stage replace the original ingredient in cooking recipes.", DefaultText: "false"),
+        new("mgeffect", "Magic effects", FieldKind.ObjectList, "Replace the generated food item's existing magic effects in order.\nAn empty list keeps the original effects. A partial list zeroes the remaining slots.", ChildContext: "effect"),
         .. VisualFields
     ];
     private static readonly PresetField[] ModulatorFields =
     [
         Trigger,
-        new("magnitude", "Time multiplier", FieldKind.Number, "1 is normal speed, 0 pauses progression, and negative values reverse it. This does not change transformation duration.", true, DefaultText: "1"),
+        new("magnitude", "Time multiplier", FieldKind.Number, TimeMultiplierHelp, true, DefaultText: "1"),
         .. TriggerFields,
         .. VisualFields
     ];
     private static readonly PresetField[] TransformerFields =
     [
         Trigger,
-        new("finalFormEditorID", "Result item", FieldKind.Form, "The object produced when the transformation finishes.", true, BoundObjectOnly: true),
-        new("duration", "Duration (game hours)", FieldKind.Number, "Positive time needed to finish this transformation while its trigger applies.", true, DefaultText: "0.05"),
+        new("finalFormEditorID", "Result item", FieldKind.Form, "Choose what the item turns into when this transformation finishes.", true, BoundObjectOnly: true),
+        new("duration", "Duration (game hours)", FieldKind.Number, "Enter how long the trigger must stay active before the item turns into the result.", true, DefaultText: "0.05"),
         .. TriggerFields,
         .. VisualFields
     ];
     private static readonly PresetField[] EffectFields =
     [
-        new("FormEditorID", "Magic effect", FieldKind.Form, "Choose the effect for this existing slot. Leaving it unset keeps that slot's base effect and sets its magnitude and duration to zero.", FormTypes: ["MagicEffect"]),
+        new("FormEditorID", "Magic effect", FieldKind.Form, "Choose a replacement for this effect.\nLeave blank to keep the original effect with zero strength and duration.", FormTypes: ["MagicEffect"]),
         new("magnitude", "Magnitude", FieldKind.Number, "Strength of the chosen effect. Required when a magic effect is selected; zero is allowed.", DefaultText: "0"),
         new("duration", "Duration (seconds)", FieldKind.Integer, "Duration of the chosen effect in seconds. Required when an effect is selected; zero is allowed.", DefaultText: "0")
     ];
     private static readonly PresetField[] RuleFields =
     [
-        new("stages", "Stages", FieldKind.ObjectList, "The sequence of stages, beginning with stage 0.", true, "stage"),
-        new("finalFormEditorID", "Final item", FieldKind.Form, "Object produced after the last stage. Required even if an infinite stage prevents reaching it.", true, BoundObjectOnly: true),
-        new("containers", "Containers", FieldKind.FormList, "Restrict stage progression and transformations to the selected inventories and the listed items lying in the world; leave empty for no restriction.", AllowsGroups: true, InventoryOwnerOnly: true),
-        new("timeModulators", "Time modifiers", FieldKind.ObjectList, "Speed up, slow down, pause, or reverse an item's progress through its stages while the selected conditions apply.", ChildContext: "modulator"),
-        new("transformers", "Transformations", FieldKind.ObjectList, "Pause stage progression and turn the item into the chosen result after the selected conditions have remained active for the specified time.", ChildContext: "transformer")
+        new("stages", "Stages", FieldKind.ObjectList, "Set how the item changes over time. Stage 0 starts with the original item.", true, "stage"),
+        new("finalFormEditorID", "Final item", FieldKind.Form, "Choose what the item becomes after its last stage.\nAoT requires a final item even when the last stage lasts forever.", true, BoundObjectOnly: true),
+        new("containers", "Containers", FieldKind.FormList, "Choose actors or containers to allow their inventories.\nFor an item on the ground, enter the item's form ID.\nLeave empty to allow changes anywhere.", AllowsGroups: true, InventoryOwnerOnly: true),
+        new("timeModulators", "Time modifiers", FieldKind.ObjectList, "Change the speed of the item's stages while a trigger matches.", ChildContext: "modulator"),
+        new("transformers", "Transformations", FieldKind.ObjectList, "Turn the item into another item when the trigger matches for the chosen time.", ChildContext: "transformer")
     ];
     private static readonly PresetField[] CustomFields =
     [
-        new("owners", "Applies to", FieldKind.FormList, "Items selected by form identifiers, form groups, or words in their names. A scalar or a list is accepted. Group names are case-sensitive and select only their members.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true, RequiresEditorId: true),
+        new("owners", "Applies to", FieldKind.FormList, "Choose the items you want to change. You can also use a saved form group or match words in item names.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true, RequiresEditorId: true),
         .. RuleFields
     ];
     private static readonly PresetField[] AddonFields =
     [
-        new("forms", "Applies to", FieldKind.FormList, "Items selected by form identifiers or form groups. Addons extend items that already have stages from a default or custom preset.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true, RequiresEditorId: true),
+        new("forms", "Applies to", FieldKind.FormList, "Choose the items you want to change, or use a saved form group.", true, FormTypes: ItemTypes, AllowsGroups: true, MatchPresetCategory: true, RequiresEditorId: true),
         .. RuleFields.Where(field => field.Key is not ("stages" or "finalFormEditorID"))
     ];
 
@@ -188,32 +189,32 @@ public static class PresetSchema
         return text.Length > 0 && text.All(character => character == '0');
     }
 
+    internal static PresetField NumericTriggerInput(PresetField field, string context) => field with
+    {
+        Label = NumericTriggerField(context) == "duration" ? "Duration (game hours)" : "Time multiplier",
+        Kind = FieldKind.Number,
+        AllowsGroups = false
+    };
+
     public static string FieldHelp(PresetField field, string context, PresetKind kind)
     {
         if (field.TriggerOnly && field.Kind == FieldKind.Number)
             return NormalizeContext(context) switch
             {
-                "transformer" => "Enter how long the transformation takes, in game hours.",
-                "modulator" => "1 is normal speed.\n0 pauses progression.\nNegative values reverse it.",
+                "transformer" => "Enter a duration above zero. AoT uses it to name the keyword.",
+                "modulator" => TimeMultiplierHelp,
                 _ => field.Help
             };
         var help = field.Help;
-        if (field.Key == "containers" && NormalizeContext(context) is "transformer" or "modulator")
-        {
-            var effect = NormalizeContext(context) == "transformer" ? "transformation" : "time modifier";
-            help = $"Restrict this {effect} to the selected inventories; leave empty for no restriction. Items lying in the world ignore this filter.";
-        }
-        if (kind == PresetKind.Addon && field.Key == "containers" && NormalizeContext(context) == "rule")
-            help = "Replace the item's shared Containers filter with this list. It affects stage progression and all transformations, including those from other presets. An empty list removes the restriction. Use existing filter removes this override and keeps the filter supplied by the default/custom rule or earlier addons.";
-        else if (kind == PresetKind.Addon && field.Key is "containers" or "allowed_stages")
-            help += NormalizeContext(context) == "rule"
-                ? " These entries are added to the Containers filter in the item's stage settings. Leaving this empty keeps that filter."
-                : " When the item's stage settings already define this trigger, the lists are combined. Leaving this empty keeps the existing list.";
-        if (NormalizeContext(context) is "transformer" or "modulator" &&
-            field.Key is "color" or "sound" or "art_object" or "effect_shader")
-            help += " Leave unset to use the stage's value.";
-        if (kind == PresetKind.Default && NormalizeContext(context) == "stage" && field.Key == "duration")
-            help += " For this scope, when stage 0 lasts 9999 game hours or more (including .inf), progression only starts for items with matching transformation or time-modifier settings.";
+        var scope = NormalizeContext(context);
+        if (kind == PresetKind.Addon && field.Key == "containers" && scope == "rule")
+            return "Replace the item's Containers filter for stage changes and transformations.\nAn empty list removes the restriction.\nUse existing filter keeps the original.";
+        if (kind == PresetKind.Addon && scope is "transformer" or "modulator" && field.Key is "containers" or "allowed_stages")
+            help += "\nIf the source preset uses the same trigger, AoT combines the two lists.";
+        if (scope is "transformer" or "modulator" && field.Key is "color" or "sound" or "art_object" or "effect_shader")
+            help += "\nLeave unset to use the stage's value.";
+        if (kind == PresetKind.Default && scope == "stage" && field.Key == "duration")
+            help += "\nA default stage 0 of 9999 hours or more only applies to items with an addon.";
         return help;
     }
 
@@ -317,7 +318,7 @@ public static class PresetSchema
                         var childField = fields.FirstOrDefault(candidate => candidate.Key == name)
                             ?? VisualFields.FirstOrDefault(candidate => candidate.Key == name);
                         if (childField?.TriggerOnly == true && HasNumericTrigger(value, context, partial: true, document: document))
-                            childField = childField with { Kind = FieldKind.Number, AllowsGroups = false };
+                            childField = NumericTriggerInput(childField, context);
                         if (childField is not null) childField = childField with { Help = FieldHelp(childField, context, document.Kind) };
                         FindParameterUses(child, childField?.ChildContext ?? InferContext(name, child), childField,
                             parameter, document, uses, activeTemplates, activeValues);

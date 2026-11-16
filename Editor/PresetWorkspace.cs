@@ -2,6 +2,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
@@ -195,8 +196,11 @@ public sealed class PresetWorkspace : UserControl
             welcome.Children.Add(EditorControls.Text("All behaviors have been removed", true));
             welcome.Children.Add(EditorControls.Text("Save to mod to review the files to disable. Their contents will be kept as inactive backups."));
         }
-        else welcome.Children.Add(EditorControls.Text("Describe what happens to your items", true));
-        welcome.Children.Add(EditorControls.Text("Add a behavior, choose the items it affects, then set how they change."));
+        else
+        {
+            welcome.Children.Add(EditorControls.Text("What do you want to change?", true));
+            welcome.Children.Add(EditorControls.Text("Choose the items first, then set what happens to them."));
+        }
         var start = new WrapPanel();
         if (project is null)
         {
@@ -390,8 +394,11 @@ public sealed class PresetWorkspace : UserControl
         if (!CanLeave()) return;
         var dialog = new Window { Title = "New preset", Owner = Host, Width = 460,
             SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        var panel = new StackPanel { Margin = new Thickness(20) }; panel.Children.Add(EditorControls.Text("Name"));
+        var panel = new StackPanel { Margin = new Thickness(20) };
+        panel.Children.Add(EditorControls.Text("Preset name"));
         var name = new TextBox { Text = "New preset" }; panel.Children.Add(name);
+        var types = AddItemTypePicker(panel, "FOOD");
+        dialog.Loaded += (_, _) => { name.Focus(); name.SelectAll(); };
         var error = EditorControls.Text(""); panel.Children.Add(error);
         EditorControls.Footer(panel, EditorControls.Button("Create", () =>
         {
@@ -399,7 +406,7 @@ public sealed class PresetWorkspace : UserControl
             dialog.DialogResult = true;
         }, isDefault: true), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel; if (dialog.ShowDialog() != true) return;
-        await StartEmptyPreset(name.Text.Trim());
+        await StartPreset(name.Text.Trim(), Categories[types.SelectedIndex]);
     }
 
     private async void ResetPreset()
@@ -413,15 +420,16 @@ public sealed class PresetWorkspace : UserControl
         EditorControls.Footer(panel, EditorControls.Button("Clear preset", () => dialog.DialogResult = true),
             EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel;
-        if (dialog.ShowDialog() == true) await StartEmptyPreset(filename);
+        if (dialog.ShowDialog() == true) await StartPreset(filename);
     }
 
-    private async Task StartEmptyPreset(string presetName)
+    private async Task StartPreset(string presetName, string? category = null)
     {
         ResetEditor(); filename = presetName; project = new PresetProject { Name = filename };
         activeEntry = null; document = null; presentation = null; validations.Clear();
         exportRoot = null; draftPath = null; dirty = true;
-        location.Text = "Not saved"; Opened?.Invoke(); await Refresh();
+        var firstBehavior = category is null ? null : CreateBehavior(category, presetName);
+        location.Text = "Not saved"; Opened?.Invoke(); await Refresh(firstBehavior?.Id);
     }
 
     private async void AddBehavior()
@@ -429,10 +437,10 @@ public sealed class PresetWorkspace : UserControl
         EnsureProject(); if (project is null || !CommitEditor()) return;
         var dialog = new Window { Title = "Add behavior", Owner = Host, Width = 550,
             SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        var panel = new StackPanel { Margin = new Thickness(20) }; panel.Children.Add(EditorControls.Text("Name"));
+        var panel = new StackPanel { Margin = new Thickness(20) }; panel.Children.Add(EditorControls.Text("Behavior name"));
         var name = new TextBox(); panel.Children.Add(name);
-        panel.Children.Add(EditorControls.Text("Item type"));
-        var types = new ComboBox { ItemsSource = CategoryNames, SelectedIndex = Math.Max(0, Array.IndexOf(Categories, document?.Category ?? "FOOD")) }; panel.Children.Add(types);
+        var types = AddItemTypePicker(panel, document?.Category ?? "FOOD");
+        dialog.Loaded += (_, _) => name.Focus();
         var error = EditorControls.Text(""); panel.Children.Add(error);
         EditorControls.Footer(panel, EditorControls.Button("Create", () =>
         {
@@ -440,16 +448,35 @@ public sealed class PresetWorkspace : UserControl
             dialog.DialogResult = true;
         }, isDefault: true), EditorControls.Button("Cancel", () => dialog.DialogResult = false, isCancel: true));
         dialog.Content = panel; if (dialog.ShowDialog() != true) return;
-        var kind = PresetKind.Addon;
-        var entry = project.GetOrCreate(Categories[types.SelectedIndex], kind);
+        ResetEditor();
+        var added = CreateBehavior(Categories[types.SelectedIndex], name.Text.Trim());
+        await Refresh(added.Id);
+    }
+
+    private static ComboBox AddItemTypePicker(StackPanel panel, string category)
+    {
+        var label = EditorControls.Text("Item type");
+        label.Margin = new Thickness(0, 12, 0, 4);
+        panel.Children.Add(label);
+        var types = new ComboBox { ItemsSource = CategoryNames, SelectedIndex = Math.Max(0, Array.IndexOf(Categories, category)) };
+        AutomationProperties.SetLabeledBy(types, label);
+        panel.Children.Add(types);
+        return types;
+    }
+
+    private PresetBlock CreateBehavior(string category, string name)
+    {
+        const PresetKind kind = PresetKind.Addon;
+        var entry = project!.GetOrCreate(category, kind);
         if (entry.Document.Blocks.Any(block => block.Kind == BlockKind.Rule && block.Key is "ownerLists" or "formsLists"))
-            entry = project.Add(PresetDocument.Create(entry.Document.Category, kind), filename);
-        ResetEditor(); activeEntry = entry; document = entry.Document; presentation = null;
+            entry = project.Add(PresetDocument.Create(category, kind), filename);
+        activeEntry = entry; document = entry.Document; presentation = null;
         var context = PresetDocument.RuleContext(kind);
-        var added = document.Add(BlockKind.Rule, name.Text.Trim(), context); added.Value = ValueEditorWindow.NewValue(context);
+        var added = document.Add(BlockKind.Rule, name, context); added.Value = ValueEditorWindow.NewValue(context);
         entry.PendingRemoval = false;
         added.Value.Set("forms", PresetValue.List());
-        validations.Remove(entry.Id); dirty = true; await Refresh(added.Id);
+        validations.Remove(entry.Id); dirty = true;
+        return added;
     }
 
     private void ResetEditor()

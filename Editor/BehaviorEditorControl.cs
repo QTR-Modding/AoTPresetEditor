@@ -404,6 +404,7 @@ public sealed class BehaviorEditorControl : UserControl
             SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(20) };
         panel.Children.Add(EditorControls.Text($"Variable name for {field.Label}"));
+        panel.Children.Add(EditorControls.Text("Each row on the Variables tab can use a different value."));
         var input = new TextBox(); AutomationProperties.SetName(input, "Variable name"); panel.Children.Add(input);
         var error = EditorControls.Text(""); error.Visibility = Visibility.Collapsed; panel.Children.Add(error);
         EditorControls.Footer(panel, EditorControls.Button("Create", () =>

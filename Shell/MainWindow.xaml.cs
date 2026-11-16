@@ -179,7 +179,7 @@ public partial class MainWindow : Window
             p.RelativePath.Contains(PresetSearch.Text, StringComparison.OrdinalIgnoreCase)).ToArray();
         PresetList.ItemsSource = matches;
         PresetFilters.Visibility = presets.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        PresetEmpty.Text = presets.Count == 0 ? "No installed presets found in this Data folder." : "No presets match these filters.";
+        PresetEmpty.Text = presets.Count == 0 ? "No presets installed. Choose New preset... to create one." : "No presets match these filters.";
         PresetEmpty.Visibility = matches.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
